@@ -23,6 +23,37 @@ export interface ModelClient {
 export interface ModelActionResult {
   proposedActions: ActionProposal[];
   toolResults?: ToolExecutionResult[];
+  modelResponses?: ModelResponseTraceSnapshot[];
+  modelSteps?: ModelStepTraceSnapshot[];
+}
+
+export interface ModelStepTraceSnapshot {
+  startedAt?: string;
+  endedAt?: string;
+  request?: ModelRequestTraceSnapshot;
+  response?: ModelResponseTraceSnapshot;
+}
+
+export interface ModelRequestTraceSnapshot {
+  provider: string;
+  model: string;
+  temperature: number;
+  stepNumber: number;
+  messages: unknown[];
+  tools: string[];
+  toolChoice?: unknown;
+  requestBody?: unknown;
+}
+
+export interface ModelResponseTraceSnapshot {
+  content?: string;
+  finishReason?: string;
+  stepNumber?: number;
+  toolCalls?: unknown[];
+  toolResults?: unknown[];
+  usage?: unknown;
+  requestBody?: unknown;
+  responseBody?: unknown;
 }
 
 export interface ModelRunOptions {
@@ -30,6 +61,30 @@ export interface ModelRunOptions {
   connector?: Connector;
   now?: () => Date;
   toolImplementations?: ToolImplementations;
+}
+
+const modelStepsErrorKey = "__gestaltModelSteps";
+
+export function attachModelStepsToError(
+  error: unknown,
+  modelSteps: ModelStepTraceSnapshot[]
+): void {
+  if (!error || typeof error !== "object") {
+    return;
+  }
+  (error as { [modelStepsErrorKey]?: ModelStepTraceSnapshot[] })[
+    modelStepsErrorKey
+  ] = modelSteps;
+}
+
+export function readModelStepsFromError(
+  error: unknown
+): ModelStepTraceSnapshot[] | undefined {
+  if (!error || typeof error !== "object") {
+    return undefined;
+  }
+  const value = (error as { [modelStepsErrorKey]?: unknown })[modelStepsErrorKey];
+  return Array.isArray(value) ? (value as ModelStepTraceSnapshot[]) : undefined;
 }
 
 export interface CreateMockModelOptions {

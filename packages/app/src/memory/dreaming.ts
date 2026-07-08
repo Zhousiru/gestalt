@@ -14,6 +14,7 @@ import type { CanonicalEvent } from "../events/schemas";
 import type { GestaltConfig } from "../home/loadConfig";
 import type { GestaltHome } from "../home/resolveGestaltHome";
 import {
+  createModelStepRecorder,
   createLanguageModelFromConfig,
   readModelTemperature,
   snapshotStepRequest,
@@ -21,6 +22,7 @@ import {
   type ModelRequestSnapshot,
   type ModelResponseSnapshot
 } from "../model/aiSdkModel";
+import type { ModelStepTraceSnapshot } from "../model/proposeActions";
 import type { MessageWindow, SessionEventRecord } from "../session/schemas";
 import type { ToolExecutionResult } from "../tools/executeActions";
 import type { ActionProposal } from "../tools/schemas";
@@ -58,6 +60,7 @@ export interface DreamingRunResult {
   addedFiles: string[];
   changedFiles: string[];
   removedFiles: string[];
+  modelSteps?: ModelStepTraceSnapshot[];
   error?: string;
 }
 
@@ -71,7 +74,7 @@ export interface DreamingBashAgentInput extends DreamingRunInput {
 
 export type DreamingBashAgent = (
   input: DreamingBashAgentInput
-) => Promise<void>;
+) => Promise<void | { modelSteps?: ModelStepTraceSnapshot[] }>;
 
 export interface CreateBashDreamingRunnerOptions {
   dream: DreamingBashAgent;
@@ -122,13 +125,14 @@ export function createBashDreamingRunner(
       const bash = createMemoryBashTool(input.home);
 
       try {
-        await options.dream({ ...input, bash });
+        const dreamResult = await options.dream({ ...input, bash });
         const after = await snapshotMemoryFiles(input.home.memoriesDir);
         return {
           status: "completed",
           startedAt,
           endedAt: input.now().toISOString(),
           commands: bash.commands,
+          ...(dreamResult?.modelSteps ? { modelSteps: dreamResult.modelSteps } : {}),
           ...diffMemorySnapshots(before, after)
         };
       } catch (error) {
@@ -152,7 +156,14 @@ export function createAiSdkDreamingRunner(
 ): DreamingRunner {
   return createBashDreamingRunner({
     async dream(input) {
-      await runDreamingToolLoop(config, buildDreamingPrompt(input), input, options);
+      return {
+        modelSteps: await runDreamingToolLoop(
+          config,
+          buildDreamingPrompt(input),
+          input,
+          options
+        )
+      };
     }
   });
 }
@@ -269,11 +280,12 @@ async function runDreamingToolLoop(
   dreamingPrompt: DreamingPrompt,
   input: DreamingBashAgentInput,
   options: CreateAiSdkDreamingRunnerOptions
-): Promise<void> {
+): Promise<ModelStepTraceSnapshot[]> {
   const maxModelTurns = options.maxModelTurns ?? 1000;
   const timeoutMs = options.timeoutMs ?? 360_000;
   const resolved = createLanguageModelFromConfig(config, options);
   const temperature = options.temperature ?? readModelTemperature(config) ?? 1;
+  const modelStepRecorder = createModelStepRecorder(input.now);
   const agent = new ToolLoopAgent({
     id: "gestalt-dreaming",
     model: resolved.languageModel,
@@ -335,16 +347,18 @@ async function runDreamingToolLoop(
       };
     },
     onStepStart(event) {
-      options.onRequest?.(
-        snapshotStepRequest(event, {
-          providerName: resolved.providerName,
-          modelName: resolved.modelName,
-          temperature
-        })
-      );
+      const request = snapshotStepRequest(event, {
+        providerName: resolved.providerName,
+        modelName: resolved.modelName,
+        temperature
+      });
+      modelStepRecorder.recordRequest(request);
+      options.onRequest?.(request);
     },
     onStepEnd(step) {
-      options.onResponse?.(snapshotStepResponse(step));
+      const response = snapshotStepResponse(step);
+      modelStepRecorder.recordResponse(response);
+      options.onResponse?.(response);
     }
   });
 
@@ -358,6 +372,7 @@ async function runDreamingToolLoop(
   if (!result.toolCalls.some((call) => call.toolName === "finish_dreaming")) {
     throw new Error(`Dreaming model exceeded ${maxModelTurns} model turns.`);
   }
+  return modelStepRecorder.steps;
 }
 
 function getParticipantSummaries(records: SessionEventRecord[]): string {

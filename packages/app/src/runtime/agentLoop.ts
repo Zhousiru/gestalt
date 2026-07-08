@@ -8,7 +8,11 @@ import type { GestaltConfig } from "../home/loadConfig";
 import type { GestaltHome } from "../home/resolveGestaltHome";
 import type { DreamingRunResult, DreamingRunner } from "../memory/dreaming";
 import type { MemoryStore } from "../memory/store";
-import type { ModelClient } from "../model/proposeActions";
+import type {
+  ModelClient,
+  ModelStepTraceSnapshot
+} from "../model/proposeActions";
+import { readModelStepsFromError } from "../model/proposeActions";
 import type { PersonaPack } from "../persona/loadPersona";
 import type {
   MessageWindow,
@@ -18,7 +22,11 @@ import type {
 } from "../session/schemas";
 import type { SessionStore } from "../session/store";
 import { createTraceRecorder, type TraceRecorder } from "../trace/recorder";
-import type { AgentTurnTrace, SpanRecord } from "../trace/schemas";
+import type {
+  AgentTurnTrace,
+  ObservationRecord,
+  SpanRecord
+} from "../trace/schemas";
 import {
   executeActions,
   type ToolExecutionResult,
@@ -78,8 +86,25 @@ export async function runAgentTurn(
   const traceId = randomUUID();
   const traceStartedAt = dependencies.now().toISOString();
   const spans: SpanRecord[] = [];
+  const observations: ObservationRecord[] = [];
   const phases: TurnPhaseRecord[] = [];
   const event = getCurrentEvent(input.eventRecords);
+  const buildTrace = (
+    proposedActions: ActionProposal[],
+    toolResults: ToolExecutionResult[]
+  ): AgentTurnTrace => ({
+    id: traceId,
+    name: "agent.turn",
+    startedAt: traceStartedAt,
+    endedAt: dependencies.now().toISOString(),
+    gestaltHome: dependencies.home.root,
+    eventId: event.id,
+    personaVersion: dependencies.persona.version,
+    spans,
+    observations,
+    proposedActions,
+    toolResults
+  });
 
   const markPhase = (phase: TurnPhase): void => {
     const record: TurnPhaseRecord = {
@@ -104,6 +129,7 @@ export async function runAgentTurn(
     traceId,
     "memory.inject",
     spans,
+    observations,
     dependencies.now,
     () =>
       dependencies.memoryStore.findRelevantMemories({
@@ -134,6 +160,7 @@ export async function runAgentTurn(
     traceId,
     "context.compile",
     spans,
+    observations,
     dependencies.now,
     () =>
       compileContext({
@@ -164,6 +191,7 @@ export async function runAgentTurn(
     traceId,
     "model.decide",
     spans,
+    observations,
     dependencies.now,
     () =>
       dependencies.model.proposeActions(
@@ -177,8 +205,30 @@ export async function runAgentTurn(
             : {})
         }
       ),
-    { model: dependencies.model.name ?? "unknown" }
-  );
+    { model: dependencies.model.name ?? "unknown" },
+    (result) => ({
+      modelResponses: summarizeModelResponsesForTrace(result.modelResponses)
+    }),
+    (result, span) => ({
+      observations: createGenerationObservations({
+        traceId,
+        parentObservationId: span.id,
+        purpose: "agent_action",
+        steps: result.modelSteps
+      })
+    }),
+    (error, span) => ({
+      observations: createGenerationObservations({
+        traceId,
+        parentObservationId: span.id,
+        purpose: "agent_action",
+        steps: readModelStepsFromError(error)
+      })
+    })
+  ).catch((error: unknown) => {
+    attachAgentTurnTraceToError(error, buildTrace([], []));
+    throw error;
+  });
   const proposedActions = modelResult.proposedActions;
 
   markPhase("executing");
@@ -187,6 +237,7 @@ export async function runAgentTurn(
     traceId,
     "tool.execute",
     spans,
+    observations,
     dependencies.now,
     () => {
       if (modelResult.toolResults) {
@@ -220,22 +271,16 @@ export async function runAgentTurn(
           ? { dataPreview: truncateForTrace(JSON.stringify(toolResult.result.data)) }
           : {})
       }))
+    }),
+    (result, span) => ({
+      observations: result.map((toolResult) =>
+        createToolObservation(traceId, span.id, toolResult)
+      )
     })
   );
   markPhase("completed");
 
-  const trace: AgentTurnTrace = {
-    id: traceId,
-    name: "agent.turn",
-    startedAt: traceStartedAt,
-    endedAt: dependencies.now().toISOString(),
-    gestaltHome: dependencies.home.root,
-    eventId: event.id,
-    personaVersion: dependencies.persona.version,
-    spans,
-    proposedActions,
-    toolResults
-  };
+  const trace = buildTrace(proposedActions, toolResults);
 
   return {
     traceId,
@@ -270,6 +315,7 @@ export async function runDreamingForAgentTurn(
     result.traceId,
     "dream.run",
     result.trace.spans,
+    result.trace.observations,
     dependencies.now,
     () =>
       dependencies.dreamingRunner.run({
@@ -299,6 +345,24 @@ export async function runDreamingForAgentTurn(
       changedFiles: dreamResult.changedFiles,
       removedFiles: dreamResult.removedFiles,
       ...(dreamResult.error ? { error: dreamResult.error } : {})
+    }),
+    (dreamResult, span) => ({
+      observations: [
+        ...createGenerationObservations({
+          traceId: result.traceId,
+          parentObservationId: span.id,
+          purpose: "dreaming",
+          steps: dreamResult.modelSteps
+        }),
+        ...dreamResult.commands.map((command, index) =>
+          createDreamingCommandObservation(
+            result.traceId,
+            span.id,
+            command,
+            index
+          )
+        )
+      ]
     })
   );
   result.dreamingResult = dreamingResult;
@@ -310,10 +374,45 @@ export async function recordAgentTurnTrace(
   dependencies: AgentLoopDependencies,
   result: AgentTurnResult
 ): Promise<void> {
+  await recordAgentTrace(dependencies, result.trace);
+}
+
+export async function recordAgentTrace(
+  dependencies: AgentLoopDependencies,
+  trace: AgentTurnTrace
+): Promise<void> {
   const traceRecorder =
     dependencies.traceRecorder ?? createTraceRecorder(dependencies.home);
-  result.trace.endedAt = dependencies.now().toISOString();
-  await traceRecorder.recordAgentTurn(result.trace);
+  trace.endedAt = dependencies.now().toISOString();
+  await traceRecorder.recordAgentTurn(trace);
+}
+
+const agentTurnTraceErrorKey = "__gestaltAgentTurnTrace";
+
+export function readAgentTurnTraceFromError(
+  error: unknown
+): AgentTurnTrace | undefined {
+  if (!error || typeof error !== "object") {
+    return undefined;
+  }
+  const value = (error as { [agentTurnTraceErrorKey]?: unknown })[
+    agentTurnTraceErrorKey
+  ];
+  return value && typeof value === "object"
+    ? (value as AgentTurnTrace)
+    : undefined;
+}
+
+function attachAgentTurnTraceToError(
+  error: unknown,
+  trace: AgentTurnTrace
+): void {
+  if (!error || typeof error !== "object") {
+    return;
+  }
+  (error as { [agentTurnTraceErrorKey]?: AgentTurnTrace })[
+    agentTurnTraceErrorKey
+  ] = trace;
 }
 
 function getCurrentEvent(eventRecords: SessionEventRecord[]): CanonicalEvent {
@@ -328,16 +427,25 @@ async function runSpan<T>(
   traceId: string,
   name: string,
   spans: SpanRecord[],
+  observations: ObservationRecord[],
   now: () => Date,
   operation: () => T | Promise<T>,
   attributes: Record<string, unknown> = {},
-  resultAttributes?: (result: T) => Record<string, unknown>
+  resultAttributes?: (result: T) => Record<string, unknown>,
+  resultObservations?: (
+    result: T,
+    span: SpanRecord
+  ) => { observations: ObservationRecord[] },
+  errorObservations?: (
+    error: unknown,
+    span: SpanRecord
+  ) => { observations: ObservationRecord[] }
 ): Promise<T> {
   const spanId = randomUUID();
   const startedAt = now().toISOString();
   try {
     const result = await operation();
-    spans.push({
+    const span: SpanRecord = {
       id: spanId,
       traceId,
       name,
@@ -348,10 +456,13 @@ async function runSpan<T>(
         ...(resultAttributes ? resultAttributes(result) : {}),
         status: "ok"
       }
-    });
+    };
+    spans.push(span);
+    observations.push(spanToObservation(span));
+    observations.push(...(resultObservations?.(result, span).observations ?? []));
     return result;
   } catch (error) {
-    spans.push({
+    const span: SpanRecord = {
       id: spanId,
       traceId,
       name,
@@ -362,7 +473,10 @@ async function runSpan<T>(
         status: "error",
         error: error instanceof Error ? error.message : String(error)
       }
-    });
+    };
+    spans.push(span);
+    observations.push(spanToObservation(span, "ERROR"));
+    observations.push(...(errorObservations?.(error, span).observations ?? []));
     throw error;
   }
 }
@@ -379,6 +493,140 @@ function summarizeDreamingCommand(command: {
     stdout: truncateForTrace(command.stdout),
     stderr: truncateForTrace(command.stderr)
   };
+}
+
+function createGenerationObservations(input: {
+  traceId: string;
+  parentObservationId: string;
+  purpose: "agent_action" | "dreaming";
+  steps: ModelStepTraceSnapshot[] | undefined;
+}): ObservationRecord[] {
+  return (input.steps ?? []).map((step, index) => ({
+    id: randomUUID(),
+    traceId: input.traceId,
+    parentObservationId: input.parentObservationId,
+    type: "generation",
+    name: `${input.purpose}.model.step`,
+    ...(step.startedAt ? { startedAt: step.startedAt } : {}),
+    ...(step.endedAt ? { endedAt: step.endedAt } : {}),
+    ...(step.request ? { input: step.request } : {}),
+    ...(step.response ? { output: step.response } : {}),
+    ...(step.request?.model ? { model: step.request.model } : {}),
+    ...(step.response?.usage !== undefined ? { usage: step.response.usage } : {}),
+    metadata: {
+      purpose: input.purpose,
+      stepIndex: index,
+      ...(step.request?.provider ? { provider: step.request.provider } : {}),
+      ...(step.request?.model ? { model: step.request.model } : {}),
+      ...(step.request?.temperature !== undefined
+        ? { temperature: step.request.temperature }
+        : {}),
+      ...(step.response?.finishReason
+        ? { finishReason: step.response.finishReason }
+        : {})
+    }
+  }));
+}
+
+function createToolObservation(
+  traceId: string,
+  parentObservationId: string,
+  toolResult: ToolExecutionResult
+): ObservationRecord {
+  return {
+    id: randomUUID(),
+    traceId,
+    parentObservationId,
+    type: "tool",
+    name: toolResult.proposal.toolName,
+    startedAt: toolResult.proposal.proposedAt,
+    endedAt: toolResult.executedAt,
+    input: toolResult.proposal.params,
+    output: toolResult.result,
+    metadata: {
+      proposalId: toolResult.proposal.id,
+      status: toolResult.status,
+      ...(toolResult.proposal.reason
+        ? { reason: toolResult.proposal.reason }
+        : {}),
+      ...(toolResult.reason ? { resultReason: toolResult.reason } : {})
+    },
+    ...(toolResult.status === "failed" ? { level: "ERROR" as const } : {})
+  };
+}
+
+function createDreamingCommandObservation(
+  traceId: string,
+  parentObservationId: string,
+  command: {
+    command: string;
+    stdout: string;
+    stderr: string;
+    exitCode: number;
+  },
+  index: number
+): ObservationRecord {
+  return {
+    id: randomUUID(),
+    traceId,
+    parentObservationId,
+    type: "tool",
+    name: "dreaming.bash",
+    input: { command: command.command },
+    output: {
+      exitCode: command.exitCode,
+      stdout: truncateForTrace(command.stdout),
+      stderr: truncateForTrace(command.stderr)
+    },
+    metadata: { commandIndex: index },
+    ...(command.exitCode === 0 ? {} : { level: "ERROR" as const })
+  };
+}
+
+function spanToObservation(
+  span: SpanRecord,
+  level: ObservationRecord["level"] = "DEFAULT"
+): ObservationRecord {
+  const { status, error, ...metadata } = span.attributes;
+  return {
+    id: span.id,
+    traceId: span.traceId,
+    ...(span.parentSpanId ? { parentObservationId: span.parentSpanId } : {}),
+    type: "span",
+    name: span.name,
+    startedAt: span.startedAt,
+    endedAt: span.endedAt,
+    metadata: {
+      ...metadata,
+      status
+    },
+    level,
+    ...(typeof error === "string" ? { statusMessage: error } : {})
+  };
+}
+
+function summarizeModelResponsesForTrace(
+  responses: ModelStepTraceSnapshot["response"][] | undefined
+): Record<string, unknown>[] {
+  return (responses ?? [])
+    .filter(
+      (response): response is NonNullable<ModelStepTraceSnapshot["response"]> =>
+        Boolean(response)
+    )
+    .map((response) => ({
+      ...(response.stepNumber !== undefined
+      ? { stepNumber: response.stepNumber }
+      : {}),
+      ...(response.finishReason ? { finishReason: response.finishReason } : {}),
+      ...(response.content !== undefined
+      ? { content: truncateForTrace(response.content) }
+      : {}),
+      ...(response.toolCalls !== undefined ? { toolCalls: response.toolCalls } : {}),
+      ...(response.toolResults !== undefined
+      ? { toolResults: response.toolResults }
+      : {}),
+      ...(response.usage !== undefined ? { usage: response.usage } : {})
+    }));
 }
 
 function truncateForTrace(value: string): string {

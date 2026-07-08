@@ -88,6 +88,7 @@ interface EvalEvidence {
   session: Record<string, unknown>;
   modelExchanges: unknown[];
   traceSpans: unknown[];
+  traceObservations: unknown[];
   homeChanges: {
     added: HomeFileSnapshot[];
     removed: HomeFileSnapshot[];
@@ -288,6 +289,14 @@ function buildEvidence(replay: ReplayRunResult): EvalEvidence {
       trace?.spans.map((span) => ({
         name: span.name,
         attributes: truncateJson(span.attributes, 3000)
+      })) ?? [],
+    traceObservations:
+      trace?.observations.map((observation) => ({
+        type: observation.type,
+        name: observation.name,
+        input: truncateJson(observation.input, 1000),
+        output: truncateJson(observation.output, 1000),
+        metadata: truncateJson(observation.metadata, 1000)
       })) ?? [],
     homeChanges: {
       added: changes.added,

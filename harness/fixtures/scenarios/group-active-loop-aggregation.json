@@ -68,7 +68,7 @@
       "responseContains": ["send_group_message", "leave"]
     },
     "trace": {
-      "traces": 1,
+      "traces": 2,
       "spans": [
         "memory.inject",
         "context.compile",

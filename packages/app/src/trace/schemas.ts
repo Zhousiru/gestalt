@@ -13,6 +13,25 @@ export const SpanRecordSchema = z
   })
   .strict();
 
+export const ObservationRecordSchema = z
+  .object({
+    id: z.string().min(1),
+    traceId: z.string().min(1),
+    parentObservationId: z.string().min(1).optional(),
+    type: z.enum(["event", "span", "generation", "tool", "agent", "chain"]),
+    name: z.string().min(1),
+    startedAt: z.string().min(1).optional(),
+    endedAt: z.string().min(1).optional(),
+    input: z.unknown().optional(),
+    output: z.unknown().optional(),
+    metadata: z.record(z.string(), z.unknown()).default({}),
+    model: z.string().min(1).optional(),
+    usage: z.unknown().optional(),
+    level: z.enum(["DEBUG", "DEFAULT", "WARNING", "ERROR"]).optional(),
+    statusMessage: z.string().min(1).optional()
+  })
+  .strict();
+
 export const AgentTurnTraceSchema = z
   .object({
     id: z.string().min(1),
@@ -23,10 +42,12 @@ export const AgentTurnTraceSchema = z
     eventId: z.string().min(1),
     personaVersion: z.string().min(1),
     spans: z.array(SpanRecordSchema),
+    observations: z.array(ObservationRecordSchema).default([]),
     proposedActions: z.array(ActionProposalSchema),
     toolResults: z.array(z.unknown())
   })
   .strict();
 
 export type SpanRecord = z.infer<typeof SpanRecordSchema>;
+export type ObservationRecord = z.infer<typeof ObservationRecordSchema>;
 export type AgentTurnTrace = z.infer<typeof AgentTurnTraceSchema>;

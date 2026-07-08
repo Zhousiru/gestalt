@@ -129,7 +129,8 @@ export const ScenarioTraceExpectationsSchema = z
   .object({
     traces: z.number().int().nonnegative().optional(),
     spans: z.array(z.string().min(1)).optional(),
-    toolNames: z.array(z.string().min(1)).optional()
+    toolNames: z.array(z.string().min(1)).optional(),
+    modelResponseContains: z.array(z.string().min(1)).optional()
   })
   .strict();
 

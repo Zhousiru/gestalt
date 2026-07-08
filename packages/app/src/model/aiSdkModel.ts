@@ -11,7 +11,7 @@ import { z } from "zod";
 import type { CompiledContext } from "../context/compileContext";
 import type { MessageReceivedEvent } from "../events/schemas";
 import type { GestaltConfig } from "../home/loadConfig";
-import { throwIfTurnSteered } from "../runtime/turnSignals";
+import { throwIfTurnSteered, TurnSteeredError } from "../runtime/turnSignals";
 import {
   executeActions,
   type ToolExecutionResult
@@ -21,10 +21,12 @@ import {
   type ActionProposal,
   type ToolDefinition
 } from "../tools/schemas";
-import type {
-  ModelActionResult,
-  ModelClient,
-  ModelRunOptions
+import {
+  attachModelStepsToError,
+  type ModelActionResult,
+  type ModelClient,
+  type ModelRunOptions,
+  type ModelStepTraceSnapshot
 } from "./proposeActions";
 
 export interface ModelMessageSnapshot {
@@ -128,6 +130,7 @@ export function createAiSdkModel(options: CreateAiSdkModelOptions): ModelClient 
       throwIfTurnSteered(runOptions.signal);
 
       const executedToolResults: ToolExecutionResult[] = [];
+      const modelStepRecorder = createModelStepRecorder(now);
       const tools = buildActionTools(context.tools, {
         context,
         now,
@@ -152,16 +155,18 @@ export function createAiSdkModel(options: CreateAiSdkModelOptions): ModelClient 
           responseBody: true
         },
         onStepStart(event) {
-          options.onRequest?.(
-            snapshotStepRequest(event, {
-              providerName,
-              modelName: options.modelName,
-              temperature
-            })
-          );
+          const request = snapshotStepRequest(event, {
+            providerName,
+            modelName: options.modelName,
+            temperature
+          });
+          modelStepRecorder.recordRequest(request);
+          options.onRequest?.(request);
         },
         onStepEnd(step) {
-          options.onResponse?.(snapshotStepResponse(step));
+          const response = snapshotStepResponse(step);
+          modelStepRecorder.recordResponse(response);
+          options.onResponse?.(response);
         }
       });
 
@@ -174,12 +179,65 @@ export function createAiSdkModel(options: CreateAiSdkModelOptions): ModelClient 
           ...(runOptions.signal ? { abortSignal: runOptions.signal } : {})
         })
         .catch((error: unknown) => {
-          throwIfTurnSteered(runOptions.signal);
-          throw error;
+          const thrownError = runOptions.signal?.aborted
+            ? new TurnSteeredError()
+            : error;
+          attachModelStepsToError(thrownError, modelStepRecorder.steps);
+          throw thrownError;
         });
 
       throwIfTurnSteered(runOptions.signal);
-      return collectModelActionResult(result.toolCalls, executedToolResults);
+      return collectModelActionResult(
+        result.toolCalls,
+        executedToolResults,
+        modelStepRecorder.steps
+      );
+    }
+  };
+}
+
+export function createModelStepRecorder(now: () => Date = () => new Date()): {
+  readonly steps: ModelStepTraceSnapshot[];
+  recordRequest(request: ModelRequestSnapshot): void;
+  recordResponse(response: ModelResponseSnapshot): void;
+} {
+  const steps: ModelStepTraceSnapshot[] = [];
+
+  return {
+    steps,
+
+    recordRequest(request) {
+      const existing = steps.find(
+        (candidate) =>
+          candidate.request?.stepNumber === request.stepNumber &&
+          candidate.response === undefined
+      );
+      if (existing) {
+        existing.request = request;
+        existing.startedAt ??= now().toISOString();
+        return;
+      }
+      steps.push({ startedAt: now().toISOString(), request });
+    },
+
+    recordResponse(response) {
+      const existing =
+        steps.find(
+          (candidate) =>
+            candidate.request?.stepNumber === response.stepNumber &&
+            candidate.response === undefined
+        ) ??
+        steps.find(
+          (candidate) =>
+            candidate.request === undefined &&
+            candidate.response?.stepNumber === response.stepNumber
+        );
+      if (existing) {
+        existing.response = response;
+        existing.endedAt = now().toISOString();
+        return;
+      }
+      steps.push({ endedAt: now().toISOString(), response });
     }
   };
 }
@@ -769,7 +827,8 @@ function createActionTool(
 
 function collectModelActionResult(
   toolCalls: readonly unknown[],
-  executedToolResults: ToolExecutionResult[]
+  executedToolResults: ToolExecutionResult[],
+  modelSteps: ModelStepTraceSnapshot[]
 ): ModelActionResult {
   if (toolCalls.length > 0 && executedToolResults.length === 0) {
     throw new Error(
@@ -779,7 +838,11 @@ function collectModelActionResult(
 
   return {
     proposedActions: executedToolResults.map((result) => result.proposal),
-    toolResults: executedToolResults
+    toolResults: executedToolResults,
+    modelResponses: modelSteps
+      .map((step) => step.response)
+      .filter((response): response is ModelResponseSnapshot => Boolean(response)),
+    modelSteps
   };
 }
 

@@ -13,10 +13,12 @@ import {
   createRuntime,
   loadConfig,
   resolveGestaltHome,
+  type AgentTurnTrace,
   type AgentTurnResult,
   type MessageReceivedEvent,
   type ModelRequestSnapshot,
   type ModelResponseSnapshot,
+  type ObservationRecord,
   type SessionSnapshot
 } from "@gestalt/app";
 
@@ -69,8 +71,6 @@ export async function runOneBotProtocolE2E(): Promise<OneBotProtocolRunResult> {
       create: false
     });
     const config = await loadConfig(home);
-    const modelRequests: ModelRequestSnapshot[] = [];
-    const modelResponses: ModelResponseSnapshot[] = [];
     const transport = createOneBotForwardWsTransport({
       url: fakeOneBot.url
     });
@@ -80,14 +80,7 @@ export async function runOneBotProtocolE2E(): Promise<OneBotProtocolRunResult> {
     const runtime = await createRuntime({
       gestaltHome: tempHome,
       connector,
-      model: createAiSdkModelFromConfig(config, {
-        onRequest(request) {
-          modelRequests.push(request);
-        },
-        onResponse(response) {
-          modelResponses.push(response);
-        }
-      }),
+      model: createAiSdkModelFromConfig(config),
       dreamingRunner: createNoopDreamingRunner()
     });
     const turnPromises: Promise<AgentTurnResult | undefined>[] = [];
@@ -116,6 +109,8 @@ export async function runOneBotProtocolE2E(): Promise<OneBotProtocolRunResult> {
       exportedAt: new Date().toISOString()
     });
     const traces = await readTraces(home.tracesDir);
+    const modelRequests = extractModelRequestsFromTraces(traces);
+    const modelResponses = extractModelResponsesFromTraces(traces);
     const artifactPaths = await writeArtifacts({
       artifactDir,
       session,
@@ -345,8 +340,8 @@ async function createFixtureHome(repoRoot: string): Promise<string> {
   return tempHome;
 }
 
-async function readTraces(tracesDir: string): Promise<unknown[]> {
-  const traces: unknown[] = [];
+async function readTraces(tracesDir: string): Promise<AgentTurnTrace[]> {
+  const traces: AgentTurnTrace[] = [];
   let fileNames: string[];
   try {
     fileNames = await import("node:fs/promises").then((fs) =>
@@ -423,6 +418,57 @@ function renderReport(input: {
     `- Session conversations: ${input.session.conversations.length}`,
     ""
   ].join("\n");
+}
+
+function extractModelRequestsFromTraces(
+  traces: AgentTurnTrace[]
+): ModelRequestSnapshot[] {
+  return traces
+    .flatMap((trace) => trace.observations)
+    .filter((observation) => observation.type === "generation")
+    .map(readModelRequestFromObservation)
+    .filter((request): request is ModelRequestSnapshot => Boolean(request));
+}
+
+function extractModelResponsesFromTraces(
+  traces: AgentTurnTrace[]
+): ModelResponseSnapshot[] {
+  return traces
+    .flatMap((trace) => trace.observations)
+    .filter((observation) => observation.type === "generation")
+    .map(readModelResponseFromObservation)
+    .filter((response): response is ModelResponseSnapshot => Boolean(response));
+}
+
+function readModelRequestFromObservation(
+  observation: ObservationRecord
+): ModelRequestSnapshot | undefined {
+  const value = observation.input;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const candidate = value as Partial<ModelRequestSnapshot>;
+  if (
+    typeof candidate.provider !== "string" ||
+    typeof candidate.model !== "string" ||
+    typeof candidate.temperature !== "number" ||
+    typeof candidate.stepNumber !== "number" ||
+    !Array.isArray(candidate.messages) ||
+    !Array.isArray(candidate.tools)
+  ) {
+    return undefined;
+  }
+  return candidate as ModelRequestSnapshot;
+}
+
+function readModelResponseFromObservation(
+  observation: ObservationRecord
+): ModelResponseSnapshot | undefined {
+  const value = observation.output;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  return value as ModelResponseSnapshot;
 }
 
 function dedupeTurnResults(

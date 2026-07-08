@@ -338,6 +338,14 @@ function assertTrace(result: ReplayRunResult): void {
       });
     assert.deepEqual(tracedToolNames, expected.toolNames);
   }
+  const tracedModelResponses = result.traces
+    .flatMap((trace) => trace.observations)
+    .filter((observation) => observation.type === "generation")
+    .map((observation) => JSON.stringify(observation.output ?? {}))
+    .join("\n");
+  for (const pattern of expected.modelResponseContains ?? []) {
+    assert.match(tracedModelResponses, new RegExp(escapeRegExp(pattern)));
+  }
 }
 
 function assertMemory(result: ReplayRunResult): void {

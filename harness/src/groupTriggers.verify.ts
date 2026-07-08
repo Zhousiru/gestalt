@@ -119,6 +119,7 @@ async function verifyAllowedGroups(): Promise<{
       })
     );
     assert.ok(allowedResult);
+    await runtime.whenIdle();
     assert.ok(!visibleTools.includes("leave"));
 
     const session = runtime.exportSession();

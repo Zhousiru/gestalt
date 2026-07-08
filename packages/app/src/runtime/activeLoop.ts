@@ -15,6 +15,8 @@ import {
 import {
   type AgentLoopDependencies as BaseAgentLoopDependencies,
   type AgentTurnResult,
+  readAgentTurnTraceFromError,
+  recordAgentTrace,
   recordAgentTurnTrace,
   runDreamingForAgentTurn,
   runAgentTurn
@@ -279,6 +281,10 @@ async function runSteerableTurn(
         active.pendingParts.length > 0 &&
         active.restartCount < dependencies.maxSteersPerTurn
       ) {
+        const steeredTrace = readAgentTurnTraceFromError(error);
+        if (steeredTrace) {
+          await recordAgentTrace(dependencies, steeredTrace);
+        }
         active.phase = "steering";
         active.parts.push(...active.pendingParts);
         active.pendingParts = [];

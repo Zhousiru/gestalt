@@ -80,7 +80,8 @@
         "model.decide",
         "tool.execute"
       ],
-      "toolNames": ["send_group_message", "leave"]
+      "toolNames": ["send_group_message", "leave"],
+      "modelResponseContains": ["send_group_message", "leave"]
     }
   }
 }

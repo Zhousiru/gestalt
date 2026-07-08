@@ -32,6 +32,7 @@ import {
   type DreamingRunner,
   type ModelRequestSnapshot,
   type ModelResponseSnapshot,
+  type ObservationRecord,
   type MockConnector,
   type MockToolKit,
   type SessionSnapshot
@@ -103,30 +104,13 @@ export async function runScenarioFixture(
       create: false
     });
     const config = await loadConfig(home);
-    const modelRequests: ModelRequestSnapshot[] = [];
-    const modelExchanges: ModelExchangeSnapshot[] = [];
     const connector = createMockConnector();
     const mockTools = createMockToolKit();
     const model =
       fixture.model.kind === "mock"
         ? createMockModel({ delayMs: fixture.model.delayMs ?? 0 })
-        : createAiSdkModelFromConfig(config, {
-            onRequest(request) {
-              modelRequests.push(request);
-              modelExchanges.push({
-                purpose: "agent_action",
-                request
-              });
-            },
-            onResponse(response) {
-              attachModelResponse(modelExchanges, "agent_action", response);
-            }
-          });
-    const dreamingRunner = createFixtureDreamingRunner(
-      fixture,
-      config,
-      modelExchanges
-    );
+        : createAiSdkModelFromConfig(config);
+    const dreamingRunner = createFixtureDreamingRunner(fixture, config);
     const sessionSnapshot = fixture.sessionSnapshotFixture
       ? await readJsonFile(
           path.join(paths.repoRoot, fixture.sessionSnapshotFixture)
@@ -184,6 +168,8 @@ export async function runScenarioFixture(
     });
     const sessionExports = await readSessionExports(home.sessionsDir);
     const traces = await readTraces(home.tracesDir);
+    const modelExchanges = extractModelExchangesFromTraces(traces);
+    const modelRequests = modelExchanges.map((exchange) => exchange.request);
     const homeAfter = await snapshotHome(tempHome);
     const artifactDir = path.join(paths.artifactRoot, fixture.id);
     const artifactPaths = await writeArtifacts({
@@ -223,21 +209,10 @@ export async function runScenarioFixture(
 
 function createFixtureDreamingRunner(
   fixture: ScenarioFixture,
-  config: Awaited<ReturnType<typeof loadConfig>>,
-  modelExchanges: ModelExchangeSnapshot[]
+  config: Awaited<ReturnType<typeof loadConfig>>
 ): DreamingRunner {
   if (fixture.dreaming.kind === "configured_bash_memory") {
-    return createAiSdkDreamingRunner(config, {
-      onRequest(request) {
-        modelExchanges.push({
-          purpose: "dreaming",
-          request
-        });
-      },
-      onResponse(response) {
-        attachModelResponse(modelExchanges, "dreaming", response);
-      }
-    });
+    return createAiSdkDreamingRunner(config);
   }
 
   if (fixture.dreaming.kind === "mock_bash_memory") {
@@ -277,20 +252,6 @@ function createFixtureDreamingRunner(
   return createNoopDreamingRunner();
 }
 
-function attachModelResponse(
-  exchanges: ModelExchangeSnapshot[],
-  purpose: ModelExchangeSnapshot["purpose"],
-  response: ModelResponseSnapshot
-): void {
-  const exchange = exchanges
-    .slice()
-    .reverse()
-    .find((candidate) => candidate.purpose === purpose && !candidate.response);
-  if (exchange) {
-    exchange.response = response;
-  }
-}
-
 function getFirstMessageSenderId(input: {
   eventRecords: AgentTurnResult["eventRecords"];
 }): string {
@@ -301,6 +262,69 @@ function getFirstMessageSenderId(input: {
     return record.event.sender.id;
   }
   return "unknown";
+}
+
+function extractModelExchangesFromTraces(
+  traces: AgentTurnTrace[]
+): ModelExchangeSnapshot[] {
+  const exchanges: ModelExchangeSnapshot[] = [];
+  for (const trace of traces) {
+    for (const observation of trace.observations ?? []) {
+      if (observation.type !== "generation") {
+        continue;
+      }
+      const request = readModelRequestFromObservation(observation);
+      if (!request) {
+        continue;
+      }
+      const response = readModelResponseFromObservation(observation);
+      exchanges.push({
+        purpose: readModelPurpose(observation),
+        request,
+        ...(response ? { response } : {})
+      });
+    }
+  }
+  return exchanges;
+}
+
+function readModelPurpose(
+  observation: ObservationRecord
+): ModelExchangeSnapshot["purpose"] {
+  return observation.metadata.purpose === "dreaming"
+    ? "dreaming"
+    : "agent_action";
+}
+
+function readModelRequestFromObservation(
+  observation: ObservationRecord
+): ModelRequestSnapshot | undefined {
+  const value = observation.input;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const candidate = value as Partial<ModelRequestSnapshot>;
+  if (
+    typeof candidate.provider !== "string" ||
+    typeof candidate.model !== "string" ||
+    typeof candidate.temperature !== "number" ||
+    typeof candidate.stepNumber !== "number" ||
+    !Array.isArray(candidate.messages) ||
+    !Array.isArray(candidate.tools)
+  ) {
+    return undefined;
+  }
+  return candidate as ModelRequestSnapshot;
+}
+
+function readModelResponseFromObservation(
+  observation: ObservationRecord
+): ModelResponseSnapshot | undefined {
+  const value = observation.output;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  return value as ModelResponseSnapshot;
 }
 
 function shellQuote(value: string): string {
