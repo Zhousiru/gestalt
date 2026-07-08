@@ -1,0 +1,107 @@
+{
+  "id": "group-context-history",
+  "description": "A real group turn compiles configurable recent history, expands an older reply target, tags prior bot self messages, and injects all participant index memories in the carried context.",
+  "homeFixture": "harness/fixtures/homes/simple-group-test",
+  "configFixture": "harness/fixtures/configs/context-history.toml",
+  "memoriesFixture": "harness/fixtures/memories/context-history",
+  "sessionSnapshotFixture": "harness/fixtures/sessions/context-history-prior.json",
+  "model": {
+    "kind": "configured_ai_sdk"
+  },
+  "events": [
+    {
+      "conversationId": "context-group",
+      "conversationName": "Context Harness Group",
+      "messageId": "context-current-1",
+      "senderId": "alice",
+      "senderName": "Alice",
+      "text": "小格，请结合我回复的 Bob 原话和你自己刚才那句，简短确认：上下文修复验证完成。",
+      "replyToMessageId": "history-bob-1",
+      "mentionsBot": false,
+      "windowReason": "keyword"
+    }
+  ],
+  "expectations": {
+    "session": {
+      "conversations": 1,
+      "events": 11,
+      "selfMessages": 2,
+      "windows": 1,
+      "turns": 1,
+      "nextSeq": 12,
+      "turnStatus": "completed",
+      "loopExits": 1,
+      "loopExitReasons": ["leave_tool"],
+      "eventSeqs": [10],
+      "windowReasons": ["keyword"],
+      "windowEventSeqs": [[10]]
+    },
+    "action": {
+      "toolName": "send_group_message",
+      "toolNames": ["send_group_message", "leave"],
+      "groupId": "context-group",
+      "textMinLength": 1
+    },
+    "tools": {
+      "calls": 2,
+      "toolNames": ["send_group_message", "leave"],
+      "connectorSideEffects": 0
+    },
+    "modelInput": {
+      "requests": 3,
+      "contains": [
+        "Window: keyword, seq 10-10",
+        "context=reply_target",
+        "context=history",
+        "context=current_window",
+        "原始方案：把 recent history、reply target 和 self message 标签都放进上下文。",
+        "Dave recent history marker.",
+        "Ivan recent history marker.",
+        "sender_role=self",
+        "我之前已经确认过：上下文里应该能看到自己的上一句。",
+        "Alice context memory baseline",
+        "Ivan context memory baseline"
+      ],
+      "doesNotContain": [
+        "这条 Carol 历史消息应该因为 recent count 不够而不进入上下文。"
+      ]
+    },
+    "modelExchange": {
+      "exchanges": 3,
+      "responses": 3,
+      "maxToolCallsPerResponse": 1,
+      "purposes": ["agent_action", "agent_action", "agent_action"],
+      "responseContains": ["send_group_message", "leave"]
+    },
+    "trace": {
+      "traces": 1,
+      "spans": [
+        "memory.inject",
+        "context.compile",
+        "model.decide",
+        "tool.execute",
+        "dream.run"
+      ],
+      "toolNames": ["send_group_message", "leave"]
+    },
+    "memory": {
+      "injectedMemoryPaths": [
+        "self/index.md",
+        "users/alice/index.md",
+        "users/bob/index.md",
+        "users/dave/index.md",
+        "users/eve/index.md",
+        "users/frank/index.md",
+        "users/grace/index.md",
+        "users/heidi/index.md",
+        "users/ivan/index.md"
+      ],
+      "injectedMemoryContains": [
+        "Self memory baseline",
+        "Alice context memory baseline",
+        "Bob context memory baseline",
+        "Ivan context memory baseline"
+      ]
+    }
+  }
+}

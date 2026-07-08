@@ -1,0 +1,69 @@
+{
+  "id": "group-trigger-keyword",
+  "description": "The runtime pre-trigger chain opens a keyword window without manual harness windowing.",
+  "homeFixture": "harness/fixtures/homes/simple-group-test",
+  "memoriesFixture": "harness/fixtures/memories/simple-group-test",
+  "eventHandling": "runtime_triggers",
+  "model": {
+    "kind": "configured_ai_sdk"
+  },
+  "events": [
+    {
+      "conversationId": "mock-group",
+      "conversationName": "Mock Group",
+      "messageId": "keyword-message-1",
+      "senderId": "alice",
+      "senderName": "Alice",
+      "text": "小格，帮我记一下这个触发链路要保持简单。",
+      "mentionsBot": false
+    }
+  ],
+  "expectations": {
+    "session": {
+      "conversations": 1,
+      "events": 2,
+      "selfMessages": 1,
+      "windows": 1,
+      "turns": 1,
+      "nextSeq": 3,
+      "turnStatus": "completed",
+      "loopExits": 1,
+      "loopExitReasons": ["leave_tool"],
+      "eventSeqs": [1],
+      "windowReasons": ["keyword"],
+      "windowEventSeqs": [[1]]
+    },
+    "action": {
+      "toolNames": ["send_group_message", "leave"]
+    },
+    "tools": {
+      "calls": 2,
+      "toolNames": ["send_group_message", "leave"],
+      "connectorSideEffects": 0
+    },
+    "modelInput": {
+      "requests": 3,
+      "contains": [
+        "Window: keyword, seq 1-1",
+        "小格，帮我记一下这个触发链路要保持简单。"
+      ]
+    },
+    "modelExchange": {
+      "exchanges": 3,
+      "responses": 3,
+      "maxToolCallsPerResponse": 1,
+      "purposes": ["agent_action", "agent_action", "agent_action"],
+      "responseContains": ["send_group_message", "leave"]
+    },
+    "trace": {
+      "traces": 1,
+      "spans": [
+        "memory.inject",
+        "context.compile",
+        "model.decide",
+        "tool.execute"
+      ],
+      "toolNames": ["send_group_message", "leave"]
+    }
+  }
+}

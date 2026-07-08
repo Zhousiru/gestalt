@@ -1,0 +1,145 @@
+{
+  "id": "memory-injection-dreaming",
+  "description": "A real model group turn injects self and user memory, then real bash dreaming updates both memory areas.",
+  "homeFixture": "harness/fixtures/homes/simple-group-test",
+  "memoriesFixture": "harness/fixtures/memories/simple-group-test",
+  "model": {
+    "kind": "configured_ai_sdk"
+  },
+  "dreaming": {
+    "kind": "configured_bash_memory"
+  },
+  "events": [
+    {
+      "conversationId": "memory-group",
+      "conversationName": "Memory Harness Group",
+      "messageId": "memory-message-1",
+      "senderId": "alice",
+      "senderName": "Alice",
+      "text": "gestalt 请把这四条具体记忆写进对应文件，尽量保留原句：self/index.md 追加「Memory system direction: dreaming uses a bash tool in a /memories VFS, not JSON command lists.」；users/alice/index.md 追加「Alice wants harness evidence to show real model input/output and concrete memory text, not placeholders.」；self/memory-system.md 写「The memory subsystem is file-backed Markdown. Dreaming can inspect and edit /memories through a bash tool exposed to the model.」；users/alice/memory-system.md 写「Alice is actively shaping the memory design and asks for concrete artifacts that prove what the model actually remembered.」。",
+      "mentionsBot": true,
+      "windowReason": "mention"
+    }
+  ],
+  "expectations": {
+    "session": {
+      "conversations": 1,
+      "events": 2,
+      "selfMessages": 1,
+      "windows": 1,
+      "turns": 1,
+      "nextSeq": 3,
+      "turnStatus": "completed",
+      "loopExits": 1,
+      "loopExitReasons": ["leave_tool"],
+      "steerCount": 0,
+      "eventSeqs": [1],
+      "phases": [
+        "memory_injecting",
+        "context_compiling",
+        "model_running",
+        "executing",
+        "completed"
+      ]
+    },
+    "action": {
+      "toolName": "send_group_message",
+      "toolNames": ["send_group_message", "leave"],
+      "groupId": "memory-group",
+      "textMinLength": 1
+    },
+    "tools": {
+      "calls": 2,
+      "toolNames": ["send_group_message", "leave"],
+      "connectorSideEffects": 0
+    },
+    "modelInput": {
+      "contains": [
+        "Self memory baseline",
+        "Alice memory baseline",
+        "concrete memory text",
+        "not placeholders"
+      ]
+    },
+    "modelExchange": {
+      "minExchanges": 3,
+      "minResponses": 3,
+      "purposeIncludes": ["agent_action", "dreaming"],
+      "responseContains": [
+        "leave",
+        "send_group_message",
+        "\"name\":\"bash\"",
+        "/memories/self/index.md",
+        "/memories/users/alice/index.md",
+        "Memory system direction",
+        "concrete memory text",
+        "file-backed Markdown",
+        "Alice is actively shaping the memory design"
+      ]
+    },
+    "trace": {
+      "traces": 1,
+      "spans": [
+        "memory.inject",
+        "context.compile",
+        "model.decide",
+        "tool.execute",
+        "dream.run"
+      ],
+      "toolNames": ["send_group_message", "leave"]
+    },
+    "memory": {
+      "homeBeforeContains": [
+        {
+          "path": "memories/self/index.md",
+          "contains": "Self memory baseline"
+        },
+        {
+          "path": "memories/users/alice/index.md",
+          "contains": "Alice memory baseline"
+        }
+      ],
+      "homeAfterContains": [
+        {
+          "path": "memories/self/index.md",
+          "contains": "Memory system direction"
+        },
+        {
+          "path": "memories/self/memory-system.md",
+          "contains": "file-backed Markdown"
+        },
+        {
+          "path": "memories/users/alice/index.md",
+          "contains": "concrete memory text"
+        },
+        {
+          "path": "memories/users/alice/memory-system.md",
+          "contains": "Alice is actively shaping the memory design"
+        }
+      ],
+      "injectedMemoryPaths": [
+        "self/index.md",
+        "users/alice/index.md"
+      ],
+      "injectedMemoryContains": [
+        "Self memory baseline",
+        "Alice memory baseline"
+      ],
+      "dreamCommandsContain": [
+        "/memories",
+        "Memory system direction",
+        "concrete memory text",
+        "file-backed Markdown",
+        "Alice is actively shaping the memory design"
+      ],
+      "dreamAddedFiles": [
+        "self/memory-system.md",
+        "users/alice/memory-system.md"
+      ],
+      "dreamChangedFiles": [
+        "self/index.md",
+        "users/alice/index.md"
+      ]
+    }
+  }
+}

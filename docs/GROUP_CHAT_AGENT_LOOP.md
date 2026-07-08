@@ -1,0 +1,408 @@
+# Group Chat Agent Loop
+
+## Document Status
+
+This document records the current design choice for the group chat scenario.
+
+It expands the runtime loop described in `MASTERDOC.md` for one specific case: a live group conversation where messages may arrive while the model is already thinking, using tools, or preparing an action.
+
+This document is intentionally architectural. It does not define concrete code, connector behavior, or platform-specific implementation details.
+
+## Scope
+
+The first target scenario is group chat.
+
+Group chat must not be treated as a simple request-response channel. It is a continuous message stream where the agent may observe, stay silent, react, reply, defer, or revise its thought process after new context arrives.
+
+The design goal is:
+
+- Keep the bot socially aware of a moving conversation.
+- Reduce obvious lag by steering with batched new context.
+- Avoid letting connector code own social behavior.
+- Preserve replayability and traceability.
+- Keep the post-trigger agent loop reusable for private chat and future connectors.
+
+## Core Split
+
+The group chat runtime is split into two chains.
+
+### 1. Pre-Trigger Chain
+
+The pre-trigger chain decides whether a group message window should become an agent turn.
+
+It owns:
+
+- Message ingestion into group session state.
+- Conversation sequence assignment.
+- Attention and scheduling.
+- Deciding whether to start, delay, merge, or suppress an agent turn.
+
+It does not decide the final social action. It only decides whether the model should be given a chance to inspect the current group context.
+
+The implementation exposes this as a pluggable trigger chain in the runtime. A trigger observes the canonical event, exported session state, and flat Gestalt config, then may return one message window candidate.
+
+The default group triggers are:
+
+- Mention trigger: fires when the normalized message has `mentionsBot=true`.
+- Keyword trigger: fires when configured names or a configured regex match the message text.
+- Activity trigger: fires when messages in the configured time range cross the configured activity threshold.
+- Icebreaker trigger: fires when a group has been quiet for the configured duration and then receives a new message.
+
+When a conversation is idle, a trigger-created window starts the post-trigger agent loop.
+
+When that conversation already has an active agent loop, the trigger chain is paused for that conversation. New messages are appended to session state and enter the active-loop aggregation buffer instead of being evaluated as fresh triggers.
+
+The active-loop aggregation buffer flushes on a configurable timer and injects the batched messages into the running loop as a `steer` window.
+
+The active agent loop exits through pluggable exit triggers. The default exit triggers are:
+
+- Consecutive silence: exit after the model chooses `say_nothing` for the configured number of consecutive turns.
+- Idle timeout: exit when no new messages arrive for the configured active-loop idle duration.
+- Leave tool: exit when the model selects the `leave` tool.
+
+Current flat config keys:
+
+- `allowedgroups`
+- `trigger_enabled`
+- `trigger_mention_enabled`
+- `trigger_keyword_names`
+- `trigger_keyword_regex`
+- `trigger_activity_enabled`
+- `trigger_activity_window_ms`
+- `trigger_activity_min_messages`
+- `trigger_icebreaker_enabled`
+- `trigger_icebreaker_quiet_ms`
+- `agent_loop_aggregation_delay_ms`
+- `agent_loop_aggregation_max_delay_ms`
+- `agent_loop_aggregation_backoff_multiplier`
+- `context_recent_message_count`
+- `bot_user_id`
+- `bot_display_name`
+- `agent_loop_exit_say_nothing_enabled`
+- `agent_loop_exit_say_nothing_count`
+- `agent_loop_exit_idle_enabled`
+- `agent_loop_exit_idle_ms`
+- `agent_loop_exit_leave_enabled`
+
+### 2. Post-Trigger Agent Loop
+
+The post-trigger chain is the main agent loop.
+
+It owns:
+
+- Context compilation.
+- Model action choice.
+- Tool proposal handling.
+- Side-effect execution.
+- Trace recording.
+
+This chain should remain mostly shared between group chat and private chat. The group-specific pieces should be supplied through session state, message windows, and platform constraints rather than hard-coded inside the model loop.
+
+## Selected Design: One Active Loop With Timed In-Loop Aggregation
+
+The chosen design is one active agent loop per conversation.
+
+When the conversation is idle, the pre-trigger chain may create a trigger window and start the post-trigger agent loop.
+
+When the conversation is busy, the pre-trigger chain pauses for that conversation. New messages do not run triggers. They enter an active-loop aggregation buffer and are delivered to the running loop at timer boundaries.
+
+The runtime should not steer the model on every single incoming message. It should batch new messages for a short time, then deliver that batch as updated context.
+
+This preserves real-time awareness without making the model chase every small group-chat event.
+
+## Message Windows
+
+Incoming group messages are appended to the group session log immediately.
+
+The runtime currently uses two window roles:
+
+- Trigger windows start an agent loop when the conversation is idle.
+- Steer windows inject timed batches into an already running loop.
+
+A trigger window can close because:
+
+- The conversation has been quiet long enough.
+- A maximum window age has been reached.
+- The bot was directly mentioned.
+- Someone replied to the bot.
+- A currently active thread needs attention.
+
+The model should receive a message window, not just a single last message. The window should preserve:
+
+- Conversation identity.
+- Start and end sequence.
+- Window reason.
+- Messages in order.
+- Whether the bot was directly addressed.
+- Whether this continues a recent bot thread.
+
+The active-loop aggregation timer improves naturalness by giving users a short chance to complete their thought before the bot revises its pending response.
+
+## Idle And Busy Behavior
+
+The runtime behaves differently depending on whether the group has an active turn.
+
+### Agent Idle
+
+If there is no active turn, a pre-trigger decision may start a new agent turn.
+
+The turn compiles context from the closed window, session state, persona, memory, tools, and platform constraints.
+
+The compiled transcript can include:
+
+- The current message window.
+- A configurable number of previous messages from the same conversation.
+- Reply target messages even when they are older than the recent-history window.
+- Prior bot messages marked as `sender_role=self`.
+
+`context_recent_message_count` controls how many previous messages are carried. Prior bot messages are useful for the first turn of a newly triggered active loop. Once an active loop is already running, the model already observes its own tool results, so later steering windows do not need to re-collect bot messages from history.
+
+### Agent Busy
+
+If there is already an active turn, the pre-trigger chain pauses for that conversation. New messages still enter session state, but they are batched by the active-loop aggregation timer rather than evaluated as fresh triggers.
+
+When the aggregation timer closes the batch, the runtime steers the active turn with the batched new context.
+
+Steering may mean:
+
+- Cancelling the current cancellable model run and continuing from expanded context.
+- Asking the model to reconsider a pending proposal using the new context.
+- Deferring the batched messages until the current side effect finishes, if the turn is already non-cancellable.
+
+The key choice is that steering happens at aggregation boundaries, not on every single message arrival.
+
+## Cancellable And Non-Cancellable Phases
+
+Steering is allowed before irreversible side effects.
+
+Cancellable phases include:
+
+- Context compilation.
+- Model thinking or reply generation.
+- Read-only tool use.
+- Tool result handling.
+
+Non-cancellable phases include:
+
+- A group message that has already been dispatched.
+- A private message that has already been dispatched.
+- A reaction or sticker that has already been dispatched.
+- A committed memory write.
+
+After a side effect has been dispatched, new messages belong to a later turn. The runtime should trace the timing, but it should not pretend the already executed action can be unmade.
+
+## What Should Steer A Turn
+
+The steer layer should be conservative.
+
+Good reasons to close a steer window quickly or steer the active turn include:
+
+- A user directly mentions the bot.
+- A user replies to the bot.
+- The person being answered adds important context.
+- Someone says the issue is solved or the bot no longer needs to answer.
+- Someone corrects a key fact.
+- The topic shifts enough that the pending action may need revision.
+- A new message introduces privacy or safety risk.
+- The pending action may now be socially awkward, repetitive, or misleading.
+
+Weak or unrelated messages should not constantly steer the model. They can remain in the timed window and be delivered at the next boundary.
+
+## Steer Limits
+
+The runtime must prevent infinite steering loops in fast group chats.
+
+The design should support:
+
+- A minimum interval between steer attempts.
+- A maximum steer count for one attempted turn.
+- A maximum age for one active turn.
+- A fallback behavior when the group is too active.
+
+When the runtime cannot get a stable enough window, silence or deferral is usually more natural than repeatedly chasing the conversation.
+
+## Exit Triggers
+
+Exit triggers decide when an active agent loop should release the conversation back to the pre-trigger chain.
+
+They do not decide whether the bot should reply. They only decide whether the current active loop should keep listening for timed aggregation batches or stop and wait for future trigger activation.
+
+The initial default exit triggers are:
+
+- `consecutive_say_nothing`: exits after the configured number of consecutive turns whose model action is `say_nothing`.
+- `idle_timeout`: exits after the configured active-loop idle duration with no new messages.
+- `leave_tool`: exits when the model chooses the `leave` tool.
+
+The `leave` tool has no connector side effect. It is a model-visible lifecycle action that records the exit request and lets the runtime close the active loop.
+
+Loop exits are exported in session state as `loopExits`, with the exit reason and the turn ids covered by that loop.
+
+## Execution Boundary
+
+The active-loop aggregation buffer is the mechanism for updating an active turn. Once a turn reaches a non-cancellable side-effect phase, newly arriving messages belong to the next window and the next turn.
+
+This keeps the first implementation simple:
+
+- The model can be steered before side effects.
+- Approved tool actions execute directly once the turn reaches execution.
+- New messages that arrive during or after execution are handled by later windows.
+
+This accepts a small race near execution time in exchange for a clearer and more maintainable runtime loop.
+
+## One Active Turn Per Group
+
+For the initial design, each group conversation should have at most one active turn at a time.
+
+This avoids:
+
+- Duplicate replies.
+- Competing model runs.
+- Two actions based on incompatible snapshots.
+- Connector-level behavior conflicts.
+
+Timed aggregation batches can steer the active turn or wait behind it, but they should not start independent concurrent turns for the same group.
+
+## Message Processing Flow
+
+The selected group chat flow is:
+
+1. A connector observes a platform event.
+2. The event is normalized into a canonical event.
+3. If `allowedgroups` is configured and the group id is not listed, the runtime ignores the event before session ingestion.
+4. The event is appended to the group session log and assigned a sequence.
+5. If the group is idle, the pre-trigger chain evaluates configured triggers.
+6. If a trigger fires, the runtime creates a trigger window and starts an agent turn.
+7. The turn compiles context from the window, session state, persona, memory, tools, and platform constraints.
+8. The model proposes actions.
+9. While the turn runs, new messages for the same conversation bypass the trigger chain.
+10. Those messages enter an active-loop aggregation buffer.
+11. When the aggregation buffer closes during an active turn, the batched messages steer, reconsider, or defer the active turn depending on its phase.
+12. Tool actions execute through tools and connectors.
+13. Messages that arrive during non-cancellable execution are left for the next window.
+14. Exit triggers run after each turn and during active-loop idle waits.
+15. When an exit trigger fires, the conversation can again be activated through the pre-trigger chain.
+16. The complete path is recorded in trace and session export data.
+
+## Required Runtime Concepts
+
+The current runtime skeleton is directionally correct, but group chat needs several explicit concepts.
+
+### Group Session Store
+
+Stores recent group messages, sequence numbers, active threads, recent bot actions, and lightweight conversation state.
+
+This is factual session state, not social behavior logic.
+
+### Attention Scheduler
+
+Owns the pre-trigger chain.
+
+It manages trigger evaluation for idle conversations and the decision of whether a closed window should start an agent turn.
+
+### Turn Manager
+
+Owns active turn lifecycle.
+
+It handles one-active-turn-per-conversation, active-loop aggregation, steering, cancellation, steer limits, and handoff back to the pre-trigger chain after the loop exits.
+
+### Exit Trigger Chain
+
+Owns active-loop release decisions.
+
+It evaluates lifecycle conditions such as consecutive `say_nothing`, idle timeout, and the model-selected `leave` tool.
+
+### Trace Extensions
+
+Traces should record:
+
+- Active-loop aggregation boundaries.
+- Trigger reason.
+- Exit trigger reason.
+- Turn base sequence.
+- Steer attempts and steer count.
+- Late messages seen during a turn.
+- Execution phase transitions.
+- Messages deferred to a later window because the active turn was already non-cancellable.
+
+Without this, group chat behavior will be difficult to replay and debug.
+
+## Relationship To Current Architecture
+
+The current architecture can support this design without being rewritten.
+
+The reusable post-trigger loop already has the right broad shape:
+
+- Canonical events.
+- Context compiler.
+- Model action proposal.
+- Tool execution.
+- Trace recording.
+
+The missing pieces are mostly before and around the loop:
+
+- Group session state.
+- Active-loop timed aggregation.
+- Attention scheduling.
+- Active turn lifecycle management.
+- Execution boundary handling for non-cancellable phases.
+
+These should be added as runtime orchestration layers, not connector features.
+
+## Connector Boundary
+
+Connectors must not own group chat social behavior.
+
+A connector may:
+
+- Observe platform events.
+- Normalize raw events.
+- Execute requested side effects.
+- Return platform results and errors.
+
+A connector should not decide:
+
+- Whether the bot should speak.
+- Whether a message is socially important.
+- Whether a turn should be steered with new context.
+- Whether a pending action should be revised.
+- Whether memory should be written.
+
+Those decisions belong in the runtime, scheduler, model, and harness layers.
+
+## Harness Implications
+
+The harness should be able to replay group chat scenarios with:
+
+- Message timing.
+- Sequence numbers.
+- Trigger windows.
+- Active-loop aggregation windows.
+- Batched steer messages.
+- Turn cancellations.
+- Non-cancellable execution boundaries.
+- Messages deferred into the next window.
+- Loop exit records.
+
+Important eval cases include:
+
+- Mention followed by extra context.
+- Mention followed by “never mind.”
+- Someone else answers before the bot replies.
+- The topic changes while the bot is generating.
+- High-speed group chatter where silence is preferable.
+- A pending reply that would leak private context after a new message arrives.
+
+## Current Decision
+
+For group chat, the project will use:
+
+- One active agent loop per group conversation.
+- Trigger windows start a turn when the conversation is idle.
+- The pre-trigger chain pauses for a conversation while its agent loop is active.
+- New messages during an active loop are batched by a configurable timer and injected as `steer` windows.
+- Exit triggers release the conversation back to the pre-trigger chain.
+- A post-trigger shared agent loop.
+- Conservative batched steer behavior before side effects.
+- One active turn per group conversation in the initial design.
+
+This gives the bot a practical form of real-time awareness without turning the system into a rigid dialogue state machine.

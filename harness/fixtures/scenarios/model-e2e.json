@@ -1,0 +1,86 @@
+{
+  "id": "model-e2e",
+  "description": "A configured AI SDK model sees a simple test persona and a direct group mention, then proposes a group reply.",
+  "homeFixture": "harness/fixtures/homes/simple-group-test",
+  "memoriesFixture": "harness/fixtures/memories/simple-group-test",
+  "model": {
+    "kind": "configured_ai_sdk"
+  },
+  "events": [
+    {
+      "conversationId": "harness-group",
+      "conversationName": "Harness Group",
+      "messageId": "message-1",
+      "senderId": "alice",
+      "senderName": "Alice",
+      "text": "gestalt 请你直接回复一句：这个测试 persona 可以先这样。",
+      "mentionsBot": true,
+      "windowReason": "mention"
+    }
+  ],
+  "expectations": {
+    "session": {
+      "conversations": 1,
+      "events": 2,
+      "selfMessages": 1,
+      "windows": 1,
+      "turns": 1,
+      "nextSeq": 3,
+      "turnStatus": "completed",
+      "loopExits": 1,
+      "loopExitReasons": ["leave_tool"],
+      "steerCount": 0,
+      "eventSeqs": [1],
+      "phases": [
+        "memory_injecting",
+        "context_compiling",
+        "model_running",
+        "executing",
+        "completed"
+      ]
+    },
+    "action": {
+      "toolName": "send_group_message",
+      "toolNames": ["send_group_message", "leave"],
+      "groupId": "harness-group",
+      "textMinLength": 1,
+      "textMaxLength": 160,
+      "textDoesNotMatch": "```"
+    },
+    "tools": {
+      "calls": 2,
+      "toolNames": ["send_group_message", "leave"],
+      "connectorSideEffects": 0
+    },
+    "modelInput": {
+      "requests": 3,
+      "contains": [
+        "Harness Test Friend",
+        "Self memory baseline",
+        "Alice memory baseline",
+        "sender=Alice id=alice",
+        "mentions_bot=true",
+        "gestalt 请你直接回复一句：这个测试 persona 可以先这样。",
+        "Available tools:"
+      ],
+      "tools": ["send_group_message", "say_nothing"]
+    },
+    "modelExchange": {
+      "exchanges": 3,
+      "responses": 3,
+      "maxToolCallsPerResponse": 1,
+      "purposes": ["agent_action", "agent_action", "agent_action"],
+      "responseContains": ["send_group_message", "leave"]
+    },
+    "trace": {
+      "traces": 1,
+      "spans": [
+        "memory.inject",
+        "context.compile",
+        "model.decide",
+        "tool.execute"
+      ],
+      "toolNames": ["send_group_message", "leave"]
+    }
+  }
+}

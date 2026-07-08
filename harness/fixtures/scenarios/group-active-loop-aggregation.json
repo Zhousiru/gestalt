@@ -1,0 +1,81 @@
+{
+  "id": "group-active-loop-aggregation",
+  "description": "While an agent loop is running, new messages bypass the pre-trigger chain and enter the active loop through timed aggregation.",
+  "homeFixture": "harness/fixtures/homes/simple-group-test",
+  "memoriesFixture": "harness/fixtures/memories/simple-group-test",
+  "eventHandling": "runtime_triggers",
+  "model": {
+    "kind": "configured_ai_sdk"
+  },
+  "events": [
+    {
+      "conversationId": "mock-group",
+      "conversationName": "Mock Group",
+      "messageId": "active-loop-message-1",
+      "senderId": "alice",
+      "senderName": "Alice",
+      "text": "gestalt 先看一下这个前后链路切换。",
+      "mentionsBot": true
+    },
+    {
+      "delayMs": 5,
+      "conversationId": "mock-group",
+      "conversationName": "Mock Group",
+      "messageId": "active-loop-message-2",
+      "senderId": "alice",
+      "senderName": "Alice",
+      "text": "补充：Agent Loop 运行时，新消息应该通过时间聚合进入同一个 loop。",
+      "mentionsBot": false
+    }
+  ],
+  "expectations": {
+    "session": {
+      "conversations": 1,
+      "events": 3,
+      "selfMessages": 1,
+      "windows": 2,
+      "turns": 1,
+      "nextSeq": 4,
+      "turnStatus": "completed",
+      "loopExits": 1,
+      "loopExitReasons": ["leave_tool"],
+      "steerCount": 1,
+      "eventSeqs": [1, 2],
+      "windowReasons": ["mention", "steer"],
+      "windowEventSeqs": [[1], [2]]
+    },
+    "action": {
+      "toolNames": ["send_group_message", "leave"]
+    },
+    "tools": {
+      "calls": 2,
+      "toolNames": ["send_group_message", "leave"],
+      "connectorSideEffects": 0
+    },
+    "modelInput": {
+      "requests": 4,
+      "contains": [
+        "Window: mention, seq 1-1",
+        "Window: steer, seq 1-2",
+        "补充：Agent Loop 运行时，新消息应该通过时间聚合进入同一个 loop。"
+      ]
+    },
+    "modelExchange": {
+      "exchanges": 4,
+      "responses": 3,
+      "maxToolCallsPerResponse": 1,
+      "purposes": ["agent_action", "agent_action", "agent_action", "agent_action"],
+      "responseContains": ["send_group_message", "leave"]
+    },
+    "trace": {
+      "traces": 1,
+      "spans": [
+        "memory.inject",
+        "context.compile",
+        "model.decide",
+        "tool.execute"
+      ],
+      "toolNames": ["send_group_message", "leave"]
+    }
+  }
+}

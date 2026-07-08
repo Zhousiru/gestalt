@@ -1,0 +1,20 @@
+model_provider = "openrouter"
+model_base_url = "https://openrouter.ai/api/v1"
+model_name = "deepseek/deepseek-v4-pro"
+model_api_key_env = "OPENROUTER_API_KEY"
+model_routing_order = "deepseek"
+model_routing_allow_fallbacks = false
+model_thinking = "disabled"
+model_tool_choice = "auto"
+
+trigger_keyword_names = "小格"
+trigger_activity_window_ms = 600000
+trigger_activity_min_messages = 5
+trigger_icebreaker_quiet_ms = 3600000
+
+agent_loop_aggregation_delay_ms = 20
+agent_loop_aggregation_max_delay_ms = 20
+agent_loop_aggregation_backoff_multiplier = 1
+
+agent_loop_exit_say_nothing_count = 3
+agent_loop_exit_idle_ms = 80

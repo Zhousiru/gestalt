@@ -1,0 +1,68 @@
+{
+  "id": "group-exit-say-nothing",
+  "description": "An active agent loop exits after the model chooses say_nothing three consecutive times.",
+  "homeFixture": "harness/fixtures/homes/simple-group-test",
+  "eventHandling": "runtime_triggers",
+  "model": {
+    "kind": "mock"
+  },
+  "events": [
+    {
+      "conversationId": "mock-group",
+      "conversationName": "Mock Group",
+      "messageId": "say-nothing-exit-message-1",
+      "senderId": "alice",
+      "senderName": "Alice",
+      "text": "小格，这条只用来激活 loop，不需要回复。",
+      "mentionsBot": false
+    },
+    {
+      "delayMs": 40,
+      "conversationId": "mock-group",
+      "conversationName": "Mock Group",
+      "messageId": "say-nothing-exit-message-2",
+      "senderId": "bob",
+      "senderName": "Bob",
+      "text": "只是路过补一句。",
+      "mentionsBot": false
+    },
+    {
+      "delayMs": 40,
+      "conversationId": "mock-group",
+      "conversationName": "Mock Group",
+      "messageId": "say-nothing-exit-message-3",
+      "senderId": "carol",
+      "senderName": "Carol",
+      "text": "没有需要 bot 处理的事情。",
+      "mentionsBot": false
+    }
+  ],
+  "expectations": {
+    "session": {
+      "conversations": 1,
+      "events": 3,
+      "windows": 3,
+      "turns": 3,
+      "loopExits": 1,
+      "loopExitReasons": ["consecutive_say_nothing"],
+      "windowReasons": ["keyword", "steer", "steer"],
+      "windowEventSeqs": [[1], [2], [3]],
+      "turnEventSeqs": [[1], [2], [3]],
+      "steerCounts": [0, 0, 0]
+    },
+    "tools": {
+      "calls": 3,
+      "toolNames": ["say_nothing", "say_nothing", "say_nothing"],
+      "connectorSideEffects": 0
+    },
+    "trace": {
+      "traces": 3,
+      "spans": [
+        "memory.inject",
+        "context.compile",
+        "model.decide",
+        "tool.execute"
+      ]
+    }
+  }
+}

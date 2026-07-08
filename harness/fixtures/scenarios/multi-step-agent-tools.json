@@ -1,0 +1,75 @@
+{
+  "id": "multi-step-agent-tools",
+  "description": "A configured AI SDK model runs as a multi-step main agent, executes a reaction tool, sends one group reply, observes tool results, then chooses leave in the same turn.",
+  "homeFixture": "harness/fixtures/homes/simple-group-test",
+  "memoriesFixture": "harness/fixtures/memories/simple-group-test",
+  "model": {
+    "kind": "configured_ai_sdk"
+  },
+  "events": [
+    {
+      "conversationId": "harness-group",
+      "conversationName": "Harness Group",
+      "messageId": "multi-step-message-1",
+      "senderId": "alice",
+      "senderName": "Alice",
+      "text": "gestalt 请你先用 emoji_id=14 对这条消息做一个 reaction，然后再回复一句：多步工具调用验证完成。",
+      "mentionsBot": true,
+      "windowReason": "mention"
+    }
+  ],
+  "expectations": {
+    "session": {
+      "conversations": 1,
+      "events": 2,
+      "selfMessages": 1,
+      "windows": 1,
+      "turns": 1,
+      "nextSeq": 3,
+      "turnStatus": "completed",
+      "loopExits": 1,
+      "loopExitReasons": ["leave_tool"],
+      "steerCount": 0,
+      "eventSeqs": [1],
+      "phases": [
+        "memory_injecting",
+        "context_compiling",
+        "model_running",
+        "executing",
+        "completed"
+      ]
+    },
+    "action": {
+      "toolNames": ["react_to_message", "send_group_message", "leave"]
+    },
+    "tools": {
+      "calls": 3,
+      "toolNames": ["react_to_message", "send_group_message", "leave"],
+      "connectorSideEffects": 0
+    },
+    "modelInput": {
+      "contains": [
+        "gestalt 请你先用 emoji_id=14 对这条消息做一个 reaction，然后再回复一句：多步工具调用验证完成。",
+        "Available tools:"
+      ],
+      "tools": ["react_to_message", "send_group_message"]
+    },
+    "modelExchange": {
+      "minExchanges": 2,
+      "minResponses": 2,
+      "maxToolCallsPerResponse": 1,
+      "purposeIncludes": ["agent_action"],
+      "responseContains": ["react_to_message", "send_group_message", "leave"]
+    },
+    "trace": {
+      "traces": 1,
+      "spans": [
+        "memory.inject",
+        "context.compile",
+        "model.decide",
+        "tool.execute"
+      ],
+      "toolNames": ["react_to_message", "send_group_message", "leave"]
+    }
+  }
+}

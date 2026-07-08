@@ -1,0 +1,7 @@
+{
+  "name": "@gestalt/trace",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Trace inspection web UI for replay, debugging, and evaluation review.",
+  "license": "UNLICENSED"
+}

@@ -1,0 +1,113 @@
+{
+  "id": "group-trigger-activity",
+  "description": "The runtime pre-trigger chain opens one activity window when group traffic crosses the configured threshold.",
+  "homeFixture": "harness/fixtures/homes/simple-group-test",
+  "memoriesFixture": "harness/fixtures/memories/simple-group-test",
+  "eventHandling": "runtime_triggers",
+  "model": {
+    "kind": "configured_ai_sdk"
+  },
+  "events": [
+    {
+      "conversationId": "mock-group",
+      "conversationName": "Mock Group",
+      "messageId": "activity-message-1",
+      "senderId": "alice",
+      "senderName": "Alice",
+      "text": "今天我们先把触发器的边界定清楚。",
+      "mentionsBot": false
+    },
+    {
+      "conversationId": "mock-group",
+      "conversationName": "Mock Group",
+      "messageId": "activity-message-2",
+      "senderId": "bob",
+      "senderName": "Bob",
+      "text": "我觉得入口应该留在 runtime，不要塞进 connector。",
+      "mentionsBot": false
+    },
+    {
+      "conversationId": "mock-group",
+      "conversationName": "Mock Group",
+      "messageId": "activity-message-3",
+      "senderId": "carol",
+      "senderName": "Carol",
+      "text": "配置也要简单一点，先用扁平字段。",
+      "mentionsBot": false
+    },
+    {
+      "conversationId": "mock-group",
+      "conversationName": "Mock Group",
+      "messageId": "activity-message-4",
+      "senderId": "alice",
+      "senderName": "Alice",
+      "text": "harness 需要能看到导出的 session。",
+      "mentionsBot": false
+    },
+    {
+      "conversationId": "mock-group",
+      "conversationName": "Mock Group",
+      "messageId": "activity-message-5",
+      "senderId": "bob",
+      "senderName": "Bob",
+      "text": "活跃度触发只要跨过阈值就开一个窗口。",
+      "mentionsBot": false
+    },
+    {
+      "conversationId": "mock-group",
+      "conversationName": "Mock Group",
+      "messageId": "activity-message-6",
+      "senderId": "carol",
+      "senderName": "Carol",
+      "text": "第六条消息应该触发一次 activity window。",
+      "mentionsBot": false
+    }
+  ],
+  "expectations": {
+    "session": {
+      "conversations": 1,
+      "events": 6,
+      "windows": 1,
+      "turns": 1,
+      "nextSeq": 7,
+      "turnStatus": "completed",
+      "loopExits": 1,
+      "loopExitReasons": ["leave_tool"],
+      "eventSeqs": [1, 2, 3, 4, 5, 6],
+      "windowReasons": ["activity"],
+      "windowEventSeqs": [[1, 2, 3, 4, 5, 6]]
+    },
+    "action": {
+      "toolNames": ["say_nothing", "leave"]
+    },
+    "tools": {
+      "calls": 2,
+      "toolNames": ["say_nothing", "leave"],
+      "connectorSideEffects": 0
+    },
+    "modelInput": {
+      "requests": 3,
+      "contains": [
+        "Window: activity, seq 1-6",
+        "第六条消息应该触发一次 activity window。"
+      ]
+    },
+    "modelExchange": {
+      "exchanges": 3,
+      "responses": 3,
+      "maxToolCallsPerResponse": 1,
+      "purposes": ["agent_action", "agent_action", "agent_action"],
+      "responseContains": ["say_nothing", "leave"]
+    },
+    "trace": {
+      "traces": 1,
+      "spans": [
+        "memory.inject",
+        "context.compile",
+        "model.decide",
+        "tool.execute"
+      ],
+      "toolNames": ["say_nothing", "leave"]
+    }
+  }
+}

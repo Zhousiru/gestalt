@@ -1,0 +1,39 @@
+{
+  "name": "@gestalt/harness",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Replay, simulators, fixtures, eval suites, trace assertions, and reports.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "scripts": {
+    "verify": "tsx src/groupChatLoop.verify.ts",
+    "verify:model": "tsx src/modelE2E.verify.ts",
+    "verify:memory": "tsx src/memory.verify.ts",
+    "verify:triggers": "tsx src/groupTriggers.verify.ts",
+    "verify:context": "tsx src/groupContext.verify.ts",
+    "verify:loop": "tsx src/groupLoopLifecycle.verify.ts",
+    "verify:inspect": "tsx src/inspect.verify.ts",
+    "verify:onebot": "tsx src/onebotProtocol.verify.ts",
+    "verify:tools": "tsx src/toolContract.verify.ts",
+    "verify:agent": "tsx src/multiStepAgent.verify.ts",
+    "eval": "tsx src/eval.ts && tsx src/onebotProtocol.eval.ts && tsx src/toolContract.eval.ts",
+    "eval:group": "tsx src/eval.ts harness/fixtures/scenarios/group-chat-loop-steer.json",
+    "eval:context": "tsx src/eval.ts harness/fixtures/scenarios/group-context-history.json",
+    "eval:model": "tsx src/eval.ts harness/fixtures/scenarios/model-e2e.json",
+    "eval:memory": "tsx src/eval.ts harness/fixtures/scenarios/memory-injection-dreaming.json",
+    "eval:agent": "tsx src/eval.ts harness/fixtures/scenarios/multi-step-agent-tools.json",
+    "eval:onebot": "tsx src/onebotProtocol.eval.ts",
+    "eval:tools": "tsx src/toolContract.eval.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@gestalt/app": "workspace:*",
+    "ai": "^7.0.16",
+    "dotenv": "^17.4.2",
+    "ws": "^8.21.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.1"
+  }
+}

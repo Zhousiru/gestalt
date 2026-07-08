@@ -1,0 +1,48 @@
+{
+  "id": "group-exit-idle-timeout",
+  "description": "An active agent loop exits when no new messages arrive before the configured idle timeout.",
+  "homeFixture": "harness/fixtures/homes/simple-group-test",
+  "eventHandling": "runtime_triggers",
+  "model": {
+    "kind": "mock"
+  },
+  "events": [
+    {
+      "conversationId": "mock-group",
+      "conversationName": "Mock Group",
+      "messageId": "idle-exit-message-1",
+      "senderId": "alice",
+      "senderName": "Alice",
+      "text": "gestalt 先看一下退出条件。",
+      "mentionsBot": true
+    }
+  ],
+  "expectations": {
+    "session": {
+      "conversations": 1,
+      "events": 2,
+      "selfMessages": 1,
+      "windows": 1,
+      "turns": 1,
+      "loopExits": 1,
+      "loopExitReasons": ["idle_timeout"],
+      "windowReasons": ["mention"],
+      "windowEventSeqs": [[1]],
+      "turnEventSeqs": [[1]]
+    },
+    "tools": {
+      "calls": 1,
+      "toolNames": ["send_group_message"],
+      "connectorSideEffects": 0
+    },
+    "trace": {
+      "traces": 1,
+      "spans": [
+        "memory.inject",
+        "context.compile",
+        "model.decide",
+        "tool.execute"
+      ]
+    }
+  }
+}

@@ -1,0 +1,114 @@
+{
+  "id": "memory-pruning-dreaming",
+  "description": "A real dreaming pass removes or rewrites stale recent memory so it no longer reads as current.",
+  "homeFixture": "harness/fixtures/homes/simple-group-test",
+  "memoriesFixture": "harness/fixtures/memories/memory-pruning",
+  "model": {
+    "kind": "configured_ai_sdk"
+  },
+  "dreaming": {
+    "kind": "configured_bash_memory"
+  },
+  "events": [
+    {
+      "conversationId": "memory-group",
+      "conversationName": "Memory Harness Group",
+      "messageId": "memory-pruning-message-1",
+      "senderId": "alice",
+      "senderName": "Alice",
+      "text": "小格，清理过时记忆：OpenRouter 连接问题已经解决。请把 users/alice/index.md 里「Alice is currently debugging an OpenRouter connection issue and cannot run real model verification yet.」这句删除或改成「Resolved note: Alice fixed the OpenRouter connection issue and real model verification can run again.」不要再保留 currently debugging 的说法。",
+      "mentionsBot": true,
+      "windowReason": "mention"
+    }
+  ],
+  "expectations": {
+    "session": {
+      "conversations": 1,
+      "events": 2,
+      "selfMessages": 1,
+      "windows": 1,
+      "turns": 1,
+      "nextSeq": 3,
+      "turnStatus": "completed",
+      "loopExits": 1,
+      "loopExitReasons": ["leave_tool"],
+      "steerCount": 0,
+      "eventSeqs": [1]
+    },
+    "action": {
+      "toolName": "send_group_message",
+      "toolNames": ["send_group_message", "leave"],
+      "groupId": "memory-group",
+      "textMinLength": 1
+    },
+    "tools": {
+      "calls": 2,
+      "toolNames": ["send_group_message", "leave"],
+      "connectorSideEffects": 0
+    },
+    "modelInput": {
+      "contains": [
+        "Recent stale note",
+        "currently debugging an OpenRouter connection issue",
+        "Resolved note"
+      ]
+    },
+    "modelExchange": {
+      "minExchanges": 3,
+      "minResponses": 3,
+      "purposeIncludes": ["agent_action", "dreaming"],
+      "responseContains": [
+        "leave",
+        "\"name\":\"bash\"",
+        "/memories/users/alice/index.md",
+        "Resolved note"
+      ]
+    },
+    "trace": {
+      "traces": 1,
+      "spans": [
+        "memory.inject",
+        "context.compile",
+        "model.decide",
+        "tool.execute",
+        "dream.run"
+      ],
+      "toolNames": ["send_group_message", "leave"]
+    },
+    "memory": {
+      "homeBeforeContains": [
+        {
+          "path": "memories/users/alice/index.md",
+          "contains": "Alice is currently debugging an OpenRouter connection issue"
+        }
+      ],
+      "homeAfterContains": [
+        {
+          "path": "memories/users/alice/index.md",
+          "contains": "Resolved note: Alice fixed the OpenRouter connection issue and real model verification can run again."
+        }
+      ],
+      "homeAfterDoesNotContain": [
+        {
+          "path": "memories/users/alice/index.md",
+          "contains": "Alice is currently debugging an OpenRouter connection issue"
+        }
+      ],
+      "injectedMemoryPaths": [
+        "self/index.md",
+        "users/alice/index.md"
+      ],
+      "injectedMemoryContains": [
+        "Recent stale note",
+        "currently debugging an OpenRouter connection issue"
+      ],
+      "dreamCommandsContain": [
+        "/memories/users/alice/index.md",
+        "Resolved note"
+      ],
+      "dreamChangedFiles": [
+        "users/alice/index.md"
+      ]
+    }
+  }
+}

@@ -1,0 +1,50 @@
+{
+  "id": "group-exit-leave-tool",
+  "description": "An active agent loop exits when the model selects the leave tool.",
+  "homeFixture": "harness/fixtures/homes/simple-group-test",
+  "eventHandling": "runtime_triggers",
+  "model": {
+    "kind": "mock"
+  },
+  "events": [
+    {
+      "conversationId": "mock-group",
+      "conversationName": "Mock Group",
+      "messageId": "leave-exit-message-1",
+      "senderId": "alice",
+      "senderName": "Alice",
+      "text": "gestalt 退出循环，后面等新的触发再说。",
+      "mentionsBot": true
+    }
+  ],
+  "expectations": {
+    "session": {
+      "conversations": 1,
+      "events": 1,
+      "windows": 1,
+      "turns": 1,
+      "loopExits": 1,
+      "loopExitReasons": ["leave_tool"],
+      "windowReasons": ["mention"],
+      "windowEventSeqs": [[1]],
+      "turnEventSeqs": [[1]]
+    },
+    "action": {
+      "toolName": "leave"
+    },
+    "tools": {
+      "calls": 1,
+      "toolNames": ["leave"],
+      "connectorSideEffects": 0
+    },
+    "trace": {
+      "traces": 1,
+      "spans": [
+        "memory.inject",
+        "context.compile",
+        "model.decide",
+        "tool.execute"
+      ]
+    }
+  }
+}
