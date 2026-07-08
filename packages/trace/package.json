@@ -3,5 +3,34 @@
   "version": "0.0.0",
   "private": true,
   "description": "Trace inspection web UI for replay, debugging, and evaluation review.",
-  "license": "UNLICENSED"
+  "type": "module",
+  "license": "UNLICENSED",
+  "scripts": {
+    "dev": "tsx scripts/dev.ts",
+    "build": "vite build --mode client && vite build",
+    "typecheck": "tsc --noEmit",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@hono/node-server": "^2.0.8",
+    "@hono/react-renderer": "^1.0.1",
+    "@radix-ui/react-dialog": "^1.1.19",
+    "@radix-ui/react-scroll-area": "^1.2.14",
+    "@radix-ui/react-tabs": "^1.1.17",
+    "@radix-ui/react-tooltip": "^1.2.12",
+    "hono": "^4.12.27",
+    "honox": "0.1.58",
+    "lucide-react": "^1.23.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  },
+  "devDependencies": {
+    "@hono/vite-build": "^1.11.1",
+    "@hono/vite-dev-server": "^0.25.2",
+    "@tailwindcss/vite": "^4.2.2",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "tailwindcss": "^4.2.2",
+    "vite": "^8.0.9"
+  }
 }
