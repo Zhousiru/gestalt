@@ -5,6 +5,7 @@
   "description": "AI-native persona chatbot runtime and harness.",
   "scripts": {
     "build": "pnpm -r --if-present run build",
+    "dev:trace": "pnpm --filter @gestalt/trace dev",
     "test": "pnpm -r --if-present run test",
     "lint": "pnpm -r --if-present run lint",
     "typecheck": "pnpm -r --if-present run typecheck"

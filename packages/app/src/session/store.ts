@@ -40,6 +40,22 @@ export interface ExportSessionOptions {
 export interface CreateSessionStoreOptions {
   now?: () => Date;
   onSnapshotChange?: (snapshot: SessionSnapshot) => void;
+  onEventAppended?: (
+    record: SessionEventRecord,
+    snapshot: SessionSnapshot
+  ) => void;
+  onWindowCreated?: (
+    window: MessageWindow,
+    snapshot: SessionSnapshot
+  ) => void;
+  onTurnRecorded?: (
+    turn: SessionTurnRecord,
+    snapshot: SessionSnapshot
+  ) => void;
+  onLoopExitRecorded?: (
+    exit: AgentLoopExitRecord,
+    snapshot: SessionSnapshot
+  ) => void;
 }
 
 export interface SessionStore {
@@ -71,9 +87,9 @@ export function createInMemorySessionStore(
   }
 
   const store: SessionStore = {
-    appendEvent(event, options = {}) {
+    appendEvent(event, appendOptions = {}) {
       const conversation = ensureConversation(event.conversation);
-      const receivedAt = options.receivedAt ?? new Date().toISOString();
+      const receivedAt = appendOptions.receivedAt ?? new Date().toISOString();
       const record = SessionEventRecordSchema.parse({
         seq: conversation.nextSeq,
         receivedAt,
@@ -82,7 +98,9 @@ export function createInMemorySessionStore(
 
       conversation.events.push(record);
       conversation.nextSeq += 1;
-      emitSnapshot();
+      const snapshot = exportSnapshot();
+      options.onEventAppended?.(record, snapshot);
+      emitSnapshot(snapshot);
       return record;
     },
 
@@ -113,7 +131,9 @@ export function createInMemorySessionStore(
       });
 
       conversation.windows.push(window);
-      emitSnapshot();
+      const snapshot = exportSnapshot();
+      options.onWindowCreated?.(window, snapshot);
+      emitSnapshot(snapshot);
       return {
         window,
         eventRecords: records
@@ -141,14 +161,18 @@ export function createInMemorySessionStore(
       const parsedTurn = SessionTurnRecordSchema.parse(turn);
       const conversation = ensureConversation(parsedTurn.conversation);
       conversation.turns.push(parsedTurn);
-      emitSnapshot();
+      const snapshot = exportSnapshot();
+      options.onTurnRecorded?.(parsedTurn, snapshot);
+      emitSnapshot(snapshot);
     },
 
     recordLoopExit(exit) {
       const parsedExit = AgentLoopExitRecordSchema.parse(exit);
       const conversation = ensureConversation(parsedExit.conversation);
       conversation.loopExits.push(parsedExit);
-      emitSnapshot();
+      const snapshot = exportSnapshot();
+      options.onLoopExitRecorded?.(parsedExit, snapshot);
+      emitSnapshot(snapshot);
     },
 
     exportSnapshot(options = {}) {
@@ -193,8 +217,8 @@ export function createInMemorySessionStore(
     });
   }
 
-  function emitSnapshot(): void {
-    options.onSnapshotChange?.(exportSnapshot());
+  function emitSnapshot(snapshot = exportSnapshot()): void {
+    options.onSnapshotChange?.(snapshot);
   }
 
   function importSnapshot(

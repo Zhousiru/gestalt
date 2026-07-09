@@ -155,7 +155,7 @@ The compiled transcript can include:
 - Reply target messages even when they are older than the recent-history window.
 - Prior bot messages marked as `sender_role=self`.
 
-`context_recent_message_count` controls how many previous messages are carried. Prior bot messages are useful for the first turn of a newly triggered active loop. Once an active loop is already running, the model already observes its own tool results, so later steering windows do not need to re-collect bot messages from history.
+`context_recent_message_count` controls how many previous messages are carried. Prior bot messages stay in recent history for every turn, including later steering windows, and transcript rendering marks them as `sender_role=self`. This keeps short follow-ups such as "why so cranky?" attached to the bot's immediately preceding visible reply even after a tool result has already been processed.
 
 ### Agent Busy
 

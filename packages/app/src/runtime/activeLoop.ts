@@ -29,7 +29,12 @@ import {
   type AgentLoopExitCause,
   type AgentLoopExitState
 } from "./exitTriggers";
-import { isTurnSteeredError, TurnSteeredError } from "./turnSignals";
+import {
+  AgentLoopForceLeaveError,
+  isAgentLoopForceLeaveError,
+  isTurnSteeredError,
+  TurnSteeredError
+} from "./turnSignals";
 
 export interface ActiveLoopDependencies extends BaseAgentLoopDependencies {
   sessionStore: SessionStore;
@@ -64,10 +69,12 @@ export interface ActiveLoop {
   results: AgentTurnResult[];
   consecutiveSayNothing: number;
   lastResult?: AgentTurnResult;
+  forceExit?: AgentLoopExitDecision;
+  forceExitLastSeq?: number;
   abortController?: AbortController;
   idleExitTimer?: ReturnType<typeof setTimeout>;
   wakeForInput?: () => void;
-  promise: Promise<AgentTurnResult>;
+  promise: Promise<AgentTurnResult | undefined>;
 }
 
 export function startActiveLoopWindow(
@@ -76,7 +83,7 @@ export function startActiveLoopWindow(
   exitTriggers: AgentLoopExitTrigger[],
   part: CreatedMessageWindow,
   onSettled?: (conversationKey: string) => void
-): Promise<AgentTurnResult> {
+): Promise<AgentTurnResult | undefined> {
   const conversationKey = getConversationKey(part.window.conversation);
   const activeLoop = activeLoops.get(conversationKey);
 
@@ -105,7 +112,7 @@ export function startActiveLoopWindow(
     turnIds: [],
     results: [],
     consecutiveSayNothing: 0,
-    promise: Promise.resolve(undefined as never)
+    promise: Promise.resolve(undefined)
   };
 
   activeLoops.set(conversationKey, active);
@@ -118,6 +125,27 @@ export function startActiveLoopWindow(
   );
 
   return active.promise;
+}
+
+export function forceActiveLoopExit(
+  activeLoop: ActiveLoop,
+  input: {
+    decision: AgentLoopExitDecision;
+    lastSeq?: number;
+  }
+): void {
+  activeLoop.forceExit = input.decision;
+  if (input.lastSeq !== undefined) {
+    activeLoop.forceExitLastSeq = input.lastSeq;
+  }
+
+  clearActiveLoopIdleExit(activeLoop);
+  if (activeLoop.phase === "waiting_for_input") {
+    activeLoop.wakeForInput?.();
+    return;
+  }
+
+  activeLoop.abortController?.abort(new AgentLoopForceLeaveError());
 }
 
 export function canInjectIntoActiveLoop(
@@ -144,10 +172,28 @@ async function runActiveLoop(
   dependencies: ActiveLoopDependencies,
   exitTriggers: AgentLoopExitTrigger[],
   active: ActiveLoop
-): Promise<AgentTurnResult> {
+): Promise<AgentTurnResult | undefined> {
   while (true) {
+    if (active.forceExit) {
+      recordLoopExit(dependencies, active, active.forceExit);
+      return active.lastResult;
+    }
+
     prepareNextTurn(active, dependencies.now);
-    const result = await runSteerableTurn(dependencies, active);
+    let result: AgentTurnResult;
+    try {
+      result = await runSteerableTurn(dependencies, active);
+    } catch (error) {
+      if (isAgentLoopForceLeaveError(error) && active.forceExit) {
+        const forceExitTrace = readAgentTurnTraceFromError(error);
+        if (forceExitTrace) {
+          await recordAgentTrace(dependencies, forceExitTrace);
+        }
+        recordLoopExit(dependencies, active, active.forceExit);
+        return active.lastResult;
+      }
+      throw error;
+    }
     active.results.push(result);
     updateActiveLoopAfterTurn(active, result);
     recordSelfMessagesFromToolResults(dependencies, result);
@@ -263,7 +309,7 @@ async function runSteerableTurn(
         window: merged.window,
         eventRecords: merged.eventRecords,
         steerCount: active.restartCount,
-        includeSelfHistory: active.turnIds.length === 0,
+        includeSelfHistory: true,
         signal: abortController.signal,
         onPhaseChange(phase) {
           active.phase = phase;
@@ -449,6 +495,10 @@ async function waitForNextInputOrExit(
   exitTriggers: AgentLoopExitTrigger[],
   active: ActiveLoop
 ): Promise<AgentLoopExitDecision | undefined> {
+  if (active.forceExit) {
+    return active.forceExit;
+  }
+
   if (active.pendingParts.length > 0) {
     return undefined;
   }
@@ -473,8 +523,9 @@ async function waitForNextInputOrExit(
     }
 
     active.wakeForInput = () => {
+      const forceExit = active.forceExit;
       cleanup();
-      resolve(undefined);
+      resolve(forceExit);
     };
 
     if (idleTimeoutMs !== undefined) {
@@ -526,7 +577,7 @@ function recordLoopExit(
   active: ActiveLoop,
   decision: AgentLoopExitDecision
 ): void {
-  const lastSeq = active.lastResult?.window.toSeq;
+  const lastSeq = active.forceExitLastSeq ?? active.lastResult?.window.toSeq;
   dependencies.sessionStore.recordLoopExit({
     id: randomUUID(),
     conversation: active.conversation,

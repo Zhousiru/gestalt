@@ -1,121 +1,48 @@
+import type { CanonicalEvent, Conversation } from "../events/schemas";
+import type {
+  AgentLoopExitRecord,
+  ConversationSessionSnapshot,
+  MessageWindow,
+  SessionEventRecord,
+  SessionSnapshot,
+  SessionTurnRecord,
+  TurnPhaseRecord
+} from "../session/schemas";
+import type { ActionProposal } from "../tools/schemas";
+import type {
+  AgentTurnTrace,
+  ObservationRecord,
+  SpanRecord
+} from "../trace/schemas";
+
 export interface GestaltHomeView {
   root: string;
   sessionsDir: string;
   tracesDir: string;
 }
 
-export interface Conversation {
-  kind: string;
-  id: string;
-  name?: string;
+export interface JsonlEntry<T> {
+  filePath: string;
+  fileName: string;
+  line: number;
+  value: T;
 }
 
-export interface CanonicalEvent {
-  id: string;
-  type: string;
-  occurredAt?: string;
-  source?: Record<string, unknown>;
-  conversation: Conversation;
-  sender?: {
-    id?: string;
-    displayName?: string;
-    isSelf?: boolean;
-  };
-  message?: {
-    id?: string;
-    text?: string;
-    rawText?: string;
-    mentionsBot?: boolean;
-  };
-  raw?: unknown;
-}
-
-export interface SessionEventRecord {
-  seq: number;
-  receivedAt: string;
-  event: CanonicalEvent;
-}
-
-export interface MessageWindow {
-  id: string;
-  conversation: Conversation;
-  reason: string;
-  fromSeq: number;
-  toSeq: number;
-  eventSeqs: number[];
-  closedAt: string;
-}
-
-export interface TurnPhaseRecord {
-  phase: string;
-  at: string;
-}
-
-export interface ActionProposal {
-  id?: string;
-  proposedAt?: string;
-  reason?: string;
-  toolName?: string;
-  params?: unknown;
-}
-
-export interface SessionTurnRecord {
-  id: string;
-  traceId: string;
-  conversation: Conversation;
-  status: string;
-  startedAt: string;
-  endedAt: string;
-  windowIds: string[];
-  fromSeq: number;
-  toSeq: number;
-  eventSeqs: number[];
-  steerCount: number;
-  phases: TurnPhaseRecord[];
-  proposedActions: ActionProposal[];
-  toolResults: unknown[];
-}
-
-export interface AgentTurnTrace {
-  id: string;
-  name: string;
-  startedAt: string;
-  endedAt: string;
-  gestaltHome: string;
-  eventId: string;
-  personaVersion: string;
-  spans: SpanRecord[];
-  observations: ObservationRecord[];
-  proposedActions: ActionProposal[];
-  toolResults: unknown[];
-}
-
-export interface SpanRecord {
-  id: string;
-  traceId: string;
-  parentSpanId?: string;
-  name: string;
-  startedAt: string;
-  endedAt: string;
-  attributes: Record<string, unknown>;
-}
-
-export interface ObservationRecord {
-  id: string;
-  traceId: string;
-  parentObservationId?: string;
-  type: string;
-  name: string;
-  startedAt?: string;
-  endedAt?: string;
-  input?: unknown;
-  output?: unknown;
-  metadata?: Record<string, unknown>;
-  model?: string;
-  usage?: unknown;
-  level?: string;
-  statusMessage?: string;
-}
+export type {
+  ActionProposal,
+  AgentLoopExitRecord,
+  AgentTurnTrace,
+  CanonicalEvent,
+  Conversation,
+  ConversationSessionSnapshot,
+  MessageWindow,
+  ObservationRecord,
+  SessionEventRecord,
+  SessionSnapshot,
+  SessionTurnRecord,
+  SpanRecord,
+  TurnPhaseRecord
+};
 
 export type DiagnosticSeverity = "info" | "warning" | "error";
 
@@ -304,4 +231,61 @@ export interface RuntimeLiveEventEnvelope<T = unknown> {
   type: RuntimeLiveEventType;
   at: string;
   data: T;
+}
+
+export interface LiveEventSink {
+  publish<T>(
+    type: RuntimeLiveEventType,
+    data: T,
+    at?: string
+  ): RuntimeLiveEventEnvelope<T>;
+}
+
+export interface AgentRunStartedData {
+  traceId: string;
+  eventId: string;
+  startedAt: string;
+  gestaltHome: string;
+  personaVersion: string;
+  window: MessageWindow;
+  eventRecords: SessionEventRecord[];
+}
+
+export interface AgentPhaseChangedData {
+  traceId: string;
+  phase: string;
+  at: string;
+}
+
+export interface AgentSpanStartedData {
+  traceId: string;
+  spanId: string;
+  name: string;
+  startedAt: string;
+  attributes: Record<string, unknown>;
+}
+
+export interface AgentSpanEndedData {
+  traceId: string;
+  span: SpanRecord;
+}
+
+export interface AgentObservationCreatedData {
+  traceId: string;
+  observation: ObservationRecord;
+}
+
+export interface AgentRunCompletedData {
+  traceId: string;
+  endedAt: string;
+  proposedActions: ActionProposal[];
+  toolResults: unknown[];
+  trace: AgentTurnTrace;
+}
+
+export interface AgentRunFailedData {
+  traceId: string;
+  endedAt: string;
+  error: string;
+  trace: AgentTurnTrace;
 }

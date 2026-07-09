@@ -1,0 +1,62 @@
+{
+  "id": "group-exit-slash-leave",
+  "description": "A /leave control command force-ends the current active agent loop without asking the model to choose the leave tool.",
+  "homeFixture": "harness/fixtures/homes/simple-group-test",
+  "eventHandling": "runtime_triggers",
+  "model": {
+    "kind": "mock",
+    "delayMs": 100
+  },
+  "events": [
+    {
+      "conversationId": "mock-group",
+      "conversationName": "Mock Group",
+      "messageId": "slash-leave-message-1",
+      "senderId": "alice",
+      "senderName": "Alice",
+      "text": "gestalt 先开始这个 loop。",
+      "mentionsBot": true
+    },
+    {
+      "delayMs": 20,
+      "conversationId": "mock-group",
+      "conversationName": "Mock Group",
+      "messageId": "slash-leave-message-2",
+      "senderId": "alice",
+      "senderName": "Alice",
+      "text": "/leave",
+      "mentionsBot": false
+    }
+  ],
+  "expectations": {
+    "session": {
+      "conversations": 1,
+      "events": 2,
+      "windows": 1,
+      "turns": 0,
+      "loopExits": 1,
+      "loopExitReasons": ["slash_leave"],
+      "windowReasons": ["mention"],
+      "windowEventSeqs": [[1]]
+    },
+    "tools": {
+      "calls": 0,
+      "connectorSideEffects": 0
+    },
+    "modelInput": {
+      "requests": 0
+    },
+    "modelExchange": {
+      "exchanges": 0
+    },
+    "trace": {
+      "traces": 1,
+      "spans": [
+        "memory.inject",
+        "context.compile",
+        "model.decide"
+      ],
+      "toolNames": []
+    }
+  }
+}

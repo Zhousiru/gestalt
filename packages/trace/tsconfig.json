@@ -10,5 +10,5 @@
     "jsxImportSource": "react",
     "noEmit": true
   },
-  "include": ["app/**/*.ts", "app/**/*.tsx", "scripts/**/*.ts", "vite.config.ts"]
+  "include": ["app/**/*.ts", "app/**/*.tsx", "vite.config.ts"]
 }

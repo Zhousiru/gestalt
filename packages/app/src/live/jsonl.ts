@@ -1,8 +1,10 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
-import type { JsonlEntry } from "./types";
+import type { JsonlEntry } from "./viewTypes";
 
-export async function readJsonlDirectory<T>(directory: string): Promise<JsonlEntry<T>[]> {
+export async function readJsonlDirectory<T>(
+  directory: string
+): Promise<JsonlEntry<T>[]> {
   const exists = await pathExists(directory);
   if (!exists) {
     return [];
@@ -30,7 +32,7 @@ export async function readJsonlDirectory<T>(directory: string): Promise<JsonlEnt
           value: JSON.parse(line) as T
         });
       } catch {
-        // Corrupt partial writes can happen while tailing; ignore until next read.
+        // Ignore partial writes while runtime is appending JSONL.
       }
     }
   }

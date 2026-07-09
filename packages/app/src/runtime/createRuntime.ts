@@ -23,6 +23,7 @@ import {
   type InspectRunner
 } from "../inspect/agent";
 import { createFileMemoryStore } from "../memory/store";
+import type { LiveEventSink } from "../live/viewTypes";
 import {
   createMockModel,
   type ModelClient
@@ -55,6 +56,7 @@ import { type AgentTurnResult } from "./agentLoop";
 import {
   canInjectIntoActiveLoop,
   clearActiveLoopIdleExit,
+  forceActiveLoopExit,
   startActiveLoopWindow,
   type ActiveLoop,
   type ActiveLoopDependencies
@@ -68,7 +70,9 @@ export interface Runtime {
   home: GestaltHome;
   ingestEvent(event: unknown): SessionEventRecord;
   handleEvent(event: unknown): Promise<AgentTurnResult | undefined>;
-  handleMessageWindow(input: HandleMessageWindowInput): Promise<AgentTurnResult>;
+  handleMessageWindow(
+    input: HandleMessageWindowInput
+  ): Promise<AgentTurnResult | undefined>;
   exportSession(options?: ExportSessionOptions): SessionSnapshot;
   importSession(snapshot: unknown): void;
   whenIdle(): Promise<void>;
@@ -93,6 +97,7 @@ export interface CreateRuntimeOptions {
   maxSteersPerTurn?: number;
   triggers?: GroupTrigger[];
   exitTriggers?: AgentLoopExitTrigger[];
+  liveEvents?: LiveEventSink;
   now?: () => Date;
 }
 
@@ -133,8 +138,51 @@ export async function createRuntime(
   const sessionRecorder = createSessionRecorder(home);
   const sessionStore = createInMemorySessionStore(options.sessionSnapshot, {
     now,
+    onEventAppended(record) {
+      options.liveEvents?.publish(
+        "session.event.appended",
+        {
+          record
+        },
+        record.receivedAt
+      );
+    },
+    onWindowCreated(window) {
+      options.liveEvents?.publish(
+        "session.window.created",
+        {
+          window
+        },
+        window.closedAt
+      );
+    },
+    onTurnRecorded(turn) {
+      options.liveEvents?.publish(
+        "session.turn.recorded",
+        {
+          turn
+        },
+        turn.endedAt
+      );
+    },
+    onLoopExitRecorded(exit) {
+      options.liveEvents?.publish(
+        "session.loop_exit.recorded",
+        {
+          exit
+        },
+        exit.endedAt
+      );
+    },
     onSnapshotChange(snapshot) {
       sessionRecorder.recordSnapshot(snapshot);
+      options.liveEvents?.publish(
+        "session.snapshot.changed",
+        {
+          snapshot
+        },
+        snapshot.exportedAt
+      );
     }
   });
   const triggers = options.triggers ?? createDefaultGroupTriggers(config);
@@ -158,6 +206,7 @@ export async function createRuntime(
     now,
     sessionStore,
     maxSteersPerTurn: options.maxSteersPerTurn ?? 2,
+    ...(options.liveEvents ? { liveEvents: options.liveEvents } : {}),
     ...(options.toolImplementations
       ? { toolImplementations: options.toolImplementations }
       : {})
@@ -186,7 +235,7 @@ export async function createRuntime(
 
   const startWindowPart = (
     part: CreatedMessageWindow
-  ): Promise<AgentTurnResult> =>
+  ): Promise<AgentTurnResult | undefined> =>
     startActiveLoopWindow(
       dependencies,
       activeTurns,
@@ -197,14 +246,14 @@ export async function createRuntime(
 
   const handleMessageWindow = (
     input: HandleMessageWindowInput
-  ): Promise<AgentTurnResult> => {
+  ): Promise<AgentTurnResult | undefined> => {
     return startWindowPart(createMessageWindowPart(input));
   };
 
   const startTriggeredRecord = (
     record: SessionEventRecord,
     options: { minFromSeq?: number } = {}
-  ): Promise<AgentTurnResult> | undefined => {
+  ): Promise<AgentTurnResult | undefined> | undefined => {
     const decision = evaluateGroupTriggers(triggers, {
       config: dependencies.config,
       sessionStore: dependencies.sessionStore,
@@ -229,7 +278,7 @@ export async function createRuntime(
   function queueActiveLoopRecord(
     record: SessionEventRecord,
     activeTurn: ActiveLoop
-  ): Promise<AgentTurnResult> {
+  ): Promise<AgentTurnResult | undefined> {
     const conversationKey = activeTurn.conversationKey;
     clearActiveLoopIdleExit(activeTurn);
     const existingBuffer = activeLoopBuffers.get(conversationKey);
@@ -303,6 +352,17 @@ export async function createRuntime(
       reason: "steer"
     });
     void startWindowPart(windowPart);
+  }
+
+  function clearActiveLoopBuffer(conversationKey: string): void {
+    const buffer = activeLoopBuffers.get(conversationKey);
+    if (!buffer) {
+      return;
+    }
+    if (buffer.timer) {
+      clearTimeout(buffer.timer);
+    }
+    activeLoopBuffers.delete(conversationKey);
   }
 
   function onActiveTurnSettled(conversationKey: string): void {
@@ -443,15 +503,32 @@ export async function createRuntime(
       }
 
       const record = appendParsedEvent(parsedEvent);
+      const conversationKey = getConversationKey(record.event.conversation);
+      if (isSlashLeaveCommand(record.event)) {
+        const activeTurn = activeTurns.get(conversationKey);
+        if (!activeTurn) {
+          return undefined;
+        }
+
+        clearActiveLoopBuffer(conversationKey);
+        forceActiveLoopExit(activeTurn, {
+          decision: {
+            triggerName: "slash_leave",
+            reason: "slash_leave",
+            description: "A /leave command force-ended the active loop."
+          },
+          lastSeq: record.seq
+        });
+        return activeTurn.promise;
+      }
+
       const inspectCommand = parseInspectCommand(record.event);
       if (inspectCommand) {
         await handleInspectRecord(record, inspectCommand);
         return undefined;
       }
 
-      const activeTurn = activeTurns.get(
-        getConversationKey(record.event.conversation)
-      );
+      const activeTurn = activeTurns.get(conversationKey);
       if (activeTurn) {
         if (isSelfMessageEvent(record.event)) {
           return activeTurn.promise;
@@ -497,6 +574,14 @@ function isAllowedGroupEvent(
     return true;
   }
   return allowedGroupIds.has(event.conversation.id);
+}
+
+function isSlashLeaveCommand(event: CanonicalEvent): boolean {
+  return (
+    event.type === "MessageReceived" &&
+    !isSelfMessageEvent(event) &&
+    event.message.text.trim() === "/leave"
+  );
 }
 
 function readAllowedGroupIds(config: GestaltConfig): Set<string> | undefined {

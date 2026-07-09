@@ -10,9 +10,10 @@ import {
   sortByTime,
   truncate
 } from "./format";
-import { resolveGestaltHome } from "./gestaltHome";
 import { listJsonlFileNames, readJsonlDirectory } from "./jsonl";
+import type { GestaltHome } from "../home/resolveGestaltHome";
 import type {
+  ActiveRunView,
   AgentTurnTrace,
   ConversationSessionSnapshot,
   ConversationView,
@@ -26,37 +27,68 @@ import type {
   TraceDetail,
   TraceSummary,
   TraceWorkspace,
+  TurnTimelineItem,
   WaterfallSpan
-} from "./types";
+} from "./viewTypes";
 
-export async function loadTraceWorkspace(): Promise<TraceWorkspace> {
-  const home = resolveGestaltHome();
-  const [sessionEntries, traceEntries, sessionFiles, traceFiles] = await Promise.all([
-    readJsonlDirectory<SessionSnapshot>(home.sessionsDir),
-    readJsonlDirectory<AgentTurnTrace>(home.tracesDir),
-    listJsonlFileNames(home.sessionsDir),
-    listJsonlFileNames(home.tracesDir)
-  ]);
+export interface LoadLiveWorkspaceInput {
+  home: GestaltHome;
+  sessionSnapshot: SessionSnapshot;
+  activeRuns: ActiveRunView[];
+  now?: () => Date;
+}
+
+export interface LoadLiveTraceDetailInput extends LoadLiveWorkspaceInput {
+  traceId: string;
+}
+
+export async function loadLiveWorkspace(
+  input: LoadLiveWorkspaceInput
+): Promise<TraceWorkspace> {
+  const now = input.now ?? (() => new Date());
+  const [sessionEntries, traceEntries, sessionFiles, traceFiles] =
+    await Promise.all([
+      readJsonlDirectory<SessionSnapshot>(input.home.sessionsDir),
+      readJsonlDirectory<AgentTurnTrace>(input.home.tracesDir),
+      listJsonlFileNames(input.home.sessionsDir),
+      listJsonlFileNames(input.home.tracesDir)
+    ]);
   const latestSession = pickLatestSession(sessionEntries);
-  const traces = traceEntries.map((entry) => entry.value);
-  const conversations = latestSession?.value.conversations ?? [];
-  const baseTraceSummaries = traces.map((trace) => summarizeTrace(trace, []));
+  const completedTraces = traceEntries.map((entry) => entry.value);
+  const activeTraces = input.activeRuns.map((run) => run.trace);
+  const traces = mergeTraces(completedTraces, activeTraces);
+  const activeTraceIds = new Set(input.activeRuns.map((run) => run.traceId));
+  const baseTraceSummaries = traces.map((trace) =>
+    summarizeTrace(trace, [], input.activeRuns.find((run) => run.traceId === trace.id))
+  );
   const diagnostics = collectDiagnostics({
-    conversations,
+    conversations: input.sessionSnapshot.conversations,
     traces,
-    traceSummaries: baseTraceSummaries
+    traceSummaries: baseTraceSummaries,
+    activeTraceIds
   });
   const traceSummaries = sortByTime(
-    traces.map((trace) => summarizeTrace(trace, diagnosticsForTrace(trace.id, diagnostics))),
+    traces.map((trace) =>
+      summarizeTrace(
+        trace,
+        diagnosticsForTrace(trace.id, diagnostics),
+        input.activeRuns.find((run) => run.traceId === trace.id)
+      )
+    ),
     (trace) => trace.startedAt
   ).reverse();
   const traceById = new Map(traces.map((trace) => [trace.id, trace]));
 
   return {
-    home,
-    generatedAt: new Date().toISOString(),
+    home: {
+      root: input.home.root,
+      sessionsDir: input.home.sessionsDir,
+      tracesDir: input.home.tracesDir
+    },
+    generatedAt: now().toISOString(),
     sessionExportCount: sessionEntries.length,
     traceCount: traces.length,
+    activeRunCount: input.activeRuns.length,
     sessionFiles,
     traceFiles,
     ...(latestSession
@@ -69,29 +101,39 @@ export async function loadTraceWorkspace(): Promise<TraceWorkspace> {
         }
       : {}),
     conversations: sortByTime(
-      conversations.map((conversation) =>
-        buildConversationView(conversation, traceById, diagnostics)
+      input.sessionSnapshot.conversations.map((conversation) =>
+        buildConversationView(conversation, traceById, diagnostics, input.activeRuns)
       ),
       (conversation) => conversation.lastAt
     ).reverse(),
     traces: traceSummaries,
+    activeRuns: input.activeRuns,
     diagnostics
   };
 }
 
-export async function loadTraceDetail(traceId: string): Promise<TraceDetail | undefined> {
-  const workspace = await loadTraceWorkspace();
-  const home = resolveGestaltHome();
-  const traceEntries = await readJsonlDirectory<AgentTurnTrace>(home.tracesDir);
-  const trace = traceEntries
-    .map((entry) => entry.value)
-    .find((candidate) => candidate.id === traceId || candidate.id.startsWith(traceId));
+export async function loadLiveTraceDetail(
+  input: LoadLiveTraceDetailInput
+): Promise<TraceDetail | undefined> {
+  const workspace = await loadLiveWorkspace(input);
+  const activeRun = input.activeRuns.find(
+    (run) => run.traceId === input.traceId || run.traceId.startsWith(input.traceId)
+  );
+  const trace =
+    activeRun?.trace ??
+    (await readJsonlDirectory<AgentTurnTrace>(input.home.tracesDir))
+      .map((entry) => entry.value)
+      .find(
+        (candidate) =>
+          candidate.id === input.traceId || candidate.id.startsWith(input.traceId)
+      );
+
   if (!trace) {
     return undefined;
   }
 
   const diagnostics = diagnosticsForTrace(trace.id, workspace.diagnostics);
-  const summary = summarizeTrace(trace, diagnostics);
+  const summary = summarizeTrace(trace, diagnostics, activeRun);
   const related = findRelatedSessionRecord(workspace, trace);
 
   return {
@@ -100,15 +142,21 @@ export async function loadTraceDetail(traceId: string): Promise<TraceDetail | un
       generatedAt: workspace.generatedAt,
       sessionExportCount: workspace.sessionExportCount,
       traceCount: workspace.traceCount,
+      activeRunCount: workspace.activeRunCount,
       sessionFiles: workspace.sessionFiles,
       traceFiles: workspace.traceFiles,
-      ...(workspace.latestSession ? { latestSession: workspace.latestSession } : {}),
+      ...(workspace.latestSession
+        ? { latestSession: workspace.latestSession }
+        : {}),
+      activeRuns: workspace.activeRuns,
       diagnostics: workspace.diagnostics
     },
     summary,
     trace,
     waterfall: buildWaterfall(trace),
-    ...(related.conversationKey ? { relatedConversation: related.conversationKey } : {}),
+    ...(related.conversationKey
+      ? { relatedConversation: related.conversationKey }
+      : {}),
     ...(related.turn ? { relatedTurn: related.turn } : {}),
     ...(related.event ? { relatedEvent: related.event } : {}),
     diagnostics
@@ -127,39 +175,64 @@ function pickLatestSession(
   })[0];
 }
 
+function mergeTraces(
+  completedTraces: AgentTurnTrace[],
+  activeTraces: AgentTurnTrace[]
+): AgentTurnTrace[] {
+  const activeIds = new Set(activeTraces.map((trace) => trace.id));
+  return [
+    ...activeTraces,
+    ...completedTraces.filter((trace) => !activeIds.has(trace.id))
+  ];
+}
+
 function buildConversationView(
   conversation: ConversationSessionSnapshot,
   traceById: Map<string, AgentTurnTrace>,
-  diagnostics: Diagnostic[]
+  diagnostics: Diagnostic[],
+  activeRuns: ActiveRunView[]
 ): ConversationView {
   const key = conversationKey(conversation.conversation);
   const eventItems = (conversation.events ?? []).map(toEventItem);
-  const turnItems = (conversation.turns ?? []).map((turn) => {
-    const trace = traceById.get(turn.traceId);
-    const turnDiagnostics = diagnostics.filter((diagnostic) => {
-      if (diagnostic.turnId === turn.id || diagnostic.traceId === turn.traceId) {
-        return true;
-      }
-      return Boolean(trace && diagnostic.eventId === trace.eventId);
-    });
-    return {
-      type: "turn" as const,
+  const turnItems = (conversation.turns ?? []).map((turn) =>
+    buildTurnItem({
       id: turn.id,
       at: turn.startedAt,
       traceId: turn.traceId,
-      shortTraceId: shortId(turn.traceId),
       status: turn.status,
       fromSeq: turn.fromSeq,
       toSeq: turn.toSeq,
       eventSeqs: turn.eventSeqs ?? [],
       durationMs: durationMs(turn.startedAt, turn.endedAt),
       phases: turn.phases ?? [],
-      actionNames: actionNames(turn.proposedActions),
-      toolStatuses: toolStatuses(turn.toolResults),
-      hasTrace: Boolean(trace),
-      diagnostics: turnDiagnostics
-    };
-  });
+      proposedActions: turn.proposedActions,
+      toolResults: turn.toolResults,
+      trace: traceById.get(turn.traceId),
+      diagnostics,
+      isActive: false
+    })
+  );
+  const activeTurnItems = activeRuns
+    .filter((run) => conversationKey(run.conversation) === key)
+    .filter((run) => !turnItems.some((turn) => turn.traceId === run.traceId))
+    .map((run) =>
+      buildTurnItem({
+        id: `active:${run.traceId}`,
+        at: run.startedAt,
+        traceId: run.traceId,
+        status: run.status === "running" ? run.phase : run.status,
+        fromSeq: run.window.fromSeq,
+        toSeq: run.window.toSeq,
+        eventSeqs: run.window.eventSeqs,
+        durationMs: durationMs(run.startedAt, run.trace.endedAt),
+        phases: run.phases,
+        proposedActions: run.trace.proposedActions,
+        toolResults: run.trace.toolResults,
+        trace: run.trace,
+        diagnostics,
+        isActive: true
+      })
+    );
   const windowItems = (conversation.windows ?? []).map((window) => ({
     type: "window" as const,
     id: window.id,
@@ -179,7 +252,12 @@ function buildConversationView(
     turnIds: exit.turnIds ?? []
   }));
   const eventIds = new Set((conversation.events ?? []).map((event) => event.event.id));
-  const traceIds = new Set((conversation.turns ?? []).map((turn) => turn.traceId));
+  const traceIds = new Set([
+    ...(conversation.turns ?? []).map((turn) => turn.traceId),
+    ...activeRuns
+      .filter((run) => conversationKey(run.conversation) === key)
+      .map((run) => run.traceId)
+  ]);
   const conversationDiagnostics = diagnostics.filter((diagnostic) => {
     if (diagnostic.conversationKey === key) {
       return true;
@@ -190,11 +268,15 @@ function buildConversationView(
     return Boolean(diagnostic.traceId && traceIds.has(diagnostic.traceId));
   });
   const timeline = sortByTime<TimelineItem>(
-    [...eventItems, ...windowItems, ...turnItems, ...loopExitItems],
+    [...eventItems, ...windowItems, ...turnItems, ...activeTurnItems, ...loopExitItems],
     (item) => item.at
   );
   const lastEvent = conversation.events?.at(-1);
-  const lastText = lastEvent?.event.message?.text;
+  const lastActiveRun = activeRuns
+    .filter((run) => conversationKey(run.conversation) === key)
+    .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))[0];
+  const lastAt = lastActiveRun?.updatedAt ?? lastEvent?.receivedAt;
+  const lastText = lastEvent?.event.message.text;
 
   return {
     key,
@@ -202,15 +284,58 @@ function buildConversationView(
     nextSeq: conversation.nextSeq,
     eventCount: conversation.events?.length ?? 0,
     windowCount: conversation.windows?.length ?? 0,
-    turnCount: conversation.turns?.length ?? 0,
+    turnCount: (conversation.turns?.length ?? 0) + activeTurnItems.length,
     loopExitCount: conversation.loopExits?.length ?? 0,
     selfMessageCount: (conversation.events ?? []).filter((event) =>
-      Boolean(event.event.sender?.isSelf)
+      Boolean(event.event.sender.isSelf)
     ).length,
-    ...(lastEvent ? { lastAt: lastEvent.receivedAt } : {}),
+    ...(lastAt ? { lastAt } : {}),
     ...(lastText ? { lastText: truncate(lastText, 140) } : {}),
     diagnostics: conversationDiagnostics,
     timeline
+  };
+}
+
+function buildTurnItem(input: {
+  id: string;
+  at: string;
+  traceId: string;
+  status: string;
+  fromSeq: number;
+  toSeq: number;
+  eventSeqs: number[];
+  durationMs: number;
+  phases: TurnTimelineItem["phases"];
+  proposedActions: unknown;
+  toolResults: unknown;
+  trace: AgentTurnTrace | undefined;
+  diagnostics: Diagnostic[];
+  isActive: boolean;
+}): TurnTimelineItem {
+  const turnDiagnostics = input.diagnostics.filter((diagnostic) => {
+    if (diagnostic.turnId === input.id || diagnostic.traceId === input.traceId) {
+      return true;
+    }
+    return Boolean(input.trace && diagnostic.eventId === input.trace.eventId);
+  });
+
+  return {
+    type: "turn",
+    id: input.id,
+    at: input.at,
+    traceId: input.traceId,
+    shortTraceId: shortId(input.traceId),
+    status: input.status,
+    fromSeq: input.fromSeq,
+    toSeq: input.toSeq,
+    eventSeqs: input.eventSeqs,
+    durationMs: input.durationMs,
+    phases: input.phases,
+    actionNames: actionNames(input.proposedActions),
+    toolStatuses: toolStatuses(input.toolResults),
+    hasTrace: Boolean(input.trace),
+    isActive: input.isActive,
+    diagnostics: turnDiagnostics
   };
 }
 
@@ -225,22 +350,23 @@ function toEventItem(record: ConversationSessionSnapshot["events"][number]): Eve
     at: record.receivedAt,
     seq: record.seq,
     eventId: record.event.id,
-    ...(record.event.message?.id ? { messageId: record.event.message.id } : {}),
-    ...(record.event.sender?.id ? { senderId: record.event.sender.id } : {}),
-    ...(record.event.sender?.displayName
+    messageId: record.event.message.id,
+    senderId: record.event.sender.id,
+    ...(record.event.sender.displayName
       ? { senderName: record.event.sender.displayName }
       : {}),
-    isSelf: Boolean(record.event.sender?.isSelf),
-    mentionsBot: Boolean(record.event.message?.mentionsBot),
-    text: truncate(record.event.message?.text ?? record.event.type ?? "(no text)", 360),
+    isSelf: Boolean(record.event.sender.isSelf),
+    mentionsBot: Boolean(record.event.message.mentionsBot),
+    text: truncate(record.event.message.text ?? record.event.type, 360),
     ...(sourceLabel ? { source: sourceLabel } : {})
   };
 }
 
-function summarizeTrace(trace: AgentTurnTrace, diagnostics: Diagnostic[]): TraceSummary {
-  const actionList = actionNames(trace.proposedActions);
-  const statuses = toolStatuses(trace.toolResults);
-  const status = traceStatus(trace, diagnostics);
+function summarizeTrace(
+  trace: AgentTurnTrace,
+  diagnostics: Diagnostic[],
+  activeRun?: ActiveRunView
+): TraceSummary {
   const model = readTraceModel(trace);
   return {
     id: trace.id,
@@ -249,12 +375,13 @@ function summarizeTrace(trace: AgentTurnTrace, diagnostics: Diagnostic[]): Trace
     startedAt: trace.startedAt,
     endedAt: trace.endedAt,
     durationMs: durationMs(trace.startedAt, trace.endedAt),
-    status,
+    status: traceStatus(trace, diagnostics, activeRun),
     spanCount: trace.spans?.length ?? 0,
     observationCount: trace.observations?.length ?? 0,
-    actionNames: actionList,
-    toolStatuses: statuses,
+    actionNames: actionNames(trace.proposedActions),
+    toolStatuses: toolStatuses(trace.toolResults),
     ...(model ? { model } : {}),
+    ...(activeRun ? { phase: activeRun.phase } : {}),
     diagnostics
   };
 }
@@ -262,18 +389,24 @@ function summarizeTrace(trace: AgentTurnTrace, diagnostics: Diagnostic[]): Trace
 function buildWaterfall(trace: AgentTurnTrace): WaterfallSpan[] {
   const startedAt = Date.parse(trace.startedAt);
   const total = Math.max(1, durationMs(trace.startedAt, trace.endedAt));
-  const spanRows = (trace.spans ?? []).map((span) =>
-    waterfallItem({
+  const spanRows = (trace.spans ?? []).map((span) => {
+    const status = readString(asRecord(span.attributes).status);
+    return waterfallItem({
       id: span.id,
       name: span.name,
       type: "span",
       startedAt: span.startedAt,
       endedAt: span.endedAt,
-      ...(readString(asRecord(span.attributes).status) === "error" ? { level: "ERROR" } : {}),
+      status:
+        status === "error"
+          ? "error"
+          : status === "running"
+            ? "running"
+            : "ok",
       traceStartedAt: startedAt,
       total
-    })
-  );
+    });
+  });
   const observationRows = (trace.observations ?? [])
     .filter((observation) => observation.type !== "span")
     .map((observation) =>
@@ -283,7 +416,7 @@ function buildWaterfall(trace: AgentTurnTrace): WaterfallSpan[] {
         type: observation.type,
         startedAt: observation.startedAt ?? trace.startedAt,
         endedAt: observation.endedAt ?? observation.startedAt ?? trace.endedAt,
-        ...(observation.level ? { level: observation.level } : {}),
+        status: observation.level === "ERROR" ? "error" : "ok",
         traceStartedAt: startedAt,
         total
       })
@@ -297,12 +430,14 @@ function waterfallItem(input: {
   type: string;
   startedAt: string;
   endedAt: string;
-  level?: string;
+  status: WaterfallSpan["status"];
   traceStartedAt: number;
   total: number;
 }): WaterfallSpan {
   const start = Date.parse(input.startedAt);
-  const offset = Number.isFinite(start) ? Math.max(0, start - input.traceStartedAt) : 0;
+  const offset = Number.isFinite(start)
+    ? Math.max(0, start - input.traceStartedAt)
+    : 0;
   const elapsed = durationMs(input.startedAt, input.endedAt);
   const kind = normalizeObservationKind(input.type);
   return {
@@ -313,7 +448,7 @@ function waterfallItem(input: {
     durationMs: elapsed,
     offsetPct: Math.min(100, (offset / input.total) * 100),
     widthPct: Math.max(1, Math.min(100, (elapsed / input.total) * 100)),
-    status: input.level === "ERROR" ? "error" : "ok",
+    status: input.status,
     kind
   };
 }
@@ -351,11 +486,18 @@ function toolStatuses(results: unknown): string[] {
 
 function traceStatus(
   trace: AgentTurnTrace,
-  diagnostics: Diagnostic[]
+  diagnostics: Diagnostic[],
+  activeRun?: ActiveRunView
 ): TraceSummary["status"] {
+  if (activeRun?.status === "running") {
+    return "running";
+  }
   if (
+    activeRun?.status === "failed" ||
     diagnostics.some((diagnostic) => diagnostic.severity === "error") ||
-    (trace.spans ?? []).some((span) => readString(asRecord(span.attributes).status) === "error") ||
+    (trace.spans ?? []).some(
+      (span) => readString(asRecord(span.attributes).status) === "error"
+    ) ||
     (trace.observations ?? []).some((observation) => observation.level === "ERROR")
   ) {
     return "error";
@@ -377,7 +519,10 @@ function readTraceModel(trace: AgentTurnTrace): string | undefined {
     .find((model): model is string => Boolean(model));
 }
 
-function diagnosticsForTrace(traceId: string, diagnostics: Diagnostic[]): Diagnostic[] {
+function diagnosticsForTrace(
+  traceId: string,
+  diagnostics: Diagnostic[]
+): Diagnostic[] {
   return diagnostics.filter((diagnostic) => diagnostic.traceId === traceId);
 }
 
@@ -397,7 +542,8 @@ function findRelatedSessionRecord(
       (item) => item.type === "event" && item.eventId === trace.eventId
     );
     if (turnItem || eventItem) {
-      const turn = turnItem?.type === "turn" ? findTurn(workspace, turnItem.id) : undefined;
+      const turn =
+        turnItem?.type === "turn" ? findTurn(workspace, turnItem.id) : undefined;
       return {
         conversationKey: conversation.key,
         ...(turn ? { turn } : {}),
@@ -408,13 +554,19 @@ function findRelatedSessionRecord(
   return {};
 }
 
-function findTurn(workspace: TraceWorkspace, turnId: string): SessionTurnRecord | undefined {
+function findTurn(
+  workspace: TraceWorkspace,
+  turnId: string
+): SessionTurnRecord | undefined {
   for (const conversation of workspace.conversations) {
     const turn = conversation.timeline.find(
       (item) => item.type === "turn" && item.id === turnId
     );
     if (!turn || turn.type !== "turn") {
       continue;
+    }
+    if (!isSessionTurnStatus(turn.status)) {
+      return undefined;
     }
     return {
       id: turn.id,
@@ -436,6 +588,12 @@ function findTurn(workspace: TraceWorkspace, turnId: string): SessionTurnRecord 
   return undefined;
 }
 
+function isSessionTurnStatus(
+  value: string
+): value is SessionTurnRecord["status"] {
+  return value === "completed" || value === "cancelled" || value === "failed";
+}
+
 export function describeObservation(observation: ObservationRecord): string {
   if (observation.type === "generation") {
     const output = asRecord(observation.output);
@@ -452,5 +610,7 @@ export function traceToolNames(trace: AgentTurnTrace): string[] {
   const fromToolObservations = (trace.observations ?? [])
     .filter((observation) => observation.type === "tool")
     .map((observation) => observation.name);
-  return Array.from(new Set([...fromActions, ...fromToolObservations, ...readStringArray([])]));
+  return Array.from(
+    new Set([...fromActions, ...fromToolObservations, ...readStringArray([])])
+  );
 }

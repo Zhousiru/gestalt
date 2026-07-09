@@ -3,6 +3,7 @@ import { createRuntime } from "../../runtime/createRuntime";
 import { loadConfig } from "../../home/loadConfig";
 import { loadEnv } from "../../home/loadEnv";
 import { resolveGestaltHome } from "../../home/resolveGestaltHome";
+import type { LiveEventSink } from "../../live/viewTypes";
 import { createAiSdkModelFromConfig } from "../../model/aiSdkModel";
 import { createOneBotConnector } from "./connector";
 import {
@@ -14,6 +15,7 @@ import {
 export interface RunOneBotRuntimeOptions {
   gestaltHome?: string;
   transport: OneBotTransport;
+  liveEvents?: LiveEventSink;
 }
 
 export async function createOneBotRuntime(
@@ -30,7 +32,8 @@ export async function createOneBotRuntime(
   const runtime = await createRuntime({
     gestaltHome: home.root,
     connector,
-    model: createAiSdkModelFromConfig(config)
+    model: createAiSdkModelFromConfig(config),
+    ...(options.liveEvents ? { liveEvents: options.liveEvents } : {})
   });
 
   options.transport.onEvent((rawEvent) => {

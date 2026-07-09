@@ -11,7 +11,7 @@ import { z } from "zod";
 import type { CompiledContext } from "../context/compileContext";
 import type { MessageReceivedEvent } from "../events/schemas";
 import type { GestaltConfig } from "../home/loadConfig";
-import { throwIfTurnSteered, TurnSteeredError } from "../runtime/turnSignals";
+import { readTurnAbortError, throwIfTurnSteered } from "../runtime/turnSignals";
 import {
   executeActions,
   type ToolExecutionResult
@@ -180,7 +180,7 @@ export function createAiSdkModel(options: CreateAiSdkModelOptions): ModelClient 
         })
         .catch((error: unknown) => {
           const thrownError = runOptions.signal?.aborted
-            ? new TurnSteeredError()
+            ? readTurnAbortError(runOptions.signal)
             : error;
           attachModelStepsToError(thrownError, modelStepRecorder.steps);
           throw thrownError;

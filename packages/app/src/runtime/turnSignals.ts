@@ -5,16 +5,36 @@ export class TurnSteeredError extends Error {
   }
 }
 
+export class AgentLoopForceLeaveError extends Error {
+  constructor(message = "Active loop was force-ended by /leave.") {
+    super(message);
+    this.name = "AbortError";
+  }
+}
+
 export function isTurnSteeredError(error: unknown): boolean {
   return (
     error instanceof TurnSteeredError ||
-    (error instanceof Error && error.name === "AbortError")
+    (error instanceof Error &&
+      error.name === "AbortError" &&
+      !(error instanceof AgentLoopForceLeaveError))
   );
+}
+
+export function isAgentLoopForceLeaveError(error: unknown): boolean {
+  return error instanceof AgentLoopForceLeaveError;
+}
+
+export function readTurnAbortError(signal?: AbortSignal): Error {
+  if (signal?.reason instanceof AgentLoopForceLeaveError) {
+    return signal.reason;
+  }
+  return new TurnSteeredError();
 }
 
 export function throwIfTurnSteered(signal?: AbortSignal): void {
   if (signal?.aborted) {
-    throw new TurnSteeredError();
+    throw readTurnAbortError(signal);
   }
 }
 
@@ -36,7 +56,7 @@ export async function waitForTurnDelay(
 
     function onAbort(): void {
       clearTimeout(timer);
-      reject(new TurnSteeredError());
+      reject(readTurnAbortError(signal));
     }
 
     signal?.addEventListener("abort", onAbort, { once: true });

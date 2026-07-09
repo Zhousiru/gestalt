@@ -1,8 +1,18 @@
+import { existsSync } from "node:fs";
+import path from "node:path";
 import { createMockConnector, createMockMessageEvent } from "./connectors/mock/connector";
 import {
   createOneBotRuntime,
   createOneBotTransportFromConfig
 } from "./connectors/onebot/live";
+import {
+  createLiveEventBus,
+  createLiveRunStore,
+  startLiveDebugServer,
+  type LiveDebugServer,
+  type LiveEventBus,
+  type LiveRunStore
+} from "./live";
 import { createRuntime } from "./runtime/createRuntime";
 
 interface CliOptions {
@@ -17,6 +27,15 @@ interface CliOptions {
   onebotPort?: number;
   onebotPath?: string;
   onebotAccessToken?: string;
+  live: boolean;
+  liveHost?: string;
+  livePort?: number;
+  liveUiDir?: string;
+}
+
+interface LiveSupport {
+  bus: LiveEventBus;
+  runStore: LiveRunStore;
 }
 
 async function main(): Promise<void> {
@@ -28,8 +47,10 @@ async function main(): Promise<void> {
   }
 
   if (options.connector !== "mock") {
+    const liveSupport = options.live ? createLiveSupport() : undefined;
     const runtime = await createOneBotRuntime({
       ...(options.home ? { gestaltHome: options.home } : {}),
+      ...(liveSupport ? { liveEvents: liveSupport.bus } : {}),
       transport: createOneBotTransportFromConfig({
         mode:
           options.connector === "onebot-forward-ws"
@@ -41,15 +62,21 @@ async function main(): Promise<void> {
         ...(options.onebotPath ? { path: options.onebotPath } : {}),
         ...(options.onebotAccessToken
           ? { accessToken: options.onebotAccessToken }
-          : {})
+        : {})
       })
     });
+    const liveServer = await startLiveServerIfEnabled(
+      options,
+      liveSupport,
+      runtime
+    );
     console.log(
       JSON.stringify(
         {
           connector: options.connector,
           gestaltHome: runtime.home.root,
-          status: "listening"
+          status: "listening",
+          ...(liveServer ? { liveUrl: liveServer.url } : {})
         },
         null,
         2
@@ -60,10 +87,17 @@ async function main(): Promise<void> {
   }
 
   const connector = createMockConnector();
+  const liveSupport = options.live ? createLiveSupport() : undefined;
   const runtime = await createRuntime({
     ...(options.home ? { gestaltHome: options.home } : {}),
-    connector
+    connector,
+    ...(liveSupport ? { liveEvents: liveSupport.bus } : {})
   });
+  const liveServer = await startLiveServerIfEnabled(
+    options,
+    liveSupport,
+    runtime
+  );
 
   const event = createMockMessageEvent({
     conversationId: options.groupId,
@@ -85,18 +119,24 @@ async function main(): Promise<void> {
             proposedActions: result.proposedActions.map(
               (action) => action.toolName
             ),
-            tools: result.toolResults.map((toolResult) => toolResult.status)
+            tools: result.toolResults.map((toolResult) => toolResult.status),
+            ...(liveServer ? { liveUrl: liveServer.url } : {})
           }
         : {
             triggered: false,
             gestaltHome: runtime.home.root,
             proposedActions: [],
-            tools: []
+            tools: [],
+            ...(liveServer ? { liveUrl: liveServer.url } : {})
           },
       null,
       2
     )
   );
+
+  if (liveServer) {
+    await waitForever();
+  }
 }
 
 function parseArgs(args: string[]): CliOptions | "help" {
@@ -105,7 +145,8 @@ function parseArgs(args: string[]): CliOptions | "help" {
     message: "gestalt 在吗？",
     groupId: "mock-group",
     senderId: "mock-user",
-    mentionsBot: true
+    mentionsBot: true,
+    live: false
   };
 
   for (let index = 0; index < args.length; index += 1) {
@@ -160,6 +201,28 @@ function parseArgs(args: string[]): CliOptions | "help" {
       index += 1;
       continue;
     }
+    if (arg === "--live") {
+      options.live = true;
+      continue;
+    }
+    if (arg === "--live-host") {
+      options.liveHost = readValue(args, index, arg);
+      index += 1;
+      continue;
+    }
+    if (arg === "--live-port") {
+      options.livePort = Number(readValue(args, index, arg));
+      if (!Number.isInteger(options.livePort) || options.livePort <= 0) {
+        throw new Error("--live-port must be a positive integer.");
+      }
+      index += 1;
+      continue;
+    }
+    if (arg === "--live-ui-dir") {
+      options.liveUiDir = readValue(args, index, arg);
+      index += 1;
+      continue;
+    }
     if (arg === "--message") {
       options.message = readValue(args, index, arg);
       index += 1;
@@ -194,6 +257,45 @@ function readValue(args: string[], index: number, arg: string): string {
   return value;
 }
 
+function createLiveSupport(): LiveSupport {
+  const bus = createLiveEventBus();
+  return {
+    bus,
+    runStore: createLiveRunStore(bus)
+  };
+}
+
+async function startLiveServerIfEnabled(
+  options: CliOptions,
+  liveSupport: LiveSupport | undefined,
+  runtime: Awaited<ReturnType<typeof createRuntime>>
+): Promise<LiveDebugServer | undefined> {
+  if (!liveSupport) {
+    return undefined;
+  }
+  return startLiveDebugServer({
+    runtime,
+    bus: liveSupport.bus,
+    runStore: liveSupport.runStore,
+    ...(options.liveHost ? { host: options.liveHost } : {}),
+    ...(options.livePort ? { port: options.livePort } : {}),
+    ...(options.liveUiDir ? { uiDir: resolveLiveUiDir(options.liveUiDir) } : {})
+  });
+}
+
+function resolveLiveUiDir(input: string): string {
+  if (path.isAbsolute(input)) {
+    return input;
+  }
+
+  const candidates = [
+    path.resolve(input),
+    path.resolve("..", input),
+    path.resolve("..", "..", input)
+  ];
+  return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0]!;
+}
+
 function printHelp(): void {
   console.log(`Usage:
   pnpm --filter @gestalt/app dev -- [options]
@@ -205,6 +307,10 @@ Options:
   --group <id>         Mock group id.
   --sender <id>        Mock sender id.
   --no-mention         Mark the mock event as not directly mentioning the bot.
+  --live               Start the local runtime live API/SSE server.
+  --live-host <host>   Live server host. Defaults to 127.0.0.1.
+  --live-port <port>   Live server port. Defaults to 5175.
+  --live-ui-dir <dir>  Serve built trace UI assets from this directory.
   --onebot-ws-url <url>       OneBot forward WebSocket URL.
   --onebot-host <host>        Reverse WebSocket host. Defaults to 0.0.0.0.
   --onebot-port <port>        Reverse WebSocket port.

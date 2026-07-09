@@ -12,7 +12,10 @@ export function shortId(id: string | undefined, length = 8): string {
   return id.length <= length ? id : id.slice(0, length);
 }
 
-export function durationMs(startedAt: string | undefined, endedAt: string | undefined): number {
+export function durationMs(
+  startedAt: string | undefined,
+  endedAt: string | undefined
+): number {
   const start = startedAt ? Date.parse(startedAt) : Number.NaN;
   const end = endedAt ? Date.parse(endedAt) : Number.NaN;
   if (!Number.isFinite(start) || !Number.isFinite(end)) {
@@ -21,7 +24,10 @@ export function durationMs(startedAt: string | undefined, endedAt: string | unde
   return Math.max(0, Math.round(end - start));
 }
 
-export function sortByTime<T>(items: T[], getTime: (item: T) => string | undefined): T[] {
+export function sortByTime<T>(
+  items: T[],
+  getTime: (item: T) => string | undefined
+): T[] {
   return [...items].sort((a, b) => {
     const left = Date.parse(getTime(a) ?? "");
     const right = Date.parse(getTime(b) ?? "");
@@ -34,7 +40,7 @@ export function truncate(value: string, maxLength = 180): string {
   if (normalized.length <= maxLength) {
     return normalized;
   }
-  return `${normalized.slice(0, maxLength - 1)}…`;
+  return `${normalized.slice(0, maxLength - 1)}...`;
 }
 
 export function jsonPreview(value: unknown, maxLength = 220): string {

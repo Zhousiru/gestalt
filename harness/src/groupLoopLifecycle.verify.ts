@@ -1,10 +1,23 @@
+import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import { appendFile, cp, mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import {
+  createMockConnector,
+  createMockToolKit,
+  createRuntime,
+  type CompiledContext,
+  type ModelClient
+} from "@gestalt/app";
 import { assertReplayRun } from "./assertions";
 import { runScenarioFixture } from "./replayRunner";
 
 const fixturePaths = [
   "harness/fixtures/scenarios/group-exit-idle-timeout.json",
   "harness/fixtures/scenarios/group-exit-say-nothing.json",
-  "harness/fixtures/scenarios/group-exit-leave-tool.json"
+  "harness/fixtures/scenarios/group-exit-leave-tool.json",
+  "harness/fixtures/scenarios/group-exit-slash-leave.json"
 ];
 
 const results = [];
@@ -15,6 +28,8 @@ for (const fixturePath of fixturePaths) {
   assertReplayRun(result);
   results.push(result);
 }
+
+await assertActiveLoopSelfHistoryIsRetained();
 
 console.log(
   JSON.stringify(
@@ -45,3 +60,116 @@ console.log(
     2
   )
 );
+
+async function assertActiveLoopSelfHistoryIsRetained(): Promise<void> {
+  const repoRoot = path.resolve(import.meta.dirname, "..", "..");
+  const tempHome = await mkdtemp(path.join(os.tmpdir(), "gestalt-self-history-"));
+  await cp(
+    path.join(repoRoot, "harness/fixtures/homes/simple-group-test"),
+    tempHome,
+    { recursive: true }
+  );
+  await appendFile(
+    path.join(tempHome, "config.toml"),
+    "\ncontext_recent_message_count = 4\n",
+    "utf8"
+  );
+
+  try {
+    const connector = createMockConnector();
+    const mockTools = createMockToolKit();
+    const transcripts: string[] = [];
+    let modelCalls = 0;
+
+    const model = {
+      name: "capture-active-loop-self-history",
+      async proposeActions(context: CompiledContext) {
+        transcripts.push(context.transcript);
+        modelCalls += 1;
+        const proposedAt = new Date().toISOString();
+
+        if (modelCalls === 1 && context.event.type === "MessageReceived") {
+          return {
+            proposedActions: [
+              {
+                id: randomUUID(),
+                proposedAt,
+                toolName: "send_group_message",
+                reason: "Seed a visible self message for the next active-loop turn.",
+                params: {
+                  groupId: context.event.conversation.id,
+                  text: "干嘛 有屁快放"
+                }
+              }
+            ]
+          };
+        }
+
+        return {
+          proposedActions: [
+            {
+              id: randomUUID(),
+              proposedAt,
+              toolName: "say_nothing",
+              reason: "Captured the follow-up context for assertion.",
+              params: {}
+            }
+          ]
+        };
+      }
+    } satisfies ModelClient;
+
+    const runtime = await createRuntime({
+      gestaltHome: tempHome,
+      connector,
+      model,
+      toolImplementations: mockTools.implementations
+    });
+
+    const firstEvent = connector.createMessageEvent({
+      conversationId: "mock-group",
+      conversationName: "Mock Group",
+      messageId: "self-history-first",
+      senderId: "alice",
+      senderName: "Alice",
+      text: "小格，在吗",
+      mentionsBot: true
+    });
+    const firstTurn = runtime.handleEvent(firstEvent);
+
+    await delay(40);
+
+    const secondEvent = connector.createMessageEvent({
+      conversationId: "mock-group",
+      conversationName: "Mock Group",
+      messageId: "self-history-follow-up",
+      senderId: "alice",
+      senderName: "Alice",
+      text: "那么烦躁干嘛",
+      mentionsBot: false
+    });
+    const secondTurn = runtime.handleEvent(secondEvent);
+
+    await Promise.allSettled([firstTurn, secondTurn]);
+    await runtime.whenIdle();
+
+    const followUpTranscript = transcripts.find((transcript) =>
+      transcript.includes("那么烦躁干嘛")
+    );
+    assert.ok(
+      followUpTranscript,
+      "expected to capture the active-loop follow-up transcript"
+    );
+    assert.match(followUpTranscript, /sender_role=self/);
+    assert.match(followUpTranscript, /context=history/);
+    assert.match(followUpTranscript, /干嘛 有屁快放/);
+  } finally {
+    await rm(tempHome, { recursive: true, force: true });
+  }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}

@@ -14,6 +14,7 @@ export * from "./home/loadEnv";
 export * from "./home/loadConfig";
 export * from "./home/resolveGestaltHome";
 export * from "./inspect/agent";
+export * from "./live";
 export * from "./memory/store";
 export * from "./memory/dreaming";
 export * from "./model/aiSdkModel";

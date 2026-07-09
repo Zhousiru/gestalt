@@ -379,6 +379,7 @@ For model behavior, verify:
 - Action selection is represented by model tool calls, not JSON text returned in assistant content.
 - Multi-step agent behavior is represented by multiple model exchanges, with at most one action tool call per response when the fixture requires serial tool use.
 - `leave` is a model-visible lifecycle tool and should appear in actions, tool results, session loop exits, and trace tool calls when the model actively exits the loop.
+- `/leave` is a user control command that force-ends the current active loop as `slash_leave`; it should be recorded as an event, should not create a new model window, and should not require the model to call the `leave` tool.
 - Dreaming exchanges expose the expected `bash` and `finish_dreaming` tool calls when memory is being maintained.
 - The proposed action has the expected tool name and arguments.
 - The action tool-call arguments stay inside basic shape constraints.
@@ -461,12 +462,13 @@ For GestaltHome behavior, verify:
 - Trace export records the same tool sequence under `tool.execute`.
 - Eval rubric: `multi_step_agent_tool_quality`, judging whether the serial tool sequence is coherent and inspectable.
 
-`group-exit-idle-timeout.json`, `group-exit-say-nothing.json`, and `group-exit-leave-tool.json` verify:
+`group-exit-idle-timeout.json`, `group-exit-say-nothing.json`, `group-exit-leave-tool.json`, and `group-exit-slash-leave.json` verify:
 
 - Active loops export `loopExits` in `session.json`.
 - Idle timeout releases an active loop when no new messages arrive.
 - Three consecutive `say_nothing` turns release an active loop.
 - The model-visible `leave` tool releases an active loop without connector side effects.
+- The user control command `/leave` force-releases the active loop as `slash_leave` without a model request, model action, tool call, or connector side effect.
 - Multi-turn loop fixtures can assert every turn's event sequence and steer count.
 
 `memory-injection-dreaming.json`, `memory-correction-dreaming.json`, and `memory-pruning-dreaming.json` verify:

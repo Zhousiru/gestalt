@@ -27,6 +27,7 @@ import type {
   ObservationRecord,
   SpanRecord
 } from "../trace/schemas";
+import type { LiveEventSink } from "../live/viewTypes";
 import {
   executeActions,
   type ToolExecutionResult,
@@ -60,6 +61,7 @@ export interface AgentLoopDependencies {
   sessionStore: SessionStore;
   traceRecorder?: TraceRecorder;
   toolImplementations?: ToolImplementations;
+  liveEvents?: LiveEventSink;
   now: () => Date;
 }
 
@@ -89,6 +91,8 @@ export async function runAgentTurn(
   const observations: ObservationRecord[] = [];
   const phases: TurnPhaseRecord[] = [];
   const event = getCurrentEvent(input.eventRecords);
+  let proposedActions: ActionProposal[] = [];
+  let toolResults: ToolExecutionResult[] = [];
   const buildTrace = (
     proposedActions: ActionProposal[],
     toolResults: ToolExecutionResult[]
@@ -112,10 +116,34 @@ export async function runAgentTurn(
       at: dependencies.now().toISOString()
     };
     phases.push(record);
+    dependencies.liveEvents?.publish(
+      "agent.phase.changed",
+      {
+        traceId,
+        phase,
+        at: record.at
+      },
+      record.at
+    );
     input.onPhaseChange?.(phase);
   };
 
-  markPhase("memory_injecting");
+  dependencies.liveEvents?.publish(
+    "agent.run.started",
+    {
+      traceId,
+      eventId: event.id,
+      startedAt: traceStartedAt,
+      gestaltHome: dependencies.home.root,
+      personaVersion: dependencies.persona.version,
+      window: input.window,
+      eventRecords: input.eventRecords
+    },
+    traceStartedAt
+  );
+
+  try {
+    markPhase("memory_injecting");
   throwIfTurnSteered(input.signal);
   const contextEvents = selectContextEvents({
     config: dependencies.config,
@@ -131,6 +159,7 @@ export async function runAgentTurn(
     spans,
     observations,
     dependencies.now,
+    dependencies.liveEvents,
     () =>
       dependencies.memoryStore.findRelevantMemories({
         event,
@@ -162,6 +191,7 @@ export async function runAgentTurn(
     spans,
     observations,
     dependencies.now,
+    dependencies.liveEvents,
     () =>
       compileContext({
         event,
@@ -193,6 +223,7 @@ export async function runAgentTurn(
     spans,
     observations,
     dependencies.now,
+    dependencies.liveEvents,
     () =>
       dependencies.model.proposeActions(
         context,
@@ -229,16 +260,17 @@ export async function runAgentTurn(
     attachAgentTurnTraceToError(error, buildTrace([], []));
     throw error;
   });
-  const proposedActions = modelResult.proposedActions;
+  proposedActions = modelResult.proposedActions;
 
   markPhase("executing");
   throwIfTurnSteered(input.signal);
-  const toolResults = await runSpan(
+  toolResults = await runSpan(
     traceId,
     "tool.execute",
     spans,
     observations,
     dependencies.now,
+    dependencies.liveEvents,
     () => {
       if (modelResult.toolResults) {
         return modelResult.toolResults;
@@ -281,6 +313,17 @@ export async function runAgentTurn(
   markPhase("completed");
 
   const trace = buildTrace(proposedActions, toolResults);
+  dependencies.liveEvents?.publish(
+    "agent.run.completed",
+    {
+      traceId,
+      endedAt: trace.endedAt,
+      proposedActions,
+      toolResults,
+      trace
+    },
+    trace.endedAt
+  );
 
   return {
     traceId,
@@ -293,6 +336,22 @@ export async function runAgentTurn(
     toolResults,
     trace
   };
+  } catch (error) {
+    const trace = buildTrace(proposedActions, toolResults);
+    const message = error instanceof Error ? error.message : String(error);
+    dependencies.liveEvents?.publish(
+      "agent.run.failed",
+      {
+        traceId,
+        endedAt: trace.endedAt,
+        error: message,
+        trace
+      },
+      trace.endedAt
+    );
+    attachAgentTurnTraceToError(error, trace);
+    throw error;
+  }
 }
 
 export async function runDreamingForAgentTurn(
@@ -317,6 +376,7 @@ export async function runDreamingForAgentTurn(
     result.trace.spans,
     result.trace.observations,
     dependencies.now,
+    dependencies.liveEvents,
     () =>
       dependencies.dreamingRunner.run({
         home: dependencies.home,
@@ -385,6 +445,14 @@ export async function recordAgentTrace(
     dependencies.traceRecorder ?? createTraceRecorder(dependencies.home);
   trace.endedAt = dependencies.now().toISOString();
   await traceRecorder.recordAgentTurn(trace);
+  dependencies.liveEvents?.publish(
+    "trace.recorded",
+    {
+      traceId: trace.id,
+      trace
+    },
+    trace.endedAt
+  );
 }
 
 const agentTurnTraceErrorKey = "__gestaltAgentTurnTrace";
@@ -429,6 +497,7 @@ async function runSpan<T>(
   spans: SpanRecord[],
   observations: ObservationRecord[],
   now: () => Date,
+  liveEvents: LiveEventSink | undefined,
   operation: () => T | Promise<T>,
   attributes: Record<string, unknown> = {},
   resultAttributes?: (result: T) => Record<string, unknown>,
@@ -443,6 +512,17 @@ async function runSpan<T>(
 ): Promise<T> {
   const spanId = randomUUID();
   const startedAt = now().toISOString();
+  liveEvents?.publish(
+    "agent.span.started",
+    {
+      traceId,
+      spanId,
+      name,
+      startedAt,
+      attributes
+    },
+    startedAt
+  );
   try {
     const result = await operation();
     const span: SpanRecord = {
@@ -457,9 +537,30 @@ async function runSpan<T>(
         status: "ok"
       }
     };
+    const emittedObservations = [
+      spanToObservation(span),
+      ...(resultObservations?.(result, span).observations ?? [])
+    ];
     spans.push(span);
-    observations.push(spanToObservation(span));
-    observations.push(...(resultObservations?.(result, span).observations ?? []));
+    observations.push(...emittedObservations);
+    liveEvents?.publish(
+      "agent.span.ended",
+      {
+        traceId,
+        span
+      },
+      span.endedAt
+    );
+    for (const observation of emittedObservations) {
+      liveEvents?.publish(
+        "agent.observation.created",
+        {
+          traceId,
+          observation
+        },
+        observation.endedAt ?? observation.startedAt ?? span.endedAt
+      );
+    }
     return result;
   } catch (error) {
     const span: SpanRecord = {
@@ -474,9 +575,30 @@ async function runSpan<T>(
         error: error instanceof Error ? error.message : String(error)
       }
     };
+    const emittedObservations = [
+      spanToObservation(span, "ERROR"),
+      ...(errorObservations?.(error, span).observations ?? [])
+    ];
     spans.push(span);
-    observations.push(spanToObservation(span, "ERROR"));
-    observations.push(...(errorObservations?.(error, span).observations ?? []));
+    observations.push(...emittedObservations);
+    liveEvents?.publish(
+      "agent.span.ended",
+      {
+        traceId,
+        span
+      },
+      span.endedAt
+    );
+    for (const observation of emittedObservations) {
+      liveEvents?.publish(
+        "agent.observation.created",
+        {
+          traceId,
+          observation
+        },
+        observation.endedAt ?? observation.startedAt ?? span.endedAt
+      );
+    }
     throw error;
   }
 }
