@@ -5,7 +5,8 @@ import path from "node:path";
 import {
   createMockConnector,
   createRuntime,
-  type ModelClient
+  type ModelClient,
+  type ModelSession
 } from "@gestalt/app";
 import { assertReplayRun } from "./assertions";
 import { runScenarioFixture } from "./replayRunner";
@@ -76,22 +77,40 @@ async function verifyAllowedGroups(): Promise<{
     let visibleTools: string[] = [];
     const model = {
       name: "capture-tools",
-      async proposeActions(context) {
-        visibleTools = context.tools.map((tool) => tool.name);
+      createSession() {
+        let initialized = false;
+        let running = false;
         return {
-          proposedActions: [
-            {
-              id: "allowed-groups-capture-action",
-              proposedAt: new Date().toISOString(),
-              toolName: "send_group_message",
-              reason: "Capture the configured visible tools.",
-              params: {
-                groupId: "allowed-group",
-                text: "[CQ:reply,id=allowed-message]在"
-              }
-            }
-          ]
-        };
+          get initialized() {
+            return initialized;
+          },
+          get running() {
+            return running;
+          },
+          async run(context) {
+            initialized = true;
+            running = true;
+            visibleTools = context.tools.map((tool) => tool.name);
+            running = false;
+            return {
+              proposedActions: [
+                {
+                  id: "allowed-groups-capture-action",
+                  proposedAt: new Date().toISOString(),
+                  toolName: "send_group_message" as const,
+                  reason: "Capture the configured visible tools.",
+                  params: {
+                    groupId: "allowed-group",
+                    text: "[CQ:reply,id=allowed-message]在"
+                  }
+                }
+              ]
+            };
+          },
+          steer() {
+            return false;
+          }
+        } satisfies ModelSession;
       }
     } satisfies ModelClient;
     const runtime = await createRuntime({

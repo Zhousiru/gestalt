@@ -27,7 +27,7 @@ import type { LiveEventSink } from "../live/viewTypes";
 import {
   createMockModel,
   type ModelClient
-} from "../model/proposeActions";
+} from "../model/session";
 import { loadPersona } from "../persona/loadPersona";
 import {
   createInMemorySessionStore,

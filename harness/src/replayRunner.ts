@@ -527,6 +527,21 @@ async function writeArtifacts(input: {
     modelExchanges: input.modelExchanges.length,
     modelResponses: input.modelExchanges.filter((exchange) => exchange.response)
       .length,
+    modelSessionIds: Array.from(
+      new Set(
+        input.modelRequests
+          .map((request) => request.sessionId)
+          .filter((value): value is string => Boolean(value))
+      )
+    ),
+    cacheHitResponses: input.modelExchanges.filter(
+      (exchange) => (exchange.response?.cacheUsage?.readTokens ?? 0) > 0
+    ).length,
+    cacheReadTokens: input.modelExchanges.reduce(
+      (total, exchange) =>
+        total + (exchange.response?.cacheUsage?.readTokens ?? 0),
+      0
+    ),
     turnResults: input.turnResults.length,
     toolCalls: input.mockTools.calls.map((call) => call.toolName),
     connectorSideEffects: input.connector.sentGroupMessages.length,
@@ -588,6 +603,11 @@ function renderReport(
     `- Model responses: ${
       input.modelExchanges.filter((exchange) => exchange.response).length
     }`,
+    `- Model sessions: ${
+      (summary.modelSessionIds as string[]).join(", ") || "none"
+    }`,
+    `- Prompt-cache hit responses: ${summary.cacheHitResponses}`,
+    `- Prompt-cache read tokens: ${summary.cacheReadTokens}`,
     `- Tool calls: ${
       input.mockTools.calls.map((call) => call.toolName).join(", ") || "none"
     }`,

@@ -16,6 +16,8 @@
     "verify:onebot": "tsx src/onebotProtocol.verify.ts",
     "verify:tools": "tsx src/toolContract.verify.ts",
     "verify:agent": "tsx src/multiStepAgent.verify.ts",
+    "verify:cache": "tsx src/prefixCache.verify.ts",
+    "verify:dream-cache": "tsx src/dreamingPrefixCache.verify.ts",
     "eval": "tsx src/eval.ts && tsx src/onebotProtocol.eval.ts && tsx src/toolContract.eval.ts",
     "eval:group": "tsx src/eval.ts harness/fixtures/scenarios/group-chat-loop-steer.json",
     "eval:context": "tsx src/eval.ts harness/fixtures/scenarios/group-context-history.json",

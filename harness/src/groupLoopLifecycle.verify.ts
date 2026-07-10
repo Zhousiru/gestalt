@@ -8,7 +8,8 @@ import {
   createMockToolKit,
   createRuntime,
   type CompiledContext,
-  type ModelClient
+  type ModelClient,
+  type ModelSession
 } from "@gestalt/app";
 import { assertReplayRun } from "./assertions";
 import { runScenarioFixture } from "./replayRunner";
@@ -29,7 +30,7 @@ for (const fixturePath of fixturePaths) {
   results.push(result);
 }
 
-await assertActiveLoopSelfHistoryIsRetained();
+await assertActiveLoopModelSessionIsReused();
 
 console.log(
   JSON.stringify(
@@ -61,7 +62,7 @@ console.log(
   )
 );
 
-async function assertActiveLoopSelfHistoryIsRetained(): Promise<void> {
+async function assertActiveLoopModelSessionIsReused(): Promise<void> {
   const repoRoot = path.resolve(import.meta.dirname, "..", "..");
   const tempHome = await mkdtemp(path.join(os.tmpdir(), "gestalt-self-history-"));
   await cp(
@@ -80,42 +81,63 @@ async function assertActiveLoopSelfHistoryIsRetained(): Promise<void> {
     const mockTools = createMockToolKit();
     const transcripts: string[] = [];
     let modelCalls = 0;
+    let sessionCreations = 0;
 
     const model = {
       name: "capture-active-loop-self-history",
-      async proposeActions(context: CompiledContext) {
-        transcripts.push(context.transcript);
-        modelCalls += 1;
-        const proposedAt = new Date().toISOString();
+      createSession() {
+        sessionCreations += 1;
+        let initialized = false;
+        let running = false;
+        const session: ModelSession = {
+          get initialized() {
+            return initialized;
+          },
+          get running() {
+            return running;
+          },
+          async run(context: CompiledContext) {
+            initialized = true;
+            running = true;
+            transcripts.push(context.transcript);
+            modelCalls += 1;
+            const proposedAt = new Date().toISOString();
+            running = false;
 
-        if (modelCalls === 1 && context.event.type === "MessageReceived") {
-          return {
-            proposedActions: [
-              {
-                id: randomUUID(),
-                proposedAt,
-                toolName: "send_group_message",
-                reason: "Seed a visible self message for the next active-loop turn.",
-                params: {
-                  groupId: context.event.conversation.id,
-                  text: "干嘛 有屁快放"
-                }
-              }
-            ]
-          };
-        }
-
-        return {
-          proposedActions: [
-            {
-              id: randomUUID(),
-              proposedAt,
-              toolName: "say_nothing",
-              reason: "Captured the follow-up context for assertion.",
-              params: {}
+            if (modelCalls === 1 && context.event.type === "MessageReceived") {
+              return {
+                proposedActions: [
+                  {
+                    id: randomUUID(),
+                    proposedAt,
+                    toolName: "send_group_message" as const,
+                    reason: "Seed a visible self message for the next active-loop turn.",
+                    params: {
+                      groupId: context.event.conversation.id,
+                      text: "干嘛 有屁快放"
+                    }
+                  }
+                ]
+              };
             }
-          ]
+
+            return {
+              proposedActions: [
+                {
+                  id: randomUUID(),
+                  proposedAt,
+                  toolName: "say_nothing" as const,
+                  reason: "Captured the follow-up context for assertion.",
+                  params: {}
+                }
+              ]
+            };
+          },
+          steer() {
+            return false;
+          }
         };
+        return session;
       }
     } satisfies ModelClient;
 
@@ -160,9 +182,13 @@ async function assertActiveLoopSelfHistoryIsRetained(): Promise<void> {
       followUpTranscript,
       "expected to capture the active-loop follow-up transcript"
     );
-    assert.match(followUpTranscript, /sender_role=self/);
-    assert.match(followUpTranscript, /context=history/);
-    assert.match(followUpTranscript, /干嘛 有屁快放/);
+    assert.equal(sessionCreations, 1, "expected one model session per active loop");
+    assert.equal(modelCalls, 2, "expected both turns to reuse that session");
+    assert.doesNotMatch(
+      followUpTranscript,
+      /干嘛 有屁快放/,
+      "incremental windows should not rebuild prior output into a new prompt"
+    );
   } finally {
     await rm(tempHome, { recursive: true, force: true });
   }

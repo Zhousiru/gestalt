@@ -10,9 +10,11 @@ import type { DreamingRunResult, DreamingRunner } from "../memory/dreaming";
 import type { MemoryStore } from "../memory/store";
 import type {
   ModelClient,
+  ModelSession,
+  ModelSessionContinuation,
   ModelStepTraceSnapshot
-} from "../model/proposeActions";
-import { readModelStepsFromError } from "../model/proposeActions";
+} from "../model/session";
+import { readModelStepsFromError } from "../model/session";
 import type { PersonaPack } from "../persona/loadPersona";
 import type {
   MessageWindow,
@@ -69,6 +71,7 @@ export interface RunAgentTurnInput {
   window: MessageWindow;
   eventRecords: SessionEventRecord[];
   steerCount: number;
+  modelSession: ModelSession;
   includeSelfHistory?: boolean;
   signal?: AbortSignal;
   onPhaseChange?: (phase: TurnPhase) => void;
@@ -79,6 +82,7 @@ export interface RunDreamingForAgentTurnInput {
   eventRecords: SessionEventRecord[];
   proposedActions: ActionProposal[];
   toolResults: ToolExecutionResult[];
+  modelContinuation?: ModelSessionContinuation;
 }
 
 export async function runAgentTurn(
@@ -143,77 +147,24 @@ export async function runAgentTurn(
   );
 
   try {
-    markPhase("memory_injecting");
-  throwIfTurnSteered(input.signal);
-  const contextEvents = selectContextEvents({
-    config: dependencies.config,
-    sessionStore: dependencies.sessionStore,
-    window: input.window,
-    windowEvents: input.eventRecords,
-    includeSelfHistory: input.includeSelfHistory ?? true
-  });
-  const contextEventRecords = contextEvents.map((entry) => entry.record);
-  const memories = await runSpan(
-    traceId,
-    "memory.inject",
-    spans,
-    observations,
-    dependencies.now,
-    dependencies.liveEvents,
-    () =>
-      dependencies.memoryStore.findRelevantMemories({
-        event,
-        windowEvents: contextEventRecords
-      }),
-    {
-      strategy: "file-indexes",
-      windowId: input.window.id,
-      fromSeq: input.window.fromSeq,
-      toSeq: input.window.toSeq,
-      contextEventCount: contextEvents.length
-    },
-    (result) => ({
-      memoryFragments: result.length,
-      memoryFiles: result.map((memory) => ({
-        scope: memory.scope,
-        ...(memory.userId ? { userId: memory.userId } : {}),
-        relativePath: memory.relativePath,
-        contentPreview: truncateForTrace(memory.content)
-      }))
-    })
-  );
-
-  markPhase("context_compiling");
-  throwIfTurnSteered(input.signal);
-  const context = await runSpan(
-    traceId,
-    "context.compile",
-    spans,
-    observations,
-    dependencies.now,
-    dependencies.liveEvents,
-    () =>
-      compileContext({
-        event,
-        window: input.window,
-        windowEvents: input.eventRecords,
-        contextEvents,
-        persona: dependencies.persona,
-        memories,
-        tools: dependencies.tools,
-        config: dependencies.config
-      }),
-    {
-      personaVersion: dependencies.persona.version,
-      personaFragments: dependencies.persona.fragments.length,
-      memoryFragments: memories.length,
-      tools: dependencies.tools.map((tool) => tool.name),
-      windowReason: input.window.reason,
-      windowEventCount: input.eventRecords.length,
-      contextEventCount: contextEvents.length,
-      steerCount: input.steerCount
-    }
-  );
+    const context = input.modelSession.initialized
+      ? await compileIncrementalTurnContext(
+          dependencies,
+          input,
+          traceId,
+          spans,
+          observations,
+          markPhase
+        )
+      : await compileInitialTurnContext(
+          dependencies,
+          input,
+          event,
+          traceId,
+          spans,
+          observations,
+          markPhase
+        );
 
   markPhase("model_running");
   throwIfTurnSteered(input.signal);
@@ -225,7 +176,7 @@ export async function runAgentTurn(
     dependencies.now,
     dependencies.liveEvents,
     () =>
-      dependencies.model.proposeActions(
+      input.modelSession.run(
         context,
         {
           ...(input.signal ? { signal: input.signal } : {}),
@@ -233,7 +184,20 @@ export async function runAgentTurn(
           now: dependencies.now,
           ...(dependencies.toolImplementations
             ? { toolImplementations: dependencies.toolImplementations }
-            : {})
+            : {}),
+          onModelAttemptStart() {
+            input.onPhaseChange?.("model_running");
+          },
+          onToolExecutionStart(proposal) {
+            if (isVisibleSideEffect(proposal)) {
+              input.onPhaseChange?.("executing");
+            }
+          },
+          onToolExecutionEnd(proposal) {
+            if (isVisibleSideEffect(proposal)) {
+              input.onPhaseChange?.("model_running");
+            }
+          }
         }
       ),
     { model: dependencies.model.name ?? "unknown" },
@@ -354,6 +318,159 @@ export async function runAgentTurn(
   }
 }
 
+async function compileInitialTurnContext(
+  dependencies: AgentLoopDependencies,
+  input: RunAgentTurnInput,
+  event: CanonicalEvent,
+  traceId: string,
+  spans: SpanRecord[],
+  observations: ObservationRecord[],
+  markPhase: (phase: TurnPhase) => void
+) {
+  markPhase("memory_injecting");
+  throwIfTurnSteered(input.signal);
+  const contextEvents = selectContextEvents({
+    config: dependencies.config,
+    sessionStore: dependencies.sessionStore,
+    window: input.window,
+    windowEvents: input.eventRecords,
+    includeSelfHistory: input.includeSelfHistory ?? true
+  });
+  const contextEventRecords = contextEvents.map((entry) => entry.record);
+  const memories = await runSpan(
+    traceId,
+    "memory.inject",
+    spans,
+    observations,
+    dependencies.now,
+    dependencies.liveEvents,
+    () =>
+      dependencies.memoryStore.findRelevantMemories({
+        event,
+        windowEvents: contextEventRecords
+      }),
+    {
+      strategy: "file-indexes",
+      windowId: input.window.id,
+      fromSeq: input.window.fromSeq,
+      toSeq: input.window.toSeq,
+      contextEventCount: contextEvents.length
+    },
+    (result) => ({
+      memoryFragments: result.length,
+      memoryFiles: result.map((memory) => ({
+        scope: memory.scope,
+        ...(memory.userId ? { userId: memory.userId } : {}),
+        relativePath: memory.relativePath,
+        contentPreview: truncateForTrace(memory.content)
+      }))
+    })
+  );
+
+  markPhase("context_compiling");
+  throwIfTurnSteered(input.signal);
+  return runSpan(
+    traceId,
+    "context.compile",
+    spans,
+    observations,
+    dependencies.now,
+    dependencies.liveEvents,
+    () =>
+      compileContext({
+        event,
+        window: input.window,
+        windowEvents: input.eventRecords,
+        contextEvents,
+        persona: dependencies.persona,
+        memories,
+        tools: dependencies.tools,
+        config: dependencies.config
+      }),
+    {
+      mode: "session_initial",
+      personaVersion: dependencies.persona.version,
+      personaFragments: dependencies.persona.fragments.length,
+      memoryFragments: memories.length,
+      tools: dependencies.tools.map((tool) => tool.name),
+      windowReason: input.window.reason,
+      windowEventCount: input.eventRecords.length,
+      contextEventCount: contextEvents.length,
+      steerCount: input.steerCount
+    }
+  );
+}
+
+async function compileIncrementalTurnContext(
+  dependencies: AgentLoopDependencies,
+  input: RunAgentTurnInput,
+  traceId: string,
+  spans: SpanRecord[],
+  observations: ObservationRecord[],
+  markPhase: (phase: TurnPhase) => void
+) {
+  markPhase("context_compiling");
+  throwIfTurnSteered(input.signal);
+  return runSpan(
+    traceId,
+    "context.compile",
+    spans,
+    observations,
+    dependencies.now,
+    dependencies.liveEvents,
+    () =>
+      compileIncrementalAgentContext(
+        dependencies,
+        input.window,
+        input.eventRecords
+      ),
+    {
+      mode: "session_append",
+      windowReason: input.window.reason,
+      windowEventCount: input.eventRecords.length,
+      steerCount: input.steerCount
+    }
+  );
+}
+
+export function compileIncrementalAgentContext(
+  dependencies: AgentLoopDependencies,
+  window: MessageWindow,
+  eventRecords: SessionEventRecord[]
+) {
+  const event = getCurrentEvent(eventRecords);
+  const contextEvents = selectContextEvents({
+    config: dependencies.config,
+    sessionStore: dependencies.sessionStore,
+    window,
+    windowEvents: eventRecords,
+    includeSelfHistory: true,
+    includeRecentHistory: false
+  });
+  return compileContext({
+    event,
+    window,
+    windowEvents: eventRecords,
+    contextEvents,
+    persona: dependencies.persona,
+    memories: [],
+    tools: dependencies.tools,
+    config: dependencies.config
+  });
+}
+
+function isVisibleSideEffect(proposal: ActionProposal): boolean {
+  return (
+    proposal.toolName === "send_group_message" ||
+    proposal.toolName === "send_dm" ||
+    proposal.toolName === "send_image" ||
+    proposal.toolName === "send_sticker" ||
+    proposal.toolName === "react_to_message" ||
+    proposal.toolName === "poke_user" ||
+    proposal.toolName === "recall_own_message"
+  );
+}
+
 export async function runDreamingForAgentTurn(
   dependencies: AgentLoopDependencies,
   result: AgentTurnResult,
@@ -387,6 +504,9 @@ export async function runDreamingForAgentTurn(
         memories,
         proposedActions: input.proposedActions,
         toolResults: input.toolResults,
+        ...(input.modelContinuation
+          ? { modelContinuation: input.modelContinuation }
+          : {}),
         now: dependencies.now
       }),
     {
@@ -645,6 +765,14 @@ function createGenerationObservations(input: {
         : {}),
       ...(step.response?.finishReason
         ? { finishReason: step.response.finishReason }
+        : {}),
+      ...(step.response?.cacheUsage
+        ? {
+            cacheReadTokens: step.response.cacheUsage.readTokens,
+            ...(step.response.cacheUsage.writeTokens !== undefined
+              ? { cacheWriteTokens: step.response.cacheUsage.writeTokens }
+              : {})
+          }
         : {})
     }
   }));
@@ -747,7 +875,10 @@ function summarizeModelResponsesForTrace(
       ...(response.toolResults !== undefined
       ? { toolResults: response.toolResults }
       : {}),
-      ...(response.usage !== undefined ? { usage: response.usage } : {})
+      ...(response.usage !== undefined ? { usage: response.usage } : {}),
+      ...(response.cacheUsage !== undefined
+        ? { cacheUsage: response.cacheUsage }
+        : {})
     }));
 }
 

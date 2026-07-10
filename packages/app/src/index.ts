@@ -18,7 +18,7 @@ export * from "./live";
 export * from "./memory/store";
 export * from "./memory/dreaming";
 export * from "./model/aiSdkModel";
-export * from "./model/proposeActions";
+export * from "./model/session";
 export * from "./persona/loadPersona";
 export * from "./runtime/createRuntime";
 export * from "./runtime/agentLoop";

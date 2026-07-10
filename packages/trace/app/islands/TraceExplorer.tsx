@@ -803,9 +803,9 @@ function RunDetail({ detail }: { detail: TraceDetail }) {
         </ScrollArea>
       </TabsContent>
       <TabsContent value="model" className="min-h-0 min-w-0">
-        <ScrollArea className="h-full min-w-0">
+        <div className="h-full min-h-0 min-w-0 overflow-y-auto overscroll-contain [scrollbar-gutter:stable]">
           <ModelIoPanel trace={detail.trace} diagnostics={detail.diagnostics} />
-        </ScrollArea>
+        </div>
       </TabsContent>
       <TabsContent value="waterfall" className="min-h-0 min-w-0">
         <ScrollArea className="h-full min-w-0">
@@ -828,9 +828,15 @@ function RunDetail({ detail }: { detail: TraceDetail }) {
 
 interface ModelStepView {
   id: string;
+  requestIndex: number;
   stepNumber: number;
+  purpose: string;
   model: string | undefined;
   provider: string | undefined;
+  sessionId: string | undefined;
+  promptCacheEnabled: boolean | undefined;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
   temperature: number | undefined;
   finishReason: string | undefined;
   startedAt: string | undefined;
@@ -856,6 +862,15 @@ interface ModelMessageView {
   markers: string[];
 }
 
+type PromptViewMode = "delta" | "full";
+
+interface PromptDelta {
+  kind: "initial" | "appended" | "changed" | "unchanged";
+  messages: ModelMessageView[];
+  reusedCount: number;
+  replacedCount: number;
+}
+
 function ModelIoPanel({
   trace,
   diagnostics
@@ -863,6 +878,7 @@ function ModelIoPanel({
   trace: AgentTurnTrace;
   diagnostics: Diagnostic[];
 }) {
+  const [promptView, setPromptView] = useState<PromptViewMode>("delta");
   const steps = collectModelSteps(trace);
   const silentDiagnostics = diagnostics.filter(
     (diagnostic) => diagnostic.code === "silent_model_stop"
@@ -878,37 +894,244 @@ function ModelIoPanel({
 
   return (
     <div className="space-y-4 p-4">
-      <section className={cn(cardClass, "p-3")}>
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <h3 className="text-sm font-semibold">Model I/O</h3>
-            <p className="mt-1 text-xs text-neutral-500">
-              {steps.length} model step{steps.length === 1 ? "" : "s"}
-            </p>
+      <section className={cn(cardClass, "overflow-hidden")}>
+        <div className="p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h3 className="text-sm font-semibold">Model I/O</h3>
+              <p className="mt-1 text-xs text-neutral-500">
+                {steps.length} model step{steps.length === 1 ? "" : "s"} · prompt changes shown by default
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <PromptViewToggle value={promptView} onChange={setPromptView} />
+              <StatusPill tone={silentDiagnostics.length ? "warning" : "neutral"}>
+                {silentDiagnostics.length ? "silent output" : "captured"}
+              </StatusPill>
+            </div>
           </div>
-          <StatusPill tone={silentDiagnostics.length ? "warning" : "neutral"}>
-            {silentDiagnostics.length ? "silent output" : "captured"}
-          </StatusPill>
+          {silentDiagnostics.map((diagnostic) => (
+            <div
+              key={diagnostic.id}
+              className="mt-3 rounded-md bg-amber-50 p-3 text-xs leading-5 text-amber-950 ring-1 ring-amber-200 [overflow-wrap:anywhere]"
+            >
+              {diagnostic.message}
+            </div>
+          ))}
         </div>
-        {silentDiagnostics.map((diagnostic) => (
-          <div
-            key={diagnostic.id}
-            className="mt-3 rounded-md bg-amber-50 p-3 text-xs leading-5 text-amber-950 ring-1 ring-amber-200 [overflow-wrap:anywhere]"
-          >
-            {diagnostic.message}
-          </div>
-        ))}
+        <ModelSessionOverview steps={steps} />
       </section>
 
-      {steps.map((step) => (
-        <ModelStepCard key={step.id} step={step} />
+      {groupModelSteps(steps).map((group) => (
+        <section key={group.id} className="space-y-2">
+          <div className="flex min-w-0 items-center justify-between gap-3 px-1">
+            <div className="flex min-w-0 items-center gap-2">
+              <StatusPill tone={purposeTone(group.purpose)}>
+                {purposeLabel(group.purpose)}
+              </StatusPill>
+              <span className="text-xs text-neutral-500">
+                {group.steps.length} request{group.steps.length === 1 ? "" : "s"}
+              </span>
+            </div>
+            <span className="font-mono text-[11px] text-neutral-500">
+              {cacheGroupLabel(group.steps)}
+            </span>
+          </div>
+          {group.steps.map((step) => {
+            const stepIndex = steps.indexOf(step);
+            return (
+              <ModelStepCard
+                key={step.id}
+                step={step}
+                previousStep={stepIndex > 0 ? steps[stepIndex - 1] : undefined}
+                promptView={promptView}
+              />
+            );
+          })}
+        </section>
       ))}
     </div>
   );
 }
 
-function ModelStepCard({ step }: { step: ModelStepView }) {
+function PromptViewToggle({
+  value,
+  onChange
+}: {
+  value: PromptViewMode;
+  onChange: (value: PromptViewMode) => void;
+}) {
+  return (
+    <div
+      className="inline-flex rounded-md bg-neutral-100 p-0.5 ring-1 ring-inset ring-neutral-200"
+      aria-label="Prompt view"
+    >
+      {(["delta", "full"] as const).map((mode) => (
+        <button
+          key={mode}
+          type="button"
+          className={cn(
+            "rounded px-2 py-1 text-[11px] font-medium text-neutral-600 outline-none hover:text-neutral-950 focus-visible:ring-2 focus-visible:ring-[var(--trace-accent)]",
+            value === mode && "bg-white text-neutral-950 shadow-sm"
+          )}
+          aria-pressed={value === mode}
+          onClick={() => onChange(mode)}
+        >
+          {mode === "delta" ? "Changes" : "Full prompt"}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function ModelSessionOverview({ steps }: { steps: ModelStepView[] }) {
+  const sessionIds = Array.from(
+    new Set(
+      steps
+        .map((step) => step.sessionId)
+        .filter((value): value is string => Boolean(value))
+    )
+  );
+  const cacheReadTokens = steps.reduce(
+    (total, step) => total + step.cacheReadTokens,
+    0
+  );
+  const cacheHits = steps.filter((step) => step.cacheReadTokens > 0).length;
+  const firstDreamingIndex = steps.findIndex(
+    (step) => step.purpose === "dreaming"
+  );
+  const firstDreaming =
+    firstDreamingIndex >= 0 ? steps[firstDreamingIndex] : undefined;
+  const lastAction =
+    firstDreamingIndex >= 0
+      ? steps
+          .slice(0, firstDreamingIndex)
+          .filter((step) => step.purpose === "agent_action")
+          .at(-1)
+      : undefined;
+  const hasContinuation = Boolean(firstDreaming && lastAction);
+  const prefixPreserved =
+    hasContinuation && firstDreaming && lastAction
+      ? hasMessagePrefix(firstDreaming.messages, lastAction.messages)
+      : undefined;
+  const protocolStable =
+    hasContinuation && firstDreaming && lastAction
+      ? toolProtocolKey(firstDreaming.tools) === toolProtocolKey(lastAction.tools)
+      : undefined;
+  const sameSession =
+    hasContinuation &&
+    sessionIds.length === 1 &&
+    steps.every((step) => step.sessionId === sessionIds[0]);
+  const continuationHealthy =
+    hasContinuation && sameSession && prefixPreserved && protocolStable;
+
+  return (
+    <div className="border-t border-neutral-200 bg-neutral-50/70 p-3">
+      <div className="flex min-w-0 flex-wrap items-center gap-2">
+        <StatusPill
+          tone={
+            continuationHealthy
+              ? "ok"
+              : hasContinuation
+                ? "warning"
+                : "neutral"
+          }
+        >
+          {continuationHealthy
+            ? "continuous session"
+            : hasContinuation
+              ? "continuation incomplete"
+              : "single phase"}
+        </StatusPill>
+        {steps.some((step) => step.promptCacheEnabled === true) ? (
+          <StatusPill tone={cacheHits > 0 ? "ok" : "warning"}>
+            cache {cacheHits}/{steps.length} hit
+          </StatusPill>
+        ) : steps.some((step) => step.promptCacheEnabled === false) ? (
+          <StatusPill tone="neutral">cache disabled</StatusPill>
+        ) : (
+          <StatusPill tone="neutral">cache metadata unavailable</StatusPill>
+        )}
+      </div>
+
+      <dl className="mt-3 grid min-w-0 grid-cols-2 gap-x-4 gap-y-3 text-xs">
+        <SessionDatum
+          label="session"
+          value={
+            sessionIds.length === 1
+              ? shortId(sessionIds[0]!)
+              : sessionIds.length > 1
+                ? `${sessionIds.length} ids`
+                : "legacy trace"
+          }
+          title={sessionIds.join(", ")}
+        />
+        <SessionDatum
+          label="cache read"
+          value={formatTokenCount(cacheReadTokens)}
+        />
+        <SessionDatum
+          label="action → dreaming"
+          value={
+            hasContinuation
+              ? `${prefixPreserved ? "prefix kept" : "prefix changed"} · ${
+                  protocolStable ? "protocol stable" : "protocol changed"
+                }`
+              : "not present"
+          }
+        />
+        <SessionDatum
+          label="first dream cache"
+          value={
+            firstDreaming
+              ? !hasCacheMetadata(firstDreaming)
+                ? "unknown"
+                : firstDreaming.cacheReadTokens > 0
+                ? `${formatTokenCount(firstDreaming.cacheReadTokens)} hit`
+                : "miss"
+              : "not present"
+          }
+        />
+      </dl>
+    </div>
+  );
+}
+
+function SessionDatum({
+  label,
+  value,
+  title
+}: {
+  label: string;
+  value: string;
+  title?: string;
+}) {
+  return (
+    <div className="min-w-0">
+      <dt className="text-[10px] font-medium uppercase text-neutral-500">
+        {label}
+      </dt>
+      <dd
+        className="mt-1 truncate font-mono text-[11px] text-neutral-800"
+        title={title ?? value}
+      >
+        {value}
+      </dd>
+    </div>
+  );
+}
+
+function ModelStepCard({
+  step,
+  previousStep,
+  promptView
+}: {
+  step: ModelStepView;
+  previousStep: ModelStepView | undefined;
+  promptView: PromptViewMode;
+}) {
   const usage = summarizeUsage(step.usage);
+  const promptDelta = getPromptDelta(step, previousStep);
   const isSilentText =
     step.finishReason === "stop" &&
     Boolean(step.outputContent) &&
@@ -917,7 +1140,7 @@ function ModelStepCard({ step }: { step: ModelStepView }) {
     step.requestBody !== undefined || step.responseBody !== undefined;
 
   return (
-    <details className={cn(cardClass, "group")}>
+    <details className={cn(cardClass, "group scroll-mb-8")}>
       <summary className={cn("model-step-summary flex min-w-0 cursor-pointer items-center gap-3 p-3 hover:bg-neutral-50", focusClass)}>
         <span className="grid h-7 w-7 shrink-0 place-items-center rounded-md bg-neutral-100 text-neutral-500">
           <ChevronRight size={15} className="group-open:hidden" />
@@ -925,10 +1148,21 @@ function ModelStepCard({ step }: { step: ModelStepView }) {
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <StatusPill tone="info">step {step.stepNumber}</StatusPill>
+            <StatusPill tone={purposeTone(step.purpose)}>
+              {purposeLabel(step.purpose)}
+            </StatusPill>
+            <StatusPill tone="neutral">request {step.requestIndex}</StatusPill>
+            <StatusPill tone="neutral">step {step.stepNumber}</StatusPill>
             <StatusPill tone={step.source === "generation" ? "ok" : "warning"}>
               {step.source}
             </StatusPill>
+            {step.promptCacheEnabled === true ? (
+              <StatusPill tone={step.cacheReadTokens > 0 ? "ok" : "neutral"}>
+                {step.cacheReadTokens > 0
+                  ? `cache ${formatTokenCount(step.cacheReadTokens)}`
+                  : "cache miss"}
+              </StatusPill>
+            ) : null}
             {step.finishReason ? (
               <StatusPill tone={isSilentText ? "warning" : "neutral"}>
                 {step.finishReason}
@@ -962,7 +1196,7 @@ function ModelStepCard({ step }: { step: ModelStepView }) {
               ) : null}
             </div>
           ) : null}
-          <div className="grid grid-cols-2 overflow-hidden rounded-lg ring-1 ring-neutral-200 md:grid-cols-4">
+          <div className="grid grid-cols-2 overflow-hidden rounded-lg ring-1 ring-neutral-200 sm:grid-cols-3">
             <MiniMetric label="latency" value={formatDuration(step.durationMs)} />
             <MiniMetric
               label="temperature"
@@ -970,6 +1204,27 @@ function ModelStepCard({ step }: { step: ModelStepView }) {
             />
             <MiniMetric label="tokens" value={usage.tokens} />
             <MiniMetric label="cost" value={usage.cost} />
+            <MiniMetric
+              label="cache read"
+              value={
+                hasCacheMetadata(step)
+                  ? formatTokenCount(step.cacheReadTokens)
+                  : "unknown"
+              }
+            />
+            <MiniMetric
+              label="cache write"
+              value={
+                hasCacheMetadata(step)
+                  ? formatTokenCount(step.cacheWriteTokens)
+                  : "unknown"
+              }
+            />
+            <MiniMetric label="messages" value={String(step.messages.length)} />
+            <MiniMetric
+              label="session"
+              value={step.sessionId ? shortId(step.sessionId) : "legacy"}
+            />
           </div>
         </div>
 
@@ -982,13 +1237,28 @@ function ModelStepCard({ step }: { step: ModelStepView }) {
         <div className="grid min-w-0 divide-y divide-neutral-200 xl:grid-cols-2 xl:divide-x xl:divide-y-0">
           <section className="min-w-0 p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <h4 className="text-sm font-semibold">Input Prompt</h4>
-              {step.toolChoice ? (
-                <StatusPill tone="neutral">toolChoice {step.toolChoice}</StatusPill>
-              ) : null}
+              <div className="min-w-0">
+                <h4 className="text-sm font-semibold">
+                  {promptView === "delta" ? "Prompt changes" : "Full prompt"}
+                </h4>
+                <p className="mt-1 text-[11px] text-neutral-500">
+                  {promptDeltaSummary(promptDelta, step.messages.length)}
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <StatusPill tone={promptDelta.kind === "changed" ? "warning" : "neutral"}>
+                  {promptDeltaLabel(promptDelta)}
+                </StatusPill>
+                {step.toolChoice ? (
+                  <StatusPill tone="neutral">toolChoice {step.toolChoice}</StatusPill>
+                ) : null}
+              </div>
             </div>
-            <PromptMessageList messages={step.messages} />
-            <ToolInventory tools={step.tools} />
+            <PromptMessageList
+              messages={promptView === "delta" ? promptDelta.messages : step.messages}
+              emptyMessage={promptDeltaEmptyMessage(promptDelta)}
+            />
+            <ToolInventory tools={step.tools} purpose={step.purpose} />
           </section>
 
           <section className="min-w-0 p-3">
@@ -1029,11 +1299,17 @@ function MiniMetric({ label, value }: { label: string; value: string }) {
   );
 }
 
-function PromptMessageList({ messages }: { messages: ModelMessageView[] }) {
+function PromptMessageList({
+  messages,
+  emptyMessage = "No prompt messages captured"
+}: {
+  messages: ModelMessageView[];
+  emptyMessage?: string;
+}) {
   if (!messages.length) {
     return (
       <div className={cn(mutedCardClass, "mt-2 p-3 text-xs text-neutral-500")}>
-        No prompt messages captured
+        {emptyMessage}
       </div>
     );
   }
@@ -1052,7 +1328,7 @@ function PromptMessageList({ messages }: { messages: ModelMessageView[] }) {
               </StatusPill>
             ))}
           </header>
-          <pre className="max-h-80 overflow-y-auto whitespace-pre-wrap p-3 font-mono text-[11px] leading-5 text-neutral-800 [overflow-wrap:anywhere]">
+          <pre className="whitespace-pre-wrap p-3 font-mono text-[11px] leading-5 text-neutral-800 [overflow-wrap:anywhere]">
             {message.content}
           </pre>
         </section>
@@ -1061,25 +1337,170 @@ function PromptMessageList({ messages }: { messages: ModelMessageView[] }) {
   );
 }
 
-function ToolInventory({ tools }: { tools: unknown[] }) {
+function getPromptDelta(
+  step: ModelStepView,
+  previousStep: ModelStepView | undefined
+): PromptDelta {
+  const startsNewSession =
+    !previousStep ||
+    Boolean(
+      step.sessionId &&
+        previousStep.sessionId &&
+        step.sessionId !== previousStep.sessionId
+    );
+
+  if (startsNewSession) {
+    return {
+      kind: "initial",
+      messages: step.messages,
+      reusedCount: 0,
+      replacedCount: 0
+    };
+  }
+
+  let reusedCount = 0;
+  const comparableLength = Math.min(
+    step.messages.length,
+    previousStep.messages.length
+  );
+  while (
+    reusedCount < comparableLength &&
+    sameModelMessage(step.messages[reusedCount], previousStep.messages[reusedCount])
+  ) {
+    reusedCount += 1;
+  }
+
+  const messages = step.messages.slice(reusedCount);
+  const replacedCount = previousStep.messages.length - reusedCount;
+  if (!messages.length && replacedCount === 0) {
+    return {
+      kind: "unchanged",
+      messages,
+      reusedCount,
+      replacedCount
+    };
+  }
+
+  return {
+    kind: replacedCount > 0 ? "changed" : "appended",
+    messages,
+    reusedCount,
+    replacedCount
+  };
+}
+
+function sameModelMessage(
+  current: ModelMessageView | undefined,
+  previous: ModelMessageView | undefined
+): boolean {
+  return Boolean(
+    current &&
+      previous &&
+      current.role === previous.role &&
+      current.content === previous.content
+  );
+}
+
+function promptDeltaLabel(delta: PromptDelta): string {
+  if (delta.kind === "initial") {
+    return "initial context";
+  }
+  if (delta.kind === "unchanged") {
+    return "no changes";
+  }
+  if (delta.kind === "changed") {
+    return `${delta.messages.length} changed`;
+  }
+  return `${delta.messages.length} new`;
+}
+
+function promptDeltaSummary(delta: PromptDelta, totalCount: number): string {
+  if (delta.kind === "initial") {
+    return `${totalCount} messages establish the request context`;
+  }
+  if (delta.kind === "unchanged") {
+    return `${delta.reusedCount} messages reused from the previous request`;
+  }
+
+  const parts = [
+    `${delta.messages.length} ${delta.kind === "changed" ? "current" : "new"}`,
+    `${delta.reusedCount} reused`
+  ];
+  if (delta.replacedCount > 0) {
+    parts.push(`${delta.replacedCount} replaced`);
+  }
+  return `${parts.join(" · ")} · ${totalCount} total`;
+}
+
+function promptDeltaEmptyMessage(delta: PromptDelta): string {
+  if (delta.kind === "initial") {
+    return "No prompt messages captured for the initial request.";
+  }
+  if (delta.kind === "changed") {
+    return `The request removed ${delta.replacedCount} previous message${
+      delta.replacedCount === 1 ? "" : "s"
+    }; no prompt messages remain.`;
+  }
+  return "No new prompt messages. This request reused the previous context unchanged.";
+}
+
+function ToolInventory({
+  tools,
+  purpose
+}: {
+  tools: unknown[];
+  purpose: string;
+}) {
   if (!tools.length) {
     return null;
   }
 
+  const activeToolNames =
+    purpose === "dreaming"
+      ? new Set(["bash", "finish_dreaming"])
+      : purpose === "agent_action"
+        ? new Set(
+            tools
+              .map(toolName)
+              .filter(
+                (name) => name !== "bash" && name !== "finish_dreaming"
+              )
+          )
+        : undefined;
+
   return (
     <section className="mt-3 overflow-hidden rounded-md bg-neutral-50 ring-1 ring-neutral-200">
-      <header className="border-b border-neutral-200 bg-neutral-50 px-3 py-2 text-[11px] font-medium uppercase text-neutral-500">
-        available tools
+      <header className="flex flex-wrap items-center justify-between gap-2 border-b border-neutral-200 bg-neutral-50 px-3 py-2">
+        <span className="text-[11px] font-medium uppercase text-neutral-500">
+          provider tool protocol
+        </span>
+        {activeToolNames ? (
+          <span className="text-[10px] text-neutral-500">
+            {purpose === "dreaming"
+              ? "memory execution gate"
+              : "chat-action execution gate"}
+          </span>
+        ) : null}
       </header>
       <div className="flex flex-wrap gap-2 p-3">
-        {tools.map((tool, index) => (
-          <span
-            key={`${toolName(tool)}:${index}`}
-            className="max-w-full break-all rounded-md bg-neutral-100 px-2 py-1 font-mono text-[11px] text-neutral-700 ring-1 ring-neutral-200"
-          >
-            {toolName(tool)}
-          </span>
-        ))}
+        {tools.map((tool, index) => {
+          const name = toolName(tool);
+          const isActive = activeToolNames?.has(name) ?? true;
+          return (
+            <span
+              key={`${name}:${index}`}
+              className={cn(
+                "max-w-full break-all rounded-md px-2 py-1 font-mono text-[11px] ring-1",
+                isActive
+                  ? "bg-[var(--trace-accent-soft)] text-[var(--trace-accent)] ring-[var(--trace-accent-border)]"
+                  : "bg-neutral-100 text-neutral-500 ring-neutral-200"
+              )}
+              title={isActive ? "Executable in this phase" : "Stable protocol only; execution gated"}
+            >
+              {name}
+            </span>
+          );
+        })}
       </div>
     </section>
   );
@@ -1336,6 +1757,9 @@ function ObservationList({ observations }: { observations: ObservationRecord[] }
                   {observation.type}
                 </StatusPill>
                 <span className="min-w-0 break-all font-mono text-xs">{observation.name}</span>
+                {observation.type === "generation" ? (
+                  <GenerationObservationPills observation={observation} />
+                ) : null}
               </div>
               <p className="mt-2 break-all text-xs text-neutral-500">
                 {observation.model ?? observation.statusMessage ?? observation.startedAt ?? observation.id}
@@ -1349,6 +1773,38 @@ function ObservationList({ observations }: { observations: ObservationRecord[] }
         </div>
       ))}
     </div>
+  );
+}
+
+function GenerationObservationPills({
+  observation
+}: {
+  observation: ObservationRecord;
+}) {
+  const input = asRecord(observation.input);
+  const metadata = asRecord(observation.metadata);
+  const purpose =
+    readString(metadata.purpose) ?? purposeFromName(observation.name);
+  const cacheReadTokens = readNumber(metadata.cacheReadTokens) ?? 0;
+  const sessionId = readString(input.sessionId);
+
+  return (
+    <>
+      <StatusPill tone={purposeTone(purpose)}>{purposeLabel(purpose)}</StatusPill>
+      {cacheReadTokens > 0 ? (
+        <StatusPill tone="ok">
+          cache {formatTokenCount(cacheReadTokens)}
+        </StatusPill>
+      ) : null}
+      {sessionId ? (
+        <span
+          className="font-mono text-[10px] text-neutral-500"
+          title={sessionId}
+        >
+          {shortId(sessionId)}
+        </span>
+      ) : null}
+    </>
   );
 }
 
@@ -1554,6 +2010,7 @@ function modelStepFromObservation(
   const input = asRecord(observation.input);
   const output = asRecord(observation.output);
   const metadata = asRecord(observation.metadata);
+  const cacheUsage = asRecord(output.cacheUsage);
   const responseBody = output.responseBody;
 
   const stepNumber =
@@ -1565,13 +2022,26 @@ function modelStepFromObservation(
 
   return {
     id: observation.id,
+    requestIndex: index + 1,
     stepNumber,
+    purpose:
+      readString(metadata.purpose) ?? purposeFromName(observation.name),
     model:
       observation.model ??
       readString(input.model) ??
       readString(metadata.model) ??
       readStringFromPath(responseBody, ["model"]),
     provider: readString(input.provider) ?? readString(metadata.provider),
+    sessionId: readString(input.sessionId),
+    promptCacheEnabled: readBoolean(input.promptCacheEnabled),
+    cacheReadTokens:
+      readNumber(cacheUsage.readTokens) ??
+      readNumber(metadata.cacheReadTokens) ??
+      0,
+    cacheWriteTokens:
+      readNumber(cacheUsage.writeTokens) ??
+      readNumber(metadata.cacheWriteTokens) ??
+      0,
     temperature: readNumber(input.temperature) ?? readNumber(metadata.temperature),
     finishReason:
       readString(output.finishReason) ??
@@ -1617,7 +2087,9 @@ function modelStepFromSpanResponse(
   const record = asRecord(response);
   return {
     id: `${span?.id ?? "model-span"}:${index}`,
+    requestIndex: index + 1,
     stepNumber: readNumber(record.stepNumber) ?? index,
+    purpose: "agent_action",
     model: readString(asRecord(span?.attributes).model),
     finishReason: readString(record.finishReason),
     startedAt: span?.startedAt,
@@ -1626,6 +2098,12 @@ function modelStepFromSpanResponse(
     messages: [],
     tools: [],
     provider: undefined,
+    sessionId: undefined,
+    promptCacheEnabled: undefined,
+    cacheReadTokens:
+      readNumber(asRecord(record.cacheUsage).readTokens) ?? 0,
+    cacheWriteTokens:
+      readNumber(asRecord(record.cacheUsage).writeTokens) ?? 0,
     temperature: undefined,
     toolChoice: undefined,
     outputContent: readString(record.content),
@@ -1677,6 +2155,15 @@ function promptMarkers(content: string): string[] {
   if (content.includes("Available tools:")) {
     markers.push("tools");
   }
+  if (content.includes("Initial conversation window for this agent session.")) {
+    markers.push("initial");
+  }
+  if (content.includes("New conversation window received while this agent session is active.")) {
+    markers.push("steer");
+  }
+  if (content.includes("Terminal phase: dreaming memory maintenance.")) {
+    markers.push("dreaming");
+  }
   if (content.includes("Conversation transcript:")) {
     markers.push("transcript");
   }
@@ -1706,6 +2193,100 @@ function summarizeUsage(value: unknown): { tokens: string; cost: string } {
           : "unknown",
     cost: cost === undefined ? "unknown" : `$${cost.toFixed(6)}`
   };
+}
+
+function groupModelSteps(
+  steps: ModelStepView[]
+): Array<{ id: string; purpose: string; steps: ModelStepView[] }> {
+  const groups: Array<{ id: string; purpose: string; steps: ModelStepView[] }> = [];
+  for (const step of steps) {
+    const current = groups.at(-1);
+    if (current?.purpose === step.purpose) {
+      current.steps.push(step);
+      continue;
+    }
+    groups.push({
+      id: `${step.purpose}:${step.requestIndex}`,
+      purpose: step.purpose,
+      steps: [step]
+    });
+  }
+  return groups;
+}
+
+function purposeFromName(name: string): string {
+  if (name.startsWith("dreaming.")) {
+    return "dreaming";
+  }
+  if (name.startsWith("agent_action.")) {
+    return "agent_action";
+  }
+  return "model";
+}
+
+function purposeLabel(purpose: string): string {
+  if (purpose === "agent_action") {
+    return "action";
+  }
+  return purpose;
+}
+
+function purposeTone(
+  purpose: string
+): "neutral" | "ok" | "warning" | "error" | "info" {
+  if (purpose === "dreaming") {
+    return "neutral";
+  }
+  if (purpose === "agent_action") {
+    return "info";
+  }
+  return "neutral";
+}
+
+function hasMessagePrefix(
+  messages: ModelMessageView[],
+  prefix: ModelMessageView[]
+): boolean {
+  return (
+    messages.length >= prefix.length &&
+    prefix.every(
+      (message, index) =>
+        messages[index]?.role === message.role &&
+        messages[index]?.content === message.content
+    )
+  );
+}
+
+function toolProtocolKey(tools: unknown[]): string {
+  return tools.map(toolName).join("\u0000");
+}
+
+function formatTokenCount(tokens: number): string {
+  return new Intl.NumberFormat().format(tokens);
+}
+
+function hasCacheMetadata(step: ModelStepView): boolean {
+  return (
+    step.promptCacheEnabled !== undefined ||
+    step.cacheReadTokens > 0 ||
+    step.cacheWriteTokens > 0
+  );
+}
+
+function cacheGroupLabel(steps: ModelStepView[]): string {
+  if (!steps.some(hasCacheMetadata)) {
+    return "cache unavailable";
+  }
+  if (steps.every((step) => step.promptCacheEnabled === false)) {
+    return "cache disabled";
+  }
+  return `${formatTokenCount(
+    steps.reduce((total, step) => total + step.cacheReadTokens, 0)
+  )} cached`;
+}
+
+function shortId(value: string): string {
+  return value.length > 12 ? `${value.slice(0, 8)}…` : value;
 }
 
 function readReasoningDetails(value: unknown): string | undefined {
@@ -1758,6 +2339,10 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function readNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function readBoolean(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
 }
 
 function readStringFromPath(

@@ -5,13 +5,19 @@ import {
   stepCountIs,
   tool,
   type LanguageModel,
+  type ModelMessage,
   type ToolSet
 } from "ai";
 import { z } from "zod";
 import type { CompiledContext } from "../context/compileContext";
 import type { MessageReceivedEvent } from "../events/schemas";
 import type { GestaltConfig } from "../home/loadConfig";
-import { readTurnAbortError, throwIfTurnSteered } from "../runtime/turnSignals";
+import {
+  isTurnSteeredError,
+  readTurnAbortError,
+  throwIfTurnSteered,
+  TurnSteeredError
+} from "../runtime/turnSignals";
 import {
   executeActions,
   type ToolExecutionResult
@@ -26,8 +32,11 @@ import {
   type ModelActionResult,
   type ModelClient,
   type ModelRunOptions,
+  type ModelSession,
+  type ModelSessionContinuation,
   type ModelStepTraceSnapshot
-} from "./proposeActions";
+} from "./session";
+import { buildDreamingTools, dreamingToolOrder } from "./dreamingTools";
 
 export interface ModelMessageSnapshot {
   role: string;
@@ -71,6 +80,8 @@ export interface ModelRequestSnapshot {
   tools: string[];
   toolChoice?: unknown;
   requestBody?: unknown;
+  sessionId?: string;
+  promptCacheEnabled?: boolean;
 }
 
 export interface ModelResponseSnapshot {
@@ -80,8 +91,14 @@ export interface ModelResponseSnapshot {
   toolCalls?: ModelToolCallSnapshot[];
   toolResults?: ModelToolResultSnapshot[];
   usage?: unknown;
+  cacheUsage?: ModelCacheUsageSnapshot;
   requestBody?: unknown;
   responseBody?: unknown;
+}
+
+export interface ModelCacheUsageSnapshot {
+  readTokens: number;
+  writeTokens?: number;
 }
 
 export interface ResolvedAiSdkLanguageModel {
@@ -92,6 +109,8 @@ export interface ResolvedAiSdkLanguageModel {
   apiKeyEnv: string;
   providerOptions?: ModelProviderOptions;
   toolChoice?: ModelToolChoiceMode;
+  promptCacheEnabled?: boolean;
+  promptCacheTtl?: "5m" | "1h";
 }
 
 export interface CreateAiSdkModelOptions {
@@ -103,6 +122,8 @@ export interface CreateAiSdkModelOptions {
   temperature?: number;
   timeoutMs?: number;
   maxSteps?: number;
+  promptCacheEnabled?: boolean;
+  promptCacheTtl?: "5m" | "1h";
   now?: () => Date;
   onRequest?: (request: ModelRequestSnapshot) => void;
   onResponse?: (response: ModelResponseSnapshot) => void;
@@ -125,73 +146,225 @@ export function createAiSdkModel(options: CreateAiSdkModelOptions): ModelClient 
 
   return {
     name: options.modelName,
-
-    async proposeActions(context, runOptions = {}) {
-      throwIfTurnSteered(runOptions.signal);
-
-      const executedToolResults: ToolExecutionResult[] = [];
-      const modelStepRecorder = createModelStepRecorder(now);
-      const tools = buildActionTools(context.tools, {
-        context,
+    createSession() {
+      return createAiSdkModelSession({
+        options,
         now,
-        runOptions,
-        executedToolResults
-      });
-      const agent = new ToolLoopAgent({
-        id: "gestalt-action-decision",
-        model: options.languageModel,
-        instructions: buildActionInstructions(context.tools),
-        tools,
-        ...(toolChoice !== undefined ? { toolChoice } : {}),
-        toolOrder: context.tools.map((candidate) => candidate.name),
-        ...(options.providerOptions
-          ? { providerOptions: options.providerOptions }
-          : {}),
-        stopWhen: stepCountIs(maxSteps),
         temperature,
-        include: {
-          requestBody: true,
-          requestMessages: true,
-          responseBody: true
-        },
-        onStepStart(event) {
-          const request = snapshotStepRequest(event, {
-            providerName,
-            modelName: options.modelName,
-            temperature
-          });
-          modelStepRecorder.recordRequest(request);
-          options.onRequest?.(request);
-        },
-        onStepEnd(step) {
-          const response = snapshotStepResponse(step);
-          modelStepRecorder.recordResponse(response);
-          options.onResponse?.(response);
-        }
+        timeoutMs,
+        maxSteps,
+        providerName,
+        toolChoice
       });
+    }
+  };
+}
 
-      const result = await agent
-        .generate({
-          prompt: buildActionPrompt(context),
-          timeout: {
-            totalMs: timeoutMs
-          },
-          ...(runOptions.signal ? { abortSignal: runOptions.signal } : {})
-        })
-        .catch((error: unknown) => {
-          const thrownError = runOptions.signal?.aborted
-            ? readTurnAbortError(runOptions.signal)
-            : error;
-          attachModelStepsToError(thrownError, modelStepRecorder.steps);
-          throw thrownError;
-        });
+interface AiSdkModelSessionOptions {
+  options: CreateAiSdkModelOptions;
+  now: () => Date;
+  temperature: number;
+  timeoutMs: number;
+  maxSteps: number;
+  providerName: string;
+  toolChoice: ModelToolChoiceMode | undefined;
+}
 
+function createAiSdkModelSession(
+  sessionOptions: AiSdkModelSessionOptions
+): ModelSession {
+  const {
+    options,
+    now,
+    temperature,
+    timeoutMs,
+    maxSteps,
+    providerName,
+    toolChoice
+  } = sessionOptions;
+  const sessionId = randomUUID();
+  const providerOptions = createModelSessionProviderOptions(
+    options.providerOptions,
+    providerName,
+    sessionId,
+    options.promptCacheEnabled ?? false,
+    options.promptCacheTtl
+  );
+  const modelStepRecorder = createModelStepRecorder(now);
+  const committedToolResults: ToolExecutionResult[] = [];
+  let instructions: string | undefined;
+  let messages: ModelMessage[] = [];
+  let currentContext: CompiledContext | undefined;
+  let attemptController: AbortController | undefined;
+  let initialized = false;
+  let running = false;
+
+  return {
+    get initialized() {
+      return initialized;
+    },
+    get running() {
+      return running;
+    },
+
+    async run(context, runOptions = {}) {
+      if (running) {
+        throw new Error("Model session is already running.");
+      }
       throwIfTurnSteered(runOptions.signal);
-      return collectModelActionResult(
-        result.toolCalls,
-        executedToolResults,
-        modelStepRecorder.steps
-      );
+      currentContext = context;
+      if (!initialized) {
+        instructions = buildSessionInstructions(context);
+        messages.push({ role: "user", content: buildWindowPrompt(context, false) });
+        initialized = true;
+      } else {
+        messages.push({ role: "user", content: buildWindowPrompt(context, true) });
+      }
+
+      const runStepOffset = modelStepRecorder.steps.length;
+      const runToolOffset = committedToolResults.length;
+      running = true;
+
+      try {
+        while (true) {
+          const controller = new AbortController();
+          attemptController = controller;
+          const removeExternalAbort = forwardAbortSignal(
+            runOptions.signal,
+            controller
+          );
+          const attemptToolResults: ToolExecutionResult[] = [];
+          let committedAttemptTools = 0;
+          const attemptContext = currentContext;
+          if (!attemptContext || !instructions) {
+            throw new Error("AI SDK model session was not initialized.");
+          }
+          const attemptRunOptions: ModelRunOptions = {
+            ...runOptions,
+            signal: controller.signal
+          };
+          const tools = buildActionTools(attemptContext.tools, {
+            context: attemptContext,
+            now,
+            runOptions: attemptRunOptions,
+            executedToolResults: attemptToolResults
+          });
+          Object.assign(tools, buildDreamingTools());
+          runOptions.onModelAttemptStart?.();
+
+          const agent = new ToolLoopAgent({
+            id: "gestalt-action-decision",
+            model: options.languageModel,
+            instructions,
+            tools,
+            ...(toolChoice !== undefined ? { toolChoice } : {}),
+            toolOrder: [
+              ...attemptContext.tools.map((candidate) => candidate.name),
+              ...dreamingToolOrder
+            ],
+            ...(providerOptions ? { providerOptions } : {}),
+            stopWhen: stepCountIs(maxSteps),
+            temperature,
+            include: {
+              requestBody: true,
+              requestMessages: true,
+              responseBody: true
+            },
+            onStepStart(event) {
+              const request = snapshotStepRequest(event, {
+                providerName,
+                modelName: options.modelName,
+                temperature,
+                sessionId,
+                promptCacheEnabled: options.promptCacheEnabled ?? false
+              });
+              modelStepRecorder.recordRequest(request);
+              options.onRequest?.(request);
+            },
+            onStepEnd(step) {
+              const wasSteered =
+                controller.signal.aborted && !runOptions.signal?.aborted;
+              if (!wasSteered) {
+                const requestMessages = step.request.messages;
+                if (requestMessages) {
+                  messages = [
+                    ...requestMessages,
+                    ...step.response.messages
+                  ] as ModelMessage[];
+                }
+                committedToolResults.push(
+                  ...attemptToolResults.slice(committedAttemptTools)
+                );
+                committedAttemptTools = attemptToolResults.length;
+              }
+              const response = snapshotStepResponse(step);
+              modelStepRecorder.recordResponse(response);
+              options.onResponse?.(response);
+            }
+          });
+
+          try {
+            const result = await agent.generate({
+              messages: [...messages],
+              timeout: { totalMs: timeoutMs },
+              abortSignal: controller.signal
+            });
+            throwIfTurnSteered(runOptions.signal);
+            return collectModelActionResult(
+              result.toolCalls,
+              committedToolResults.slice(runToolOffset),
+              modelStepRecorder.steps.slice(runStepOffset),
+              attemptContext.tools
+            );
+          } catch (error) {
+            const thrownError = controller.signal.aborted
+              ? readTurnAbortError(controller.signal)
+              : error;
+            if (
+              isTurnSteeredError(thrownError) &&
+              !runOptions.signal?.aborted
+            ) {
+              continue;
+            }
+            attachModelStepsToError(
+              thrownError,
+              modelStepRecorder.steps.slice(runStepOffset)
+            );
+            throw thrownError;
+          } finally {
+            removeExternalAbort();
+          }
+        }
+      } finally {
+        running = false;
+        attemptController = undefined;
+      }
+    },
+
+    steer(context) {
+      if (!running) {
+        return false;
+      }
+      currentContext = context;
+      messages.push({ role: "user", content: buildWindowPrompt(context, true) });
+      attemptController?.abort(new TurnSteeredError());
+      return true;
+    },
+
+    continuation(): ModelSessionContinuation | undefined {
+      if (!initialized || running || !instructions) {
+        return undefined;
+      }
+      return {
+        instructions,
+        messages: [...messages],
+        providerSessionId: sessionId,
+        promptCacheEnabled: options.promptCacheEnabled ?? false,
+        actionTools: [...(currentContext?.tools ?? [])],
+        ...(options.promptCacheTtl
+          ? { promptCacheTtl: options.promptCacheTtl }
+          : {})
+      };
     }
   };
 }
@@ -207,27 +380,17 @@ export function createModelStepRecorder(now: () => Date = () => new Date()): {
     steps,
 
     recordRequest(request) {
-      const existing = steps.find(
-        (candidate) =>
-          candidate.request?.stepNumber === request.stepNumber &&
-          candidate.response === undefined
-      );
-      if (existing) {
-        existing.request = request;
-        existing.startedAt ??= now().toISOString();
-        return;
-      }
       steps.push({ startedAt: now().toISOString(), request });
     },
 
     recordResponse(response) {
       const existing =
-        steps.find(
+        findLastStep(steps,
           (candidate) =>
             candidate.request?.stepNumber === response.stepNumber &&
             candidate.response === undefined
         ) ??
-        steps.find(
+        findLastStep(steps,
           (candidate) =>
             candidate.request === undefined &&
             candidate.response?.stepNumber === response.stepNumber
@@ -240,6 +403,19 @@ export function createModelStepRecorder(now: () => Date = () => new Date()): {
       steps.push({ endedAt: now().toISOString(), response });
     }
   };
+}
+
+function findLastStep(
+  steps: ModelStepTraceSnapshot[],
+  predicate: (step: ModelStepTraceSnapshot) => boolean
+): ModelStepTraceSnapshot | undefined {
+  for (let index = steps.length - 1; index >= 0; index -= 1) {
+    const step = steps[index];
+    if (step && predicate(step)) {
+      return step;
+    }
+  }
+  return undefined;
 }
 
 export function createAiSdkModelFromConfig(
@@ -260,6 +436,12 @@ export function createAiSdkModelFromConfig(
       : {}),
     ...(resolved.providerOptions
       ? { providerOptions: resolved.providerOptions }
+      : {}),
+    ...(resolved.promptCacheEnabled !== undefined
+      ? { promptCacheEnabled: resolved.promptCacheEnabled }
+      : {}),
+    ...(resolved.promptCacheTtl
+      ? { promptCacheTtl: resolved.promptCacheTtl }
       : {})
   });
 }
@@ -286,6 +468,8 @@ export function createLanguageModelFromConfig(
 
   const baseUrl = resolveModelBaseUrl(config);
   const toolChoice = readModelToolChoice(config);
+  const promptCacheEnabled = readModelPromptCacheEnabled(config, providerName);
+  const promptCacheTtl = readModelPromptCacheTtl(config);
   const provider = createOpenAICompatible({
     name: providerName,
     baseURL: baseUrl,
@@ -301,8 +485,30 @@ export function createLanguageModelFromConfig(
     baseUrl,
     apiKeyEnv,
     ...(toolChoice !== undefined ? { toolChoice } : {}),
+    promptCacheEnabled,
+    ...(promptCacheTtl ? { promptCacheTtl } : {}),
     ...optionalProviderOptions(config, providerName)
   };
+}
+
+export function readModelPromptCacheEnabled(
+  config: GestaltConfig,
+  providerName?: string
+): boolean {
+  return (
+    readOptionalConfigBoolean(config, "model_prompt_cache_enabled") ??
+    providerName === "openrouter"
+  );
+}
+
+export function readModelPromptCacheTtl(
+  config: GestaltConfig
+): "5m" | "1h" | undefined {
+  const value = readOptionalConfigString(config, "model_prompt_cache_ttl");
+  if (value === undefined || value === "5m" || value === "1h") {
+    return value;
+  }
+  throw new Error('model_prompt_cache_ttl must be "5m" or "1h".');
 }
 
 export function readModelToolChoice(
@@ -370,6 +576,28 @@ export function optionalProviderOptions(
   };
 }
 
+export function createModelSessionProviderOptions(
+  base: ModelProviderOptions | undefined,
+  providerName: string,
+  sessionId: string,
+  promptCacheEnabled: boolean,
+  promptCacheTtl: "5m" | "1h" | undefined
+): ModelProviderOptions | undefined {
+  if (!promptCacheEnabled) {
+    return base;
+  }
+  const provider = { ...(base?.[providerName] ?? {}) };
+  provider.session_id = sessionId;
+  provider.cache_control = {
+    type: "ephemeral",
+    ...(promptCacheTtl === "1h" ? { ttl: "1h" } : {})
+  };
+  return {
+    ...(base ?? {}),
+    [providerName]: provider
+  };
+}
+
 export function snapshotStepRequest(
   event: {
     provider?: string | undefined;
@@ -384,6 +612,8 @@ export function snapshotStepRequest(
     providerName: string;
     modelName: string;
     temperature: number;
+    sessionId?: string;
+    promptCacheEnabled?: boolean;
   }
 ): ModelRequestSnapshot {
   return {
@@ -393,7 +623,11 @@ export function snapshotStepRequest(
     stepNumber: event.stepNumber ?? 0,
     messages: snapshotMessages(event.messages ?? [], event.instructions),
     tools: event.tools ? Object.keys(event.tools) : [],
-    ...(event.toolChoice !== undefined ? { toolChoice: event.toolChoice } : {})
+    ...(event.toolChoice !== undefined ? { toolChoice: event.toolChoice } : {}),
+    ...(fallback.sessionId ? { sessionId: fallback.sessionId } : {}),
+    ...(fallback.promptCacheEnabled !== undefined
+      ? { promptCacheEnabled: fallback.promptCacheEnabled }
+      : {})
   };
 }
 
@@ -407,16 +641,21 @@ export function snapshotStepResponse(step: {
   request?: unknown;
   response?: unknown;
 }): ModelResponseSnapshot {
+  const requestBody = readUnknownProperty(step.request, "body");
+  const responseBody = readUnknownProperty(step.response, "body");
+  const cacheUsage = mergeCacheUsage(
+    readCacheUsage(step.usage),
+    readProviderCacheUsage(responseBody)
+  );
   const response: ModelResponseSnapshot = {
     ...(step.text ? { content: step.text } : {}),
     ...(step.finishReason ? { finishReason: step.finishReason } : {}),
     ...(step.stepNumber !== undefined ? { stepNumber: step.stepNumber } : {}),
     toolCalls: snapshotToolCalls(step.toolCalls ?? []),
     toolResults: snapshotToolResults(step.toolResults ?? []),
-    ...(step.usage !== undefined ? { usage: step.usage } : {})
+    ...(step.usage !== undefined ? { usage: step.usage } : {}),
+    ...(cacheUsage ? { cacheUsage } : {})
   };
-  const requestBody = readUnknownProperty(step.request, "body");
-  const responseBody = readUnknownProperty(step.response, "body");
   if (requestBody !== undefined) {
     response.requestBody = requestBody;
   }
@@ -424,6 +663,59 @@ export function snapshotStepResponse(step: {
     response.responseBody = responseBody;
   }
   return response;
+}
+
+function readProviderCacheUsage(
+  responseBody: unknown
+): ModelCacheUsageSnapshot | undefined {
+  const body = parseJsonObject(responseBody);
+  const usage = readUnknownProperty(body, "usage");
+  const promptDetails = readUnknownProperty(usage, "prompt_tokens_details");
+  const readTokens = readOptionalNumber(promptDetails, "cached_tokens");
+  const writeTokens = readOptionalNumber(promptDetails, "cache_write_tokens");
+  if (readTokens === undefined && writeTokens === undefined) {
+    return undefined;
+  }
+  return {
+    readTokens: readTokens ?? 0,
+    ...(writeTokens !== undefined ? { writeTokens } : {})
+  };
+}
+
+function mergeCacheUsage(
+  normalized: ModelCacheUsageSnapshot | undefined,
+  provider: ModelCacheUsageSnapshot | undefined
+): ModelCacheUsageSnapshot | undefined {
+  if (!normalized && !provider) {
+    return undefined;
+  }
+  return {
+    readTokens: provider?.readTokens ?? normalized?.readTokens ?? 0,
+    ...(provider?.writeTokens !== undefined
+      ? { writeTokens: provider.writeTokens }
+      : normalized?.writeTokens !== undefined
+        ? { writeTokens: normalized.writeTokens }
+        : {})
+  };
+}
+
+function readCacheUsage(usage: unknown): ModelCacheUsageSnapshot | undefined {
+  const inputDetails = readUnknownProperty(usage, "inputTokenDetails");
+  const raw = readUnknownProperty(usage, "raw");
+  const promptDetails = readUnknownProperty(raw, "prompt_tokens_details");
+  const readTokens =
+    readOptionalNumber(inputDetails, "cacheReadTokens") ??
+    readOptionalNumber(promptDetails, "cached_tokens");
+  const writeTokens =
+    readOptionalNumber(inputDetails, "cacheWriteTokens") ??
+    readOptionalNumber(promptDetails, "cache_write_tokens");
+  if (readTokens === undefined && writeTokens === undefined) {
+    return undefined;
+  }
+  return {
+    readTokens: readTokens ?? 0,
+    ...(writeTokens !== undefined ? { writeTokens } : {})
+  };
 }
 
 function buildActionInstructions(tools: ToolDefinition[]): string {
@@ -434,6 +726,7 @@ function buildActionInstructions(tools: ToolDefinition[]): string {
     "Call at most one tool in a single model step, including say_nothing.",
     "After each tool result, reassess the conversation and decide whether to call another tool, call say_nothing, or stay active.",
     "Tool calls are the only way to create visible side effects or lifecycle changes.",
+    "The bash and finish_dreaming tools are reserved for an explicitly announced terminal dreaming phase. Never call them during the normal chat-action phase.",
     "Conversation messages may contain OneBot-style CQ markup such as [CQ:at,qq=...], [CQ:reply,id=...], [CQ:image,file=...,url=...], [CQ:face,id=...], and [CQ:mface,emoji_package_id=...,emoji_id=...,key=...].",
     "When repeating or preserving platform-specific parts of a message, copy the CQ markup exactly in the relevant tool input.",
     "When visibly replying to the current message, start send_group_message text with [CQ:reply,id=<message_id>] using the current transcript message_id value.",
@@ -488,7 +781,7 @@ function buildActionInstructions(tools: ToolDefinition[]): string {
   return instructions.join("\n");
 }
 
-function buildActionPrompt(context: CompiledContext): string {
+function buildSessionInstructions(context: CompiledContext): string {
   const persona = context.persona.fragments
     .map((fragment) => `# ${fragment.name}\n${fragment.content}`)
     .join("\n\n");
@@ -498,28 +791,34 @@ function buildActionPrompt(context: CompiledContext): string {
         `# ${memory.relativePath}\n${memory.content.trim() || "(empty)"}`
     )
     .join("\n\n");
-  const currentEvent = selectCurrentMessageEvent(context);
-
   return [
+    buildActionInstructions(context.tools),
+    "",
     "Persona:",
     persona || "(empty)",
     "",
     "Relevant memory:",
-    memories || "(none)",
+    memories || "(none)"
+  ].join("\n");
+}
+
+function buildWindowPrompt(context: CompiledContext, isSteer: boolean): string {
+  const currentEvent = selectCurrentMessageEvent(context);
+  return [
+    isSteer
+      ? "New conversation window received while this agent session is active."
+      : "Initial conversation window for this agent session.",
+    "Treat this as new user-side context appended after all earlier messages and tool results.",
     "",
     "Conversation transcript:",
     context.transcript,
     "",
     "Decision target:",
-    "The transcript above includes current-window records plus optional recent history and reply targets.",
-    "The latest message in the window is the current message to answer or ignore.",
+    "The latest message in this window is the current message to answer or ignore.",
     describeCurrentMessage(currentEvent),
     "",
     "Current conversation:",
-    `${currentEvent.conversation.kind}:${currentEvent.conversation.id}`,
-    "",
-    "Available tools:",
-    context.tools.map(renderToolDefinition).join("\n")
+    `${currentEvent.conversation.kind}:${currentEvent.conversation.id}`
   ].join("\n");
 }
 
@@ -532,24 +831,24 @@ function describeCurrentMessage(event: MessageReceivedEvent): string {
   ].join("\n");
 }
 
-function renderToolDefinition(definition: ToolDefinition): string {
+function renderToolDescription(definition: ToolDefinition): string {
   return [
-    `- ${definition.name}: ${definition.purpose}`,
-    `  Useful when: ${definition.whenUseful.join("; ")}`,
-    `  Avoid when: ${definition.avoidWhen.join("; ")}`
+    definition.purpose,
+    `Useful when: ${definition.whenUseful.join("; ")}`,
+    `Avoid when: ${definition.avoidWhen.join("; ")}`
   ].join("\n");
 }
 
-interface ActionToolRuntime {
+export interface ActionToolRuntime {
   context: CompiledContext;
   now: () => Date;
   runOptions: ModelRunOptions;
   executedToolResults: ToolExecutionResult[];
 }
 
-function buildActionTools(
-  availableTools: ToolDefinition[],
-  runtime: ActionToolRuntime
+export function buildActionTools(
+  availableTools: readonly ToolDefinition[],
+  runtime?: ActionToolRuntime
 ): ToolSet {
   const tools: ToolSet = {};
   for (const definition of availableTools) {
@@ -560,13 +859,11 @@ function buildActionTools(
 
 function createActionTool(
   definition: ToolDefinition,
-  runtime: ActionToolRuntime
+  runtime?: ActionToolRuntime
 ): ToolSet[string] {
   if (definition.name === "fetch_message") {
     return tool({
-      description:
-        definition.purpose ??
-        "Fetch one message by platform message id.",
+      description: renderToolDescription(definition),
       inputSchema: z
         .object({
           message_id: z
@@ -587,9 +884,7 @@ function createActionTool(
 
   if (definition.name === "read_image") {
     return tool({
-      description:
-        definition.purpose ??
-        "Fetch platform-cached image data or metadata for an image file id.",
+      description: renderToolDescription(definition),
       inputSchema: z
         .object({
           file: z
@@ -612,9 +907,7 @@ function createActionTool(
 
   if (definition.name === "send_group_message") {
     return tool({
-      description:
-        definition.purpose ??
-        "Send a short visible message into the current group conversation.",
+      description: renderToolDescription(definition),
       inputSchema: z
         .object({
           text: z
@@ -637,9 +930,7 @@ function createActionTool(
 
   if (definition.name === "send_dm") {
     return tool({
-      description:
-        definition.purpose ??
-        "Send a private message to a specific user.",
+      description: renderToolDescription(definition),
       inputSchema: z
         .object({
           user_id: z
@@ -664,9 +955,7 @@ function createActionTool(
 
   if (definition.name === "send_image") {
     return tool({
-      description:
-        definition.purpose ??
-        "Send an image into the current conversation.",
+      description: renderToolDescription(definition),
       inputSchema: z
         .object({
           file: z
@@ -701,9 +990,7 @@ function createActionTool(
 
   if (definition.name === "send_sticker") {
     return tool({
-      description:
-        definition.purpose ??
-        "Send a platform sticker copied from CQ markup.",
+      description: renderToolDescription(definition),
       inputSchema: z
         .object({
           sticker_cq: z
@@ -730,9 +1017,7 @@ function createActionTool(
 
   if (definition.name === "poke_user") {
     return tool({
-      description:
-        definition.purpose ??
-        "Send a QQ poke/nudge to a user.",
+      description: renderToolDescription(definition),
       inputSchema: z
         .object({
           user_id: z
@@ -753,9 +1038,7 @@ function createActionTool(
 
   if (definition.name === "recall_own_message") {
     return tool({
-      description:
-        definition.purpose ??
-        "Recall a recently sent message from this bot.",
+      description: renderToolDescription(definition),
       inputSchema: z
         .object({
           own_message_id: z
@@ -778,9 +1061,7 @@ function createActionTool(
 
   if (definition.name === "react_to_message") {
     return tool({
-      description:
-        definition.purpose ??
-        "Add or remove an emoji reaction on an existing message.",
+      description: renderToolDescription(definition),
       inputSchema: z
         .object({
           message_id: z
@@ -810,7 +1091,7 @@ function createActionTool(
   }
 
   return tool({
-    description: definition.purpose ?? `Choose the ${definition.name} action.`,
+    description: renderToolDescription(definition),
     inputSchema: z
       .object({
         reason: z
@@ -828,9 +1109,17 @@ function createActionTool(
 function collectModelActionResult(
   toolCalls: readonly unknown[],
   executedToolResults: ToolExecutionResult[],
-  modelSteps: ModelStepTraceSnapshot[]
+  modelSteps: ModelStepTraceSnapshot[],
+  actionTools: readonly ToolDefinition[]
 ): ModelActionResult {
-  if (toolCalls.length > 0 && executedToolResults.length === 0) {
+  const actionToolNames = new Set<string>(
+    actionTools.map((candidate) => candidate.name)
+  );
+  const calledActionTool = toolCalls.some((call) => {
+    const name = readUnknownProperty(call, "toolName");
+    return typeof name === "string" && actionToolNames.has(name);
+  });
+  if (calledActionTool && executedToolResults.length === 0) {
     throw new Error(
       "Main agent called tools, but no tool executions were recorded."
     );
@@ -849,8 +1138,15 @@ function collectModelActionResult(
 async function executeActionToolInput(
   definition: ToolDefinition,
   input: unknown,
-  runtime: ActionToolRuntime
+  runtime?: ActionToolRuntime
 ): Promise<Record<string, unknown>> {
+  if (!runtime) {
+    return {
+      toolName: definition.name,
+      status: "unavailable",
+      reason: "Chat action tools are disabled during terminal dreaming."
+    };
+  }
   throwIfTurnSteered(runtime.runOptions.signal);
   const connector = runtime.runOptions.connector;
   if (!connector) {
@@ -866,6 +1162,7 @@ async function executeActionToolInput(
       selectCurrentMessageEvent(runtime.context)
     )
   });
+  runtime.runOptions.onToolExecutionStart?.(proposal);
   const [result] = await executeActions({
     connector,
     proposals: [proposal],
@@ -879,6 +1176,7 @@ async function executeActionToolInput(
   }
 
   runtime.executedToolResults.push(result);
+  runtime.runOptions.onToolExecutionEnd?.(proposal, result);
   return summarizeToolResultForModel(result);
 }
 
@@ -1213,6 +1511,42 @@ function readUnknownProperty(value: unknown, key: string): unknown {
     return undefined;
   }
   return (value as Record<string, unknown>)[key];
+}
+
+function readOptionalNumber(value: unknown, key: string): number | undefined {
+  const candidate = readUnknownProperty(value, key);
+  return typeof candidate === "number" && Number.isFinite(candidate)
+    ? candidate
+    : undefined;
+}
+
+function parseJsonObject(value: unknown): Record<string, unknown> | undefined {
+  if (typeof value === "string") {
+    try {
+      return parseJsonObject(JSON.parse(value));
+    } catch {
+      return undefined;
+    }
+  }
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function forwardAbortSignal(
+  source: AbortSignal | undefined,
+  target: AbortController
+): () => void {
+  if (!source) {
+    return () => undefined;
+  }
+  const abort = () => target.abort(source.reason);
+  if (source.aborted) {
+    abort();
+    return () => undefined;
+  }
+  source.addEventListener("abort", abort, { once: true });
+  return () => source.removeEventListener("abort", abort);
 }
 
 function resolveModelBaseUrl(config: GestaltConfig): string {

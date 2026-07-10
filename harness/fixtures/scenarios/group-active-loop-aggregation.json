@@ -56,7 +56,7 @@
       "requests": 4,
       "contains": [
         "Window: mention, seq 1-1",
-        "Window: steer, seq 1-2",
+        "Window: steer, seq 2-2",
         "补充：Agent Loop 运行时，新消息应该通过时间聚合进入同一个 loop。"
       ]
     },
@@ -68,7 +68,7 @@
       "responseContains": ["send_group_message", "leave"]
     },
     "trace": {
-      "traces": 2,
+      "traces": 1,
       "spans": [
         "memory.inject",
         "context.compile",

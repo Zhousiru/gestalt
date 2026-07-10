@@ -7,6 +7,7 @@ export function assertReplayRun(result: ReplayRunResult): void {
   assertTools(result);
   assertModelInput(result);
   assertModelExchange(result);
+  assertPromptCache(result);
   assertTrace(result);
   assertMemory(result);
 }
@@ -308,6 +309,195 @@ function assertModelExchange(result: ReplayRunResult): void {
   for (const pattern of expected.responseContains ?? []) {
     assert.match(responseText, new RegExp(escapeRegExp(pattern)));
   }
+}
+
+function assertPromptCache(result: ReplayRunResult): void {
+  const expected = result.fixture.expectations.promptCache;
+  if (!expected) {
+    return;
+  }
+  const scopedExchanges = expected.includeDreaming
+    ? result.modelExchanges
+    : result.modelExchanges.filter(
+        (exchange) => exchange.purpose === "agent_action"
+      );
+  const requests = scopedExchanges.map((exchange) => exchange.request);
+  assert.ok(requests.length > 1, "expected multiple model requests for cache verification");
+
+  if (expected.enabled !== undefined) {
+    assert.equal(
+      requests.every(
+        (request) => request.promptCacheEnabled === expected.enabled
+      ),
+      true,
+      `expected prompt cache enabled=${expected.enabled} on every agent request`
+    );
+  }
+
+  if (expected.singleSession) {
+    const sessionIds = new Set(requests.map((request) => request.sessionId));
+    assert.equal(sessionIds.size, 1, "expected one stable model session id");
+    assert.ok(requests[0]?.sessionId, "expected a non-empty model session id");
+  }
+
+  if (expected.singleSystemMessage) {
+    for (const [index, request] of requests.entries()) {
+      assert.equal(
+        request.messages.filter((message) => message.role === "system").length,
+        1,
+        `request ${index} should contain exactly one stable system/persona message`
+      );
+    }
+  }
+
+  if (expected.appendOnly) {
+    for (let index = 1; index < requests.length; index += 1) {
+      const previous = requests[index - 1];
+      const current = requests[index];
+      assert.ok(previous && current);
+      assert.ok(
+        current.messages.length >= previous.messages.length,
+        `request ${index} shortened the message history`
+      );
+      assert.deepEqual(
+        current.messages.slice(0, previous.messages.length),
+        previous.messages,
+        `request ${index} did not preserve the exact previous message prefix`
+      );
+    }
+  }
+
+  if (expected.terminalDreamingContinuation) {
+    assertTerminalDreamingContinuation(result);
+  }
+
+  const completed = scopedExchanges.filter((exchange) => exchange.response);
+  if (expected.requestBodyEnabled) {
+    for (const [index, exchange] of completed.entries()) {
+      const body = parseRequestBody(exchange.response?.requestBody);
+      assert.equal(
+        readNestedString(body, "cache_control", "type"),
+        "ephemeral",
+        `model response ${index} request body did not enable prompt caching`
+      );
+      assert.equal(
+        body.session_id,
+        exchange.request.sessionId,
+        `model response ${index} request body used a different session id`
+      );
+    }
+  }
+
+  const cacheReads = completed.map(
+    (exchange) => exchange.response?.cacheUsage?.readTokens ?? 0
+  );
+  const hitResponses = cacheReads.filter((tokens) => tokens > 0).length;
+  const readTokens = cacheReads.reduce((total, tokens) => total + tokens, 0);
+  if (expected.minHitResponses !== undefined) {
+    assert.ok(
+      hitResponses >= expected.minHitResponses,
+      `expected at least ${expected.minHitResponses} OpenRouter cache-hit responses, got ${hitResponses}`
+    );
+  }
+  if (expected.minReadTokens !== undefined) {
+    assert.ok(
+      readTokens >= expected.minReadTokens,
+      `expected at least ${expected.minReadTokens} OpenRouter cache-read tokens, got ${readTokens}`
+    );
+  }
+
+  const completedDreaming = result.modelExchanges.filter(
+    (exchange) => exchange.purpose === "dreaming" && exchange.response
+  );
+  const dreamingCacheReads = completedDreaming.map(
+    (exchange) => exchange.response?.cacheUsage?.readTokens ?? 0
+  );
+  const dreamingHitResponses = dreamingCacheReads.filter(
+    (tokens) => tokens > 0
+  ).length;
+  const dreamingReadTokens = dreamingCacheReads.reduce(
+    (total, tokens) => total + tokens,
+    0
+  );
+  if (expected.minFirstDreamingReadTokens !== undefined) {
+    const firstDreamingReadTokens = dreamingCacheReads[0] ?? 0;
+    assert.ok(
+      firstDreamingReadTokens >= expected.minFirstDreamingReadTokens,
+      `expected the first dreaming response to read at least ${expected.minFirstDreamingReadTokens} cached tokens from the action prefix, got ${firstDreamingReadTokens}`
+    );
+  }
+  if (expected.minDreamingHitResponses !== undefined) {
+    assert.ok(
+      dreamingHitResponses >= expected.minDreamingHitResponses,
+      `expected at least ${expected.minDreamingHitResponses} dreaming cache-hit responses, got ${dreamingHitResponses}`
+    );
+  }
+  if (expected.minDreamingReadTokens !== undefined) {
+    assert.ok(
+      dreamingReadTokens >= expected.minDreamingReadTokens,
+      `expected at least ${expected.minDreamingReadTokens} dreaming cache-read tokens, got ${dreamingReadTokens}`
+    );
+  }
+}
+
+function assertTerminalDreamingContinuation(result: ReplayRunResult): void {
+  const lastAgentRequest = result.modelExchanges
+    .filter((exchange) => exchange.purpose === "agent_action")
+    .at(-1)?.request;
+  const firstDreamingRequest = result.modelExchanges.find(
+    (exchange) => exchange.purpose === "dreaming"
+  )?.request;
+  assert.ok(lastAgentRequest, "expected an agent request before dreaming");
+  assert.ok(firstDreamingRequest, "expected a dreaming request");
+  assert.deepEqual(
+    firstDreamingRequest.messages.slice(0, lastAgentRequest.messages.length),
+    lastAgentRequest.messages,
+    "dreaming did not preserve the exact agent request prefix"
+  );
+  assert.ok(
+    firstDreamingRequest.messages.length > lastAgentRequest.messages.length,
+    "dreaming did not append to the agent message history"
+  );
+  assert.deepEqual(
+    firstDreamingRequest.tools,
+    lastAgentRequest.tools,
+    "dreaming changed the provider tool protocol and invalidated the cache prefix"
+  );
+  assert.deepEqual(
+    firstDreamingRequest.tools.slice(-2),
+    ["bash", "finish_dreaming"],
+    "stable tool protocol is missing the terminal dreaming tools"
+  );
+  const terminalMessage = firstDreamingRequest.messages.at(-1);
+  assert.equal(terminalMessage?.role, "user");
+  assert.match(
+    terminalMessage?.content ?? "",
+    /Terminal phase: dreaming memory maintenance\./
+  );
+  assert.doesNotMatch(
+    terminalMessage?.content ?? "",
+    /Turn transcript:|Agent proposed actions:|Tool results:|Injected memory:/,
+    "dreaming repeated context that already exists in the session prefix"
+  );
+}
+
+function parseRequestBody(value: unknown): Record<string, unknown> {
+  const parsed = typeof value === "string" ? JSON.parse(value) : value;
+  assert.ok(parsed && typeof parsed === "object" && !Array.isArray(parsed));
+  return parsed as Record<string, unknown>;
+}
+
+function readNestedString(
+  value: Record<string, unknown>,
+  objectKey: string,
+  valueKey: string
+): string | undefined {
+  const nested = value[objectKey];
+  if (!nested || typeof nested !== "object" || Array.isArray(nested)) {
+    return undefined;
+  }
+  const candidate = (nested as Record<string, unknown>)[valueKey];
+  return typeof candidate === "string" ? candidate : undefined;
 }
 
 function assertTrace(result: ReplayRunResult): void {

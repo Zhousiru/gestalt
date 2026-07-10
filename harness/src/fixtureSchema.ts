@@ -125,6 +125,23 @@ export const ScenarioModelExchangeExpectationsSchema = z
   })
   .strict();
 
+export const ScenarioPromptCacheExpectationsSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    appendOnly: z.boolean().optional(),
+    singleSession: z.boolean().optional(),
+    singleSystemMessage: z.boolean().optional(),
+    requestBodyEnabled: z.boolean().optional(),
+    includeDreaming: z.boolean().optional(),
+    terminalDreamingContinuation: z.boolean().optional(),
+    minHitResponses: z.number().int().nonnegative().optional(),
+    minReadTokens: z.number().int().nonnegative().optional(),
+    minFirstDreamingReadTokens: z.number().int().nonnegative().optional(),
+    minDreamingHitResponses: z.number().int().nonnegative().optional(),
+    minDreamingReadTokens: z.number().int().nonnegative().optional()
+  })
+  .strict();
+
 export const ScenarioTraceExpectationsSchema = z
   .object({
     traces: z.number().int().nonnegative().optional(),
@@ -167,6 +184,7 @@ export const ScenarioExpectationsSchema = z
     tools: ScenarioToolExpectationsSchema.optional(),
     modelInput: ScenarioModelInputExpectationsSchema.optional(),
     modelExchange: ScenarioModelExchangeExpectationsSchema.optional(),
+    promptCache: ScenarioPromptCacheExpectationsSchema.optional(),
     trace: ScenarioTraceExpectationsSchema.optional(),
     memory: ScenarioMemoryExpectationsSchema.optional()
   })

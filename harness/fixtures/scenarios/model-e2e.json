@@ -60,8 +60,7 @@
         "Alice memory baseline",
         "sender=Alice id=alice",
         "mentions_bot=true",
-        "gestalt 请你直接回复一句：这个测试 persona 可以先这样。",
-        "Available tools:"
+        "gestalt 请你直接回复一句：这个测试 persona 可以先这样。"
       ],
       "tools": ["send_group_message", "say_nothing"]
     },

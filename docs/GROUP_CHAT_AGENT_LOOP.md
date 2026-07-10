@@ -76,6 +76,8 @@ Current flat config keys:
 - `agent_loop_aggregation_max_delay_ms`
 - `agent_loop_aggregation_backoff_multiplier`
 - `context_recent_message_count`
+- `model_prompt_cache_enabled`
+- `model_prompt_cache_ttl`
 - `bot_user_id`
 - `bot_display_name`
 - `agent_loop_exit_say_nothing_enabled`
@@ -146,7 +148,7 @@ The runtime behaves differently depending on whether the group has an active tur
 
 If there is no active turn, a pre-trigger decision may start a new agent turn.
 
-The turn compiles context from the closed window, session state, persona, memory, tools, and platform constraints.
+The active loop creates one persistent model session. Its first turn compiles persona, memory, tools, platform constraints, recent history, and the trigger window into the stable session prefix.
 
 The compiled transcript can include:
 
@@ -155,7 +157,7 @@ The compiled transcript can include:
 - Reply target messages even when they are older than the recent-history window.
 - Prior bot messages marked as `sender_role=self`.
 
-`context_recent_message_count` controls how many previous messages are carried. Prior bot messages stay in recent history for every turn, including later steering windows, and transcript rendering marks them as `sender_role=self`. This keeps short follow-ups such as "why so cranky?" attached to the bot's immediately preceding visible reply even after a tool result has already been processed.
+`context_recent_message_count` controls how many previous messages seed a newly activated model session. Once the active loop starts, completed assistant tool calls and tool results remain in the model message chain directly; later windows do not reconstruct that history as another transcript.
 
 ### Agent Busy
 
@@ -163,11 +165,9 @@ If there is already an active turn, the pre-trigger chain pauses for that conver
 
 When the aggregation timer closes the batch, the runtime steers the active turn with the batched new context.
 
-Steering may mean:
+The steer window is rendered as a new user message and appended to the active model session. If a provider request is in flight, the runtime cancels that request, discards only its incomplete assistant output, and restarts from the same committed message prefix plus the appended steer message. Completed assistant/tool steps are retained.
 
-- Cancelling the current cancellable model run and continuing from expanded context.
-- Asking the model to reconsider a pending proposal using the new context.
-- Deferring the batched messages until the current side effect finishes, if the turn is already non-cancellable.
+If the turn is already committing a visible side effect, the batch is deferred until that action finishes. A synchronous commit boundary is entered before connector execution so a stale tool proposal cannot be cancelled halfway through dispatch.
 
 The key choice is that steering happens at aggregation boundaries, not on every single message arrival.
 
@@ -180,7 +180,7 @@ Cancellable phases include:
 - Context compilation.
 - Model thinking or reply generation.
 - Read-only tool use.
-- Tool result handling.
+- Read-only tool execution and result handling. A steer may discard an uncommitted read result and retry it from the appended context.
 
 Non-cancellable phases include:
 
@@ -239,7 +239,7 @@ Loop exits are exported in session state as `loopExits`, with the exit reason an
 
 ## Execution Boundary
 
-The active-loop aggregation buffer is the mechanism for updating an active turn. Once a turn reaches a non-cancellable side-effect phase, newly arriving messages belong to the next window and the next turn.
+The active-loop aggregation buffer is the mechanism for updating an active turn. Before a visible tool executes, the runtime crosses a non-cancellable commit boundary. Newly arriving messages are buffered until that action completes, then append to the same model session in a later window.
 
 This keeps the first implementation simple:
 
@@ -272,11 +272,11 @@ The selected group chat flow is:
 4. The event is appended to the group session log and assigned a sequence.
 5. If the group is idle, the pre-trigger chain evaluates configured triggers.
 6. If a trigger fires, the runtime creates a trigger window and starts an agent turn.
-7. The turn compiles context from the window, session state, persona, memory, tools, and platform constraints.
+7. The active loop initializes one model session from the window, session state, persona, memory, tools, and platform constraints.
 8. The model proposes actions.
 9. While the turn runs, new messages for the same conversation bypass the trigger chain.
 10. Those messages enter an active-loop aggregation buffer.
-11. When the aggregation buffer closes during an active turn, the batched messages steer, reconsider, or defer the active turn depending on its phase.
+11. When the aggregation buffer closes during an active turn, its transcript is appended as a new user message; the in-flight provider request is restarted from the preserved prefix, or the append is deferred across a side-effect commit boundary.
 12. Tool actions execute through tools and connectors.
 13. Messages that arrive during non-cancellable execution are left for the next window.
 14. Exit triggers run after each turn and during active-loop idle waits.
@@ -304,6 +304,10 @@ It manages trigger evaluation for idle conversations and the decision of whether
 Owns active turn lifecycle.
 
 It handles one-active-turn-per-conversation, active-loop aggregation, steering, cancellation, steer limits, and handoff back to the pre-trigger chain after the loop exits.
+
+It also owns one model session per active loop. That session keeps an append-only message journal, a stable provider session id, committed assistant/tool checkpoints, and the current cancellable provider request. After the loop exits, dreaming receives an immutable continuation of that same session and appends a terminal memory-maintenance message instead of rebuilding persona, memory, transcript, and tool history.
+
+The provider-facing tool protocol stays stable for the whole session because tool schemas are part of the cacheable prompt. Action tools and terminal dreaming tools are declared in one deterministic order from the first request. Runtime phase gates make `bash`/`finish_dreaming` unavailable during chat actions and make chat-action tools unavailable during dreaming.
 
 ### Exit Trigger Chain
 
@@ -400,6 +404,10 @@ For group chat, the project will use:
 - Trigger windows start a turn when the conversation is idle.
 - The pre-trigger chain pauses for a conversation while its agent loop is active.
 - New messages during an active loop are batched by a configurable timer and injected as `steer` windows.
+- Each active loop owns one append-only model session; persona and memory appear only in its initial stable prefix.
+- OpenRouter requests use a stable `session_id` plus prompt caching, and traces retain provider cache-read usage.
+- Dreaming is the terminal continuation of that session: it appends one user-side dreaming instruction, preserves the exact earlier message prefix, and reuses the same provider session id.
+- Provider tool schemas remain stable across the action/dreaming boundary; execution capability changes through runtime phase gates so the first dreaming request can reuse the action prefix cache.
 - Exit triggers release the conversation back to the pre-trigger chain.
 - A post-trigger shared agent loop.
 - Conservative batched steer behavior before side effects.

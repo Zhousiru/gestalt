@@ -6,6 +6,8 @@ model_routing_order = "deepseek"
 model_routing_allow_fallbacks = false
 model_thinking = "disabled"
 model_tool_choice = "auto"
+model_prompt_cache_enabled = true
+model_prompt_cache_ttl = "5m"
 
 bot_user_id = "gestalt-bot"
 bot_display_name = "小格"

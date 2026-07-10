@@ -388,7 +388,7 @@ Tool design principles:
 
 The main model should not be expected to fetch all ordinary memory by tool call.
 
-Instead, the runtime should compile a focused context before each model turn.
+Instead, the runtime compiles a focused initial context when an active model session starts. While that loop remains active, new windows append to the committed model message chain rather than rebuilding the persona, memory, and prior tool history.
 
 Inputs:
 
@@ -466,7 +466,7 @@ The memory store should live under GestaltHome, normally in `memories/`, so that
 
 ## 10. Dreaming
 
-Dreaming is the asynchronous memory-maintenance process.
+Dreaming is the terminal memory-maintenance phase of a completed active agent loop.
 
 It is responsible for converting raw interaction history into useful long-term continuity.
 
@@ -503,6 +503,10 @@ The user refined the project direction toward an AI-native runtime. They want th
 ```
 
 Accepted dreaming outputs should be written back through the GestaltHome memory store and traced as runtime state changes.
+
+The active loop hands dreaming an immutable continuation of its append-only model session. Dreaming keeps the original system/persona/memory prefix, committed assistant/tool history, and provider `session_id`, then appends one dreaming task message. It does not rebuild or repeat the turn transcript.
+
+The provider-facing tool protocol is deterministic and stable across both phases so tool schema changes do not invalidate prefix caching. Runtime phase gates expose chat-action execution during the active phase and memory-bash execution during the dreaming phase. Harness verification must confirm that the first OpenRouter dreaming response reports positive cached input tokens.
 
 ## 11. Harness Purpose
 

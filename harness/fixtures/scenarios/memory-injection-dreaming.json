@@ -77,6 +77,20 @@
         "Alice is actively shaping the memory design"
       ]
     },
+    "promptCache": {
+      "enabled": true,
+      "appendOnly": true,
+      "singleSession": true,
+      "singleSystemMessage": true,
+      "requestBodyEnabled": true,
+      "includeDreaming": true,
+      "terminalDreamingContinuation": true,
+      "minHitResponses": 1,
+      "minReadTokens": 1,
+      "minFirstDreamingReadTokens": 1,
+      "minDreamingHitResponses": 1,
+      "minDreamingReadTokens": 1
+    },
     "trace": {
       "traces": 1,
       "spans": [

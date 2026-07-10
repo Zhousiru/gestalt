@@ -49,8 +49,7 @@
     },
     "modelInput": {
       "contains": [
-        "gestalt 请你先用 emoji_id=14 对这条消息做一个 reaction，然后再回复一句：多步工具调用验证完成。",
-        "Available tools:"
+        "gestalt 请你先用 emoji_id=14 对这条消息做一个 reaction，然后再回复一句：多步工具调用验证完成。"
       ],
       "tools": ["react_to_message", "send_group_message"]
     },

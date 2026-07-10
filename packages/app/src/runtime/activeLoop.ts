@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Conversation } from "../events/schemas";
+import type { ModelSession } from "../model/session";
 import {
   getConversationKey,
   type CreatedMessageWindow,
@@ -19,7 +20,8 @@ import {
   recordAgentTrace,
   recordAgentTurnTrace,
   runDreamingForAgentTurn,
-  runAgentTurn
+  runAgentTurn,
+  compileIncrementalAgentContext
 } from "./agentLoop";
 import {
   evaluateAgentLoopExitTriggers,
@@ -62,6 +64,7 @@ export interface ActiveLoop {
   loopStartedAt: string;
   currentTurnId: string;
   currentTurnStartedAt: string;
+  modelSession: ModelSession;
   parts: WindowPart[];
   pendingParts: WindowPart[];
   restartCount: number;
@@ -88,10 +91,32 @@ export function startActiveLoopWindow(
   const activeLoop = activeLoops.get(conversationKey);
 
   if (activeLoop) {
-    activeLoop.pendingParts.push(part);
     if (activeLoop.phase === "waiting_for_input") {
+      activeLoop.pendingParts.push(part);
       activeLoop.wakeForInput?.();
-    } else if (isCancellablePhase(activeLoop.phase)) {
+      return activeLoop.promise;
+    }
+
+    if (
+      (activeLoop.phase === "model_running" ||
+        activeLoop.phase === "steering") &&
+      activeLoop.restartCount < dependencies.maxSteersPerTurn
+    ) {
+      const context = compileIncrementalAgentContext(
+        dependencies,
+        part.window,
+        part.eventRecords
+      );
+      if (activeLoop.modelSession.steer(context)) {
+        activeLoop.parts.push(part);
+        activeLoop.restartCount += 1;
+        activeLoop.phase = "steering";
+        return activeLoop.promise;
+      }
+    }
+
+    activeLoop.pendingParts.push(part);
+    if (isCancellablePhase(activeLoop.phase)) {
       activeLoop.abortController?.abort(new TurnSteeredError());
     }
     return activeLoop.promise;
@@ -106,6 +131,7 @@ export function startActiveLoopWindow(
     loopStartedAt: startedAt,
     currentTurnId: randomUUID(),
     currentTurnStartedAt: startedAt,
+    modelSession: dependencies.model.createSession(),
     parts: [part],
     pendingParts: [],
     restartCount: 0,
@@ -142,6 +168,10 @@ export function forceActiveLoopExit(
   clearActiveLoopIdleExit(activeLoop);
   if (activeLoop.phase === "waiting_for_input") {
     activeLoop.wakeForInput?.();
+    return;
+  }
+
+  if (activeLoop.phase === "executing") {
     return;
   }
 
@@ -243,7 +273,11 @@ async function runLoopDreaming(
     return;
   }
 
-  await runDreamingForAgentTurn(dependencies, result, input);
+  const modelContinuation = active.modelSession.continuation?.();
+  await runDreamingForAgentTurn(dependencies, result, {
+    ...input,
+    ...(modelContinuation ? { modelContinuation } : {})
+  });
 }
 
 function createLoopDreamingInput(
@@ -309,6 +343,7 @@ async function runSteerableTurn(
         window: merged.window,
         eventRecords: merged.eventRecords,
         steerCount: active.restartCount,
+        modelSession: active.modelSession,
         includeSelfHistory: true,
         signal: abortController.signal,
         onPhaseChange(phase) {
@@ -316,8 +351,14 @@ async function runSteerableTurn(
         }
       });
 
+      const completed = mergeWindowParts(active, dependencies.now);
+      result.window = completed.window;
+      result.eventRecords = completed.eventRecords;
+      result.event = completed.eventRecords.at(-1)?.event ?? result.event;
+      result.steerCount = active.restartCount;
+
       dependencies.sessionStore.recordTurn(
-        createSessionTurnRecord(active, result, merged, dependencies.now)
+        createSessionTurnRecord(active, result, completed, dependencies.now)
       );
       active.turnIds.push(active.currentTurnId);
       return result;

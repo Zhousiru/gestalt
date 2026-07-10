@@ -110,6 +110,8 @@ The current real-model baseline uses an AI SDK OpenAI-compatible model. Provider
 - `model_thinking`: optional provider thinking mode value, such as `disabled`.
 - `model_tool_choice`: optional AI SDK tool-choice mode, `required`, `auto`, or `none`. When omitted, the runtime does not set a tool-choice value and leaves the default to AI SDK/provider behavior.
 - `model_max_steps`: maximum AI SDK tool-loop steps for one action turn.
+- `model_prompt_cache_enabled`: enables provider prompt caching for the active model session.
+- `model_prompt_cache_ttl`: OpenRouter cache TTL (`5m` or `1h`).
 - `context_recent_message_count`: how many previous messages from the same conversation are carried into compiled group context.
 - `bot_user_id` and `bot_display_name`: identity used when recording successful bot group-message tool calls back into session history.
 - `allowedgroups`: optional group id allowlist. When present, runtime-triggered group events outside the array are ignored before session ingestion.
@@ -183,6 +185,18 @@ Run the real-model group-chat steering fixture:
 
 ```bash
 pnpm --filter @gestalt/harness run verify
+```
+
+Run the focused OpenRouter prefix-cache verification:
+
+```bash
+pnpm --filter @gestalt/harness run verify:cache
+```
+
+Run the focused action-to-dreaming prefix-cache verification:
+
+```bash
+pnpm --filter @gestalt/harness run verify:dream-cache
 ```
 
 Run the group context history fixture:
@@ -406,6 +420,9 @@ For GestaltHome behavior, verify:
 
 - A mention starts a turn.
 - A delayed second message steers the active turn.
+- The steer is appended as a new user message while the original system/persona prefix remains byte-for-byte unchanged.
+- All requests use one OpenRouter `session_id` and top-level `cache_control`.
+- At least one completed response reports positive provider `cached_tokens`; structural prefix checks alone are not sufficient.
 - An imported session snapshot is preserved and new events continue from the next seq.
 - The final turn covers event seqs `[2, 3]`.
 - The configured model receives the steered window and returns a real `send_group_message -> leave` tool sequence.
@@ -450,7 +467,7 @@ For GestaltHome behavior, verify:
 - The later message is batched by the active-loop aggregation timer.
 - The batched message enters the same turn as a `steer` window.
 - The exported session records two windows but only one completed turn with `steerCount: 1`.
-- The real configured model sees the final `Window: steer, seq 1-2` transcript.
+- The real configured model sees an initial `Window: mention, seq 1-1` message followed by an appended `Window: steer, seq 2-2` message.
 - The resulting turn verifies `send_group_message -> leave`.
 
 `multi-step-agent-tools.json` verifies:
@@ -477,6 +494,9 @@ For GestaltHome behavior, verify:
 - The `memory.inject` span records injected memory paths and previews.
 - The configured action model sees injected memory and proposes a group reply.
 - The configured dreaming model calls the `bash` tool and finishes with `finish_dreaming`.
+- Dreaming continues the completed action model session with the same `session_id`, stable system message, exact prior message prefix, and deterministic provider tool protocol.
+- The dreaming instructions are one appended user message; injected memory, the full transcript, and action/tool history are not serialized again.
+- The first dreaming response, not only later dreaming steps, must report positive OpenRouter `cached_tokens` in the focused cache fixture.
 - Bash runs in a VFS with `/memories` mounted to the constrained memory root.
 - Bash dreaming writes both self memory and user memory through that mount.
 - Wrong user memory can be corrected without leaving the old claim in the final file.

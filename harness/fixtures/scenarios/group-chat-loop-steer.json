@@ -69,7 +69,8 @@
       "contains": [
         "gestalt 帮我看看这个实现方向？",
         "gestalt 补充一下，要保持架构简单，先只验证后链路。",
-        "Window: steer, seq 2-3"
+        "Window: mention, seq 2-2",
+        "Window: steer, seq 3-3"
       ]
     },
     "modelExchange": {
@@ -79,8 +80,17 @@
       "purposes": ["agent_action", "agent_action", "agent_action", "agent_action"],
       "responseContains": ["send_group_message", "leave"]
     },
+    "promptCache": {
+      "enabled": true,
+      "appendOnly": true,
+      "singleSession": true,
+      "singleSystemMessage": true,
+      "requestBodyEnabled": true,
+      "minHitResponses": 1,
+      "minReadTokens": 1
+    },
     "trace": {
-      "traces": 2,
+      "traces": 1,
       "spans": [
         "memory.inject",
         "context.compile",

@@ -16,6 +16,7 @@ export interface SelectContextEventsInput {
   window: MessageWindow;
   windowEvents: SessionEventRecord[];
   includeSelfHistory: boolean;
+  includeRecentHistory?: boolean;
 }
 
 export function selectContextEvents(
@@ -29,13 +30,15 @@ export function selectContextEvents(
   const events = input.sessionStore.getEvents(input.window.conversation);
   const bySeq = new Map<number, ContextEventRecord>();
 
-  for (const record of selectRecentHistory({
-    events,
-    beforeSeq: input.window.fromSeq,
-    count: recentCount,
-    includeSelfHistory: input.includeSelfHistory
-  })) {
-    addRecord(bySeq, record, "history");
+  if (input.includeRecentHistory ?? true) {
+    for (const record of selectRecentHistory({
+      events,
+      beforeSeq: input.window.fromSeq,
+      count: recentCount,
+      includeSelfHistory: input.includeSelfHistory
+    })) {
+      addRecord(bySeq, record, "history");
+    }
   }
 
   for (const record of input.windowEvents) {

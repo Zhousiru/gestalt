@@ -8,12 +8,13 @@ import {
   ReadWriteFs,
   type BashExecResult
 } from "just-bash";
-import { ToolLoopAgent, hasToolCall, stepCountIs, tool } from "ai";
-import { z } from "zod";
+import { ToolLoopAgent, hasToolCall, stepCountIs } from "ai";
 import type { CanonicalEvent } from "../events/schemas";
 import type { GestaltConfig } from "../home/loadConfig";
 import type { GestaltHome } from "../home/resolveGestaltHome";
 import {
+  createModelSessionProviderOptions,
+  buildActionTools,
   createModelStepRecorder,
   createLanguageModelFromConfig,
   readModelTemperature,
@@ -22,7 +23,11 @@ import {
   type ModelRequestSnapshot,
   type ModelResponseSnapshot
 } from "../model/aiSdkModel";
-import type { ModelStepTraceSnapshot } from "../model/proposeActions";
+import { buildDreamingTools, dreamingToolOrder } from "../model/dreamingTools";
+import type {
+  ModelSessionContinuation,
+  ModelStepTraceSnapshot
+} from "../model/session";
 import type { MessageWindow, SessionEventRecord } from "../session/schemas";
 import type { ToolExecutionResult } from "../tools/executeActions";
 import type { ActionProposal } from "../tools/schemas";
@@ -49,6 +54,7 @@ export interface DreamingRunInput {
   memories: MemoryFragment[];
   proposedActions: ActionProposal[];
   toolResults: ToolExecutionResult[];
+  modelContinuation?: ModelSessionContinuation;
   now: () => Date;
 }
 
@@ -203,12 +209,7 @@ interface DreamingPrompt {
 
 function buildDreamingPrompt(input: DreamingBashAgentInput): DreamingPrompt {
   const participants = getParticipantSummaries(input.eventRecords);
-  const memories = input.memories
-    .map(
-      (memory) =>
-        `# ${memory.relativePath}\n${memory.content.trim() || "(empty)"}`
-    )
-    .join("\n\n");
+  const memories = renderInjectedMemories(input.memories);
   const proposedActions = input.proposedActions
     .map(
       (action) =>
@@ -275,6 +276,30 @@ function buildDreamingPrompt(input: DreamingBashAgentInput): DreamingPrompt {
   };
 }
 
+function buildDreamingContinuationPrompt(
+  input: DreamingBashAgentInput,
+  dreamingPrompt: DreamingPrompt
+): string {
+  return [
+    "Terminal phase: dreaming memory maintenance.",
+    "The preceding messages are the authoritative transcript and action/tool history for this agent loop; do not ask for them to be repeated.",
+    "For this terminal phase, follow these additional instructions:",
+    dreamingPrompt.instructions,
+    "",
+    "Memory root layout:",
+    "- /memories/self/index.md",
+    "- /memories/self/<subject>.md",
+    "- /memories/users/<id>/index.md",
+    "- /memories/users/<id>/<subject>.md",
+    "",
+    "Participants:",
+    getParticipantSummaries(input.eventRecords) || "(none)",
+    "",
+    "Use bash to update useful long-term memory for self and participants, then call finish_dreaming.",
+    "Keep files concise and narrative. Correct, prune, or rewrite stale/conflicting memory instead of accumulating contradictions."
+  ].join("\n");
+}
+
 async function runDreamingToolLoop(
   config: GestaltConfig,
   dreamingPrompt: DreamingPrompt,
@@ -286,47 +311,35 @@ async function runDreamingToolLoop(
   const resolved = createLanguageModelFromConfig(config, options);
   const temperature = options.temperature ?? readModelTemperature(config) ?? 1;
   const modelStepRecorder = createModelStepRecorder(input.now);
+  const continuation = input.modelContinuation;
+  const providerOptions = continuation
+    ? createModelSessionProviderOptions(
+        resolved.providerOptions,
+        resolved.providerName,
+        continuation.providerSessionId,
+        continuation.promptCacheEnabled,
+        continuation.promptCacheTtl
+      )
+    : resolved.providerOptions;
+  const tools = continuation
+    ? {
+        ...buildActionTools(continuation.actionTools),
+        ...buildDreamingTools(input.bash)
+      }
+    : buildDreamingTools(input.bash);
   const agent = new ToolLoopAgent({
     id: "gestalt-dreaming",
     model: resolved.languageModel,
-    instructions: dreamingPrompt.instructions,
-    tools: {
-      bash: tool({
-        description:
-          "Run one executable bash command in a virtual filesystem. Only /memories is writable and persistent. Do not pass natural-language explanations as commands.",
-        inputSchema: z
-          .object({
-            command: z
-              .string()
-              .min(1)
-              .describe(
-                "Executable shell code to run. Use paths under /memories for memory files. Examples: cat /memories/self/index.md ; printf 'text' >> /memories/users/alice/index.md"
-              )
-          })
-          .strict(),
-        async execute({ command }) {
-          return input.bash.exec(command);
-        }
-      }),
-      finish_dreaming: tool({
-        description:
-          "Finish the dreaming pass after all useful memory inspection and updates are complete.",
-        inputSchema: z
-          .object({
-            summary: z
-              .string()
-              .min(1)
-              .describe(
-                "Short summary of what memory was updated, or why no update was needed."
-              )
-          })
-          .strict()
-      })
-    },
+    instructions: continuation?.instructions ?? dreamingPrompt.instructions,
+    tools,
     temperature,
-    ...(resolved.providerOptions
-      ? { providerOptions: resolved.providerOptions }
-      : {}),
+    toolOrder: continuation
+      ? [
+          ...continuation.actionTools.map((candidate) => candidate.name),
+          ...dreamingToolOrder
+        ]
+      : [...dreamingToolOrder],
+    ...(providerOptions ? { providerOptions } : {}),
     stopWhen: [hasToolCall("finish_dreaming"), stepCountIs(maxModelTurns)],
     include: {
       requestBody: true,
@@ -350,7 +363,13 @@ async function runDreamingToolLoop(
       const request = snapshotStepRequest(event, {
         providerName: resolved.providerName,
         modelName: resolved.modelName,
-        temperature
+        temperature,
+        ...(continuation
+          ? {
+              sessionId: continuation.providerSessionId,
+              promptCacheEnabled: continuation.promptCacheEnabled
+            }
+          : {})
       });
       modelStepRecorder.recordRequest(request);
       options.onRequest?.(request);
@@ -362,17 +381,36 @@ async function runDreamingToolLoop(
     }
   });
 
-  const result = await agent.generate({
-    prompt: dreamingPrompt.prompt,
-    timeout: {
-      totalMs: timeoutMs
-    }
-  });
+  const timeout = { totalMs: timeoutMs };
+  const result = continuation
+    ? await agent.generate({
+        messages: [
+          ...continuation.messages,
+          {
+            role: "user",
+            content: buildDreamingContinuationPrompt(input, dreamingPrompt)
+          }
+        ],
+        timeout
+      })
+    : await agent.generate({
+        prompt: dreamingPrompt.prompt,
+        timeout
+      });
 
   if (!result.toolCalls.some((call) => call.toolName === "finish_dreaming")) {
     throw new Error(`Dreaming model exceeded ${maxModelTurns} model turns.`);
   }
   return modelStepRecorder.steps;
+}
+
+function renderInjectedMemories(memories: MemoryFragment[]): string {
+  return memories
+    .map(
+      (memory) =>
+        `# ${memory.relativePath}\n${memory.content.trim() || "(empty)"}`
+    )
+    .join("\n\n");
 }
 
 function getParticipantSummaries(records: SessionEventRecord[]): string {
