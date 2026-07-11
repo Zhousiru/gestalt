@@ -210,6 +210,7 @@ async function verifyAiSdkInspectUsesReportToolAfterBash(): Promise<void> {
                 }
               }
             ],
+            triggerAttempts: [],
             windows: [],
             turns: [],
             loopExits: []
@@ -329,6 +330,7 @@ async function verifyAiSdkInspectUsesReportToolAfterBash(): Promise<void> {
           conversation: event.conversation,
           nextSeq: 2,
           events: [eventRecord],
+          triggerAttempts: [],
           windows: [],
           turns: [],
           loopExits: []

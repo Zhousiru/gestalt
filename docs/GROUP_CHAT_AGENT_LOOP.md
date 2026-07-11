@@ -39,7 +39,7 @@ It owns:
 
 It does not decide the final social action. It only decides whether the model should be given a chance to inspect the current group context.
 
-The implementation exposes this as a pluggable trigger chain in the runtime. A trigger observes the canonical event, exported session state, and flat Gestalt config, then may return one message window candidate.
+The implementation exposes this as a pluggable trigger chain in the runtime. A trigger observes the canonical event, exported session state, and flat Gestalt config, then may return one message window candidate. The first matching candidate then passes through a deterministic probability admission gate before it may create a window. A rejected candidate does not fall through to lower-priority triggers for the same event.
 
 The default group triggers are:
 
@@ -47,6 +47,8 @@ The default group triggers are:
 - Keyword trigger: fires when configured names or a configured regex match the message text.
 - Activity trigger: fires when messages in the configured time range cross the configured activity threshold.
 - Icebreaker trigger: fires when a group has been quiet for the configured duration and then receives a new message.
+
+Each default trigger kind has an independent probability in the inclusive range `0.0` to `1.0`, defaulting to `1.0`. Admission uses a versioned SHA-256-derived 53-bit sample over the conversation, stable message identity, and trigger reason. The same canonical message therefore receives the same result during replay. Matched candidates, including probability rejections, are persisted as session trigger attempts; rejected candidates do not create message windows or model turns.
 
 When a conversation is idle, a trigger-created window starts the post-trigger agent loop.
 
@@ -65,12 +67,16 @@ Current flat config keys:
 - `allowedgroups`
 - `trigger_enabled`
 - `trigger_mention_enabled`
+- `trigger_mention_probability`
 - `trigger_keyword_names`
 - `trigger_keyword_regex`
+- `trigger_keyword_probability`
 - `trigger_activity_enabled`
+- `trigger_activity_probability`
 - `trigger_activity_window_ms`
 - `trigger_activity_min_messages`
 - `trigger_icebreaker_enabled`
+- `trigger_icebreaker_probability`
 - `trigger_icebreaker_quiet_ms`
 - `agent_loop_aggregation_delay_ms`
 - `agent_loop_aggregation_max_delay_ms`

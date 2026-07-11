@@ -1,0 +1,11 @@
+trigger_mention_enabled = true
+trigger_keyword_names = "小格"
+trigger_activity_enabled = false
+trigger_icebreaker_enabled = false
+
+trigger_mention_probability = 0.0
+trigger_keyword_probability = 1.0
+trigger_activity_probability = 0.25
+trigger_icebreaker_probability = 0.75
+
+agent_loop_exit_idle_ms = 1

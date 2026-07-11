@@ -6,6 +6,7 @@ import type {
   SessionEventRecord,
   SessionSnapshot,
   SessionTurnRecord,
+  TriggerAttemptRecord,
   TurnPhaseRecord
 } from "../session/schemas";
 import type { ActionProposal } from "../tools/schemas";
@@ -40,6 +41,7 @@ export type {
   SessionEventRecord,
   SessionSnapshot,
   SessionTurnRecord,
+  TriggerAttemptRecord,
   SpanRecord,
   TurnPhaseRecord
 };
@@ -213,6 +215,7 @@ export type RuntimeLiveEventType =
   | "live.ready"
   | "live.heartbeat"
   | "session.event.appended"
+  | "session.trigger_attempt.recorded"
   | "session.window.created"
   | "session.turn.recorded"
   | "session.loop_exit.recorded"

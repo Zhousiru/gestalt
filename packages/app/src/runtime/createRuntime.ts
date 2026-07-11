@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   CanonicalEventSchema,
   type CanonicalEvent,
@@ -43,6 +44,10 @@ import {
 } from "../session/schemas";
 import { createTraceRecorder } from "../trace/recorder";
 import { createDefaultGroupTriggers } from "../triggers/defaultTriggers";
+import {
+  evaluateTriggerAdmission,
+  validateDefaultTriggerProbabilities
+} from "../triggers/admission";
 import { resolveTimezone } from "../context/time";
 import {
   evaluateGroupTriggers,
@@ -124,6 +129,7 @@ export async function createRuntime(
   );
   loadEnv(home);
   const config = await loadConfig(home);
+  validateDefaultTriggerProbabilities(config);
   const resolvedTimezone = resolveTimezone(config);
   const persona = await loadPersona(home);
   const memoryStore = createFileMemoryStore(home);
@@ -156,6 +162,13 @@ export async function createRuntime(
           window
         },
         window.closedAt
+      );
+    },
+    onTriggerAttemptRecorded(attempt) {
+      options.liveEvents?.publish(
+        "session.trigger_attempt.recorded",
+        { attempt },
+        attempt.evaluatedAt
       );
     },
     onTurnRecorded(turn) {
@@ -264,6 +277,29 @@ export async function createRuntime(
       now: dependencies.now
     });
     if (!decision) {
+      return undefined;
+    }
+
+    const admission = evaluateTriggerAdmission(
+      dependencies.config,
+      record,
+      decision
+    );
+    dependencies.sessionStore.recordTriggerAttempt({
+      id: randomUUID(),
+      conversation: decision.conversation,
+      triggerName: decision.triggerName,
+      reason: decision.reason,
+      eventSeq: record.seq,
+      fromSeq: decision.fromSeq,
+      toSeq: decision.toSeq,
+      probability: admission.probability,
+      sample: admission.sample,
+      admitted: admission.admitted,
+      samplerVersion: admission.samplerVersion,
+      evaluatedAt: dependencies.now().toISOString()
+    });
+    if (!admission.admitted) {
       return undefined;
     }
 

@@ -86,11 +86,29 @@ export const AgentLoopExitRecordSchema = z
   })
   .strict();
 
+export const TriggerAttemptRecordSchema = z
+  .object({
+    id: z.string().min(1),
+    conversation: ConversationSchema,
+    triggerName: z.string().min(1),
+    reason: MessageWindowReasonSchema,
+    eventSeq: z.number().int().positive(),
+    fromSeq: z.number().int().positive(),
+    toSeq: z.number().int().positive(),
+    probability: z.number().min(0).max(1),
+    sample: z.number().min(0).lt(1),
+    admitted: z.boolean(),
+    samplerVersion: z.string().min(1),
+    evaluatedAt: z.string().min(1)
+  })
+  .strict();
+
 export const ConversationSessionSnapshotSchema = z
   .object({
     conversation: ConversationSchema,
     nextSeq: z.number().int().positive(),
     events: z.array(SessionEventRecordSchema),
+    triggerAttempts: z.array(TriggerAttemptRecordSchema).default([]),
     windows: z.array(MessageWindowSchema),
     turns: z.array(SessionTurnRecordSchema),
     loopExits: z.array(AgentLoopExitRecordSchema).default([])
@@ -112,6 +130,7 @@ export type MessageWindow = z.infer<typeof MessageWindowSchema>;
 export type TurnPhaseRecord = z.infer<typeof TurnPhaseRecordSchema>;
 export type SessionTurnRecord = z.infer<typeof SessionTurnRecordSchema>;
 export type AgentLoopExitRecord = z.infer<typeof AgentLoopExitRecordSchema>;
+export type TriggerAttemptRecord = z.infer<typeof TriggerAttemptRecordSchema>;
 export type ConversationSessionSnapshot = z.infer<
   typeof ConversationSessionSnapshotSchema
 >;

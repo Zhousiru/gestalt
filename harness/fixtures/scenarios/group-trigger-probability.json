@@ -1,0 +1,61 @@
+{
+  "id": "group-trigger-probability",
+  "description": "Each matched pre-trigger passes through its own deterministic probability admission gate before an agent loop can start.",
+  "configFixture": "harness/fixtures/configs/trigger-probability.toml",
+  "eventHandling": "runtime_triggers",
+  "model": {
+    "kind": "mock"
+  },
+  "events": [
+    {
+      "conversationId": "mock-group",
+      "messageId": "probability-mention-message",
+      "senderId": "alice",
+      "text": "小格，这条同时命中 mention 和 keyword。",
+      "mentionsBot": true
+    },
+    {
+      "conversationId": "mock-group",
+      "messageId": "probability-keyword-message",
+      "senderId": "alice",
+      "text": "小格，这条只命中 keyword。",
+      "mentionsBot": false
+    }
+  ],
+  "expectations": {
+    "session": {
+      "conversations": 1,
+      "events": 2,
+      "windows": 1,
+      "turns": 1,
+      "nextSeq": 3,
+      "triggerAttempts": 2,
+      "triggerAttemptReasons": ["mention", "keyword"],
+      "triggerAttemptProbabilities": [0, 1],
+      "triggerAttemptAdmissions": [false, true],
+      "triggerAttemptSamplerVersions": ["sha256-53-v1", "sha256-53-v1"],
+      "windowReasons": ["keyword"],
+      "windowEventSeqs": [[2]],
+      "loopExits": 1,
+      "loopExitReasons": ["idle_timeout"]
+    },
+    "action": {
+      "toolNames": ["say_nothing"]
+    },
+    "tools": {
+      "calls": 1,
+      "toolNames": ["say_nothing"],
+      "connectorSideEffects": 0
+    },
+    "trace": {
+      "traces": 1,
+      "spans": [
+        "memory.inject",
+        "context.compile",
+        "model.decide",
+        "tool.execute"
+      ],
+      "toolNames": ["say_nothing"]
+    }
+  }
+}

@@ -612,6 +612,7 @@ function renderReport(
     `- Conversations: ${summary.conversations}`,
     `- Realtime session exports: ${input.sessionExports.length}`,
     `- Events: ${conversation?.events.length ?? 0}`,
+    `- Trigger attempts: ${conversation?.triggerAttempts.length ?? 0}`,
     `- Windows: ${conversation?.windows.length ?? 0}`,
     `- Turns: ${conversation?.turns.length ?? 0}`,
     `- Traces: ${input.traces.length}`,

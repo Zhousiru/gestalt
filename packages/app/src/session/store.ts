@@ -7,7 +7,9 @@ import {
   SessionSnapshotSchema,
   SessionTurnRecordSchema,
   AgentLoopExitRecordSchema,
+  TriggerAttemptRecordSchema,
   type AgentLoopExitRecord,
+  type TriggerAttemptRecord,
   type ConversationSessionSnapshot,
   type MessageWindow,
   type MessageWindowReason,
@@ -48,6 +50,10 @@ export interface CreateSessionStoreOptions {
     window: MessageWindow,
     snapshot: SessionSnapshot
   ) => void;
+  onTriggerAttemptRecorded?: (
+    attempt: TriggerAttemptRecord,
+    snapshot: SessionSnapshot
+  ) => void;
   onTurnRecorded?: (
     turn: SessionTurnRecord,
     snapshot: SessionSnapshot
@@ -69,6 +75,7 @@ export interface SessionStore {
     fromSeq?: number,
     toSeq?: number
   ): SessionEventRecord[];
+  recordTriggerAttempt(attempt: TriggerAttemptRecord): void;
   recordTurn(turn: SessionTurnRecord): void;
   recordLoopExit(exit: AgentLoopExitRecord): void;
   exportSnapshot(options?: ExportSessionOptions): SessionSnapshot;
@@ -157,6 +164,15 @@ export function createInMemorySessionStore(
       });
     },
 
+    recordTriggerAttempt(attempt) {
+      const parsedAttempt = TriggerAttemptRecordSchema.parse(attempt);
+      const conversation = ensureConversation(parsedAttempt.conversation);
+      conversation.triggerAttempts.push(parsedAttempt);
+      const snapshot = exportSnapshot();
+      options.onTriggerAttemptRecorded?.(parsedAttempt, snapshot);
+      emitSnapshot(snapshot);
+    },
+
     recordTurn(turn) {
       const parsedTurn = SessionTurnRecordSchema.parse(turn);
       const conversation = ensureConversation(parsedTurn.conversation);
@@ -199,6 +215,7 @@ export function createInMemorySessionStore(
       conversation,
       nextSeq: 1,
       events: [],
+      triggerAttempts: [],
       windows: [],
       turns: [],
       loopExits: []

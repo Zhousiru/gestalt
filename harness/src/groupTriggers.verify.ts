@@ -15,6 +15,7 @@ const fixturePaths = [
   "harness/fixtures/scenarios/group-trigger-keyword.json",
   "harness/fixtures/scenarios/group-trigger-activity.json",
   "harness/fixtures/scenarios/group-trigger-icebreaker.json",
+  "harness/fixtures/scenarios/group-trigger-probability.json",
   "harness/fixtures/scenarios/group-active-loop-aggregation.json"
 ];
 
@@ -27,12 +28,16 @@ for (const fixturePath of fixturePaths) {
 }
 
 const allowedGroups = await verifyAllowedGroups();
+const deterministicProbability = await verifyDeterministicProbability();
+const invalidProbability = await verifyInvalidProbability();
 
 console.log(
   JSON.stringify(
     {
       ok: true,
       allowedGroups,
+      deterministicProbability,
+      invalidProbability,
       scenarios: results.map((result) => {
         const conversation = result.session.conversations[0];
         return {
@@ -52,6 +57,46 @@ console.log(
     2
   )
 );
+
+async function verifyDeterministicProbability(): Promise<{
+  samples: number[];
+  admissions: boolean[];
+}> {
+  const fixturePath =
+    "harness/fixtures/scenarios/group-trigger-probability.json";
+  const first = await runScenarioFixture(fixturePath);
+  const second = await runScenarioFixture(fixturePath);
+  const firstAttempts = first.session.conversations[0]?.triggerAttempts ?? [];
+  const secondAttempts = second.session.conversations[0]?.triggerAttempts ?? [];
+  assert.deepEqual(
+    firstAttempts.map((attempt) => attempt.sample),
+    secondAttempts.map((attempt) => attempt.sample)
+  );
+  return {
+    samples: firstAttempts.map((attempt) => attempt.sample),
+    admissions: firstAttempts.map((attempt) => attempt.admitted)
+  };
+}
+
+async function verifyInvalidProbability(): Promise<{ rejected: boolean }> {
+  const tempHome = await mkdtemp(
+    path.join(os.tmpdir(), "gestalt-trigger-probability-invalid-")
+  );
+  try {
+    await writeFile(
+      path.join(tempHome, "config.toml"),
+      "trigger_activity_probability = 1.1\n",
+      "utf8"
+    );
+    await assert.rejects(
+      createRuntime({ gestaltHome: tempHome }),
+      /trigger_activity_probability must be between 0 and 1/
+    );
+    return { rejected: true };
+  } finally {
+    await rm(tempHome, { recursive: true, force: true });
+  }
+}
 
 async function verifyAllowedGroups(): Promise<{
   blockedConversations: number;

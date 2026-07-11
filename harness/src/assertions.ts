@@ -45,6 +45,33 @@ function assertSession(result: ReplayRunResult): void {
   if (expected.turns !== undefined) {
     assert.equal(conversation.turns.length, expected.turns);
   }
+  if (expected.triggerAttempts !== undefined) {
+    assert.equal(conversation.triggerAttempts.length, expected.triggerAttempts);
+  }
+  if (expected.triggerAttemptReasons !== undefined) {
+    assert.deepEqual(
+      conversation.triggerAttempts.map((attempt) => attempt.reason),
+      expected.triggerAttemptReasons
+    );
+  }
+  if (expected.triggerAttemptProbabilities !== undefined) {
+    assert.deepEqual(
+      conversation.triggerAttempts.map((attempt) => attempt.probability),
+      expected.triggerAttemptProbabilities
+    );
+  }
+  if (expected.triggerAttemptAdmissions !== undefined) {
+    assert.deepEqual(
+      conversation.triggerAttempts.map((attempt) => attempt.admitted),
+      expected.triggerAttemptAdmissions
+    );
+  }
+  if (expected.triggerAttemptSamplerVersions !== undefined) {
+    assert.deepEqual(
+      conversation.triggerAttempts.map((attempt) => attempt.samplerVersion),
+      expected.triggerAttemptSamplerVersions
+    );
+  }
   if (expected.loopExits !== undefined) {
     assert.equal(conversation.loopExits.length, expected.loopExits);
   }
