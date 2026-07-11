@@ -472,6 +472,9 @@ For GestaltHome behavior, verify:
 
 `group-context-history.json` verifies:
 
+- The action window exposes minute-level current local time, English weekday, and the resolved IANA timezone without seconds.
+- Current messages and expanded reply targets render in the same configured timezone.
+- The `context.compile` span records the resolved timezone, its source, and local compilation time.
 - `context_recent_message_count` carries the configured number of previous messages.
 - A `reply_to` target older than the recent-history range is still included.
 - Prior bot messages are rendered with `you`.

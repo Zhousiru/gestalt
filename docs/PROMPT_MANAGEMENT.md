@@ -30,7 +30,7 @@ Fixed policy must not branch on runtime configuration or available tools. In par
 - Dreaming has one terminal continuation task prompt and requires a completed action model session continuation.
 - Initial windows and steered windows use the same transcript renderer.
 
-Dynamic data rendering is allowed. Empty persona, memory, participants, or queries use deterministic placeholders rather than selecting another policy prompt.
+Dynamic data rendering is allowed. Empty persona, memory, participants, or queries use deterministic placeholders rather than selecting another policy prompt. Each action window carries a minute-level current-time block and renders message timestamps in the GestaltHome `timezone`; this dynamic clock belongs in the appended user window rather than the stable system prompt. The runtime resolves an explicit IANA timezone first, then the machine timezone, then UTC, and traces the resolved value and source so replay remains inspectable.
 
 ## Change Workflow
 

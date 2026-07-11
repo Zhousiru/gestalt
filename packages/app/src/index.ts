@@ -8,6 +8,7 @@ export * from "./connectors/types";
 export * from "./context/compileContext";
 export * from "./context/renderTranscript";
 export * from "./context/selectContextEvents";
+export * from "./context/time";
 export * from "./events/helpers";
 export * from "./events/schemas";
 export * from "./home/loadEnv";

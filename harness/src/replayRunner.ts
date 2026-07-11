@@ -99,16 +99,18 @@ export async function runScenarioFixture(
   const tempHome = await createScenarioHome(paths.repoRoot, fixture);
 
   try {
+    const fixedNow = fixture.now ? new Date(fixture.now) : undefined;
+    const now = fixedNow ? () => new Date(fixedNow) : () => new Date();
     const home = await resolveGestaltHome({
       homePath: tempHome,
       create: false
     });
     const config = await loadConfig(home);
-    const connector = createMockConnector();
+    const connector = createMockConnector({ now });
     const mockTools = createMockToolKit();
     const model =
       fixture.model.kind === "mock"
-        ? createMockModel({ delayMs: fixture.model.delayMs ?? 0 })
+        ? createMockModel({ now, delayMs: fixture.model.delayMs ?? 0 })
         : createAiSdkModelFromConfig(config);
     const dreamingRunner = createFixtureDreamingRunner(fixture, config);
     const sessionSnapshot = fixture.sessionSnapshotFixture
@@ -122,6 +124,7 @@ export async function runScenarioFixture(
       model,
       toolImplementations: mockTools.implementations,
       dreamingRunner,
+      now,
       ...(sessionSnapshot !== undefined ? { sessionSnapshot } : {})
     });
     const homeBefore = await snapshotHome(tempHome);

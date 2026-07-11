@@ -9,6 +9,8 @@ model_tool_choice = "auto"
 model_prompt_cache_enabled = true
 model_prompt_cache_ttl = "5m"
 
+timezone = "Asia/Shanghai"
+
 bot_user_id = "gestalt-bot"
 bot_display_name = "小格"
 

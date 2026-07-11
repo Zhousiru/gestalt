@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { compileContext } from "../context/compileContext";
 import { renderConversationTranscript } from "../context/renderTranscript";
 import { selectContextEvents } from "../context/selectContextEvents";
+import type { ResolvedTimezone } from "../context/time";
+import { formatZonedDateTime } from "../context/time";
 import type { CanonicalEvent } from "../events/schemas";
 import type { Connector } from "../connectors/types";
 import type { GestaltConfig } from "../home/loadConfig";
@@ -65,6 +67,7 @@ export interface AgentLoopDependencies {
   toolImplementations?: ToolImplementations;
   liveEvents?: LiveEventSink;
   now: () => Date;
+  resolvedTimezone: ResolvedTimezone;
 }
 
 export interface RunAgentTurnInput {
@@ -370,6 +373,11 @@ async function compileInitialTurnContext(
 
   markPhase("context_compiling");
   throwIfTurnSteered(input.signal);
+  const contextNow = dependencies.now();
+  const localTime = formatZonedDateTime(
+    contextNow,
+    dependencies.resolvedTimezone.timezone
+  );
   return runSpan(
     traceId,
     "context.compile",
@@ -386,7 +394,9 @@ async function compileInitialTurnContext(
         persona: dependencies.persona,
         memories,
         tools: dependencies.tools,
-        config: dependencies.config
+        config: dependencies.config,
+        now: contextNow,
+        timezone: dependencies.resolvedTimezone.timezone
       }),
     {
       mode: "session_initial",
@@ -397,7 +407,10 @@ async function compileInitialTurnContext(
       windowReason: input.window.reason,
       windowEventCount: input.eventRecords.length,
       contextEventCount: contextEvents.length,
-      steerCount: input.steerCount
+      steerCount: input.steerCount,
+      timezone: dependencies.resolvedTimezone.timezone,
+      timezoneSource: dependencies.resolvedTimezone.source,
+      localTime: `${localTime.date} ${localTime.time}`
     }
   );
 }
@@ -412,6 +425,11 @@ async function compileIncrementalTurnContext(
 ) {
   markPhase("context_compiling");
   throwIfTurnSteered(input.signal);
+  const contextNow = dependencies.now();
+  const localTime = formatZonedDateTime(
+    contextNow,
+    dependencies.resolvedTimezone.timezone
+  );
   return runSpan(
     traceId,
     "context.compile",
@@ -423,13 +441,17 @@ async function compileIncrementalTurnContext(
       compileIncrementalAgentContext(
         dependencies,
         input.window,
-        input.eventRecords
+        input.eventRecords,
+        contextNow
       ),
     {
       mode: "session_append",
       windowReason: input.window.reason,
       windowEventCount: input.eventRecords.length,
-      steerCount: input.steerCount
+      steerCount: input.steerCount,
+      timezone: dependencies.resolvedTimezone.timezone,
+      timezoneSource: dependencies.resolvedTimezone.source,
+      localTime: `${localTime.date} ${localTime.time}`
     }
   );
 }
@@ -437,7 +459,8 @@ async function compileIncrementalTurnContext(
 export function compileIncrementalAgentContext(
   dependencies: AgentLoopDependencies,
   window: MessageWindow,
-  eventRecords: SessionEventRecord[]
+  eventRecords: SessionEventRecord[],
+  contextNow: Date = dependencies.now()
 ) {
   const event = getCurrentEvent(eventRecords);
   const contextEvents = selectContextEvents({
@@ -456,7 +479,9 @@ export function compileIncrementalAgentContext(
     persona: dependencies.persona,
     memories: [],
     tools: dependencies.tools,
-    config: dependencies.config
+    config: dependencies.config,
+    now: contextNow,
+    timezone: dependencies.resolvedTimezone.timezone
   });
 }
 
@@ -485,7 +510,9 @@ export async function runDreamingForAgentTurn(
   const transcript = renderConversationTranscript({
     event,
     window: input.window,
-    windowEvents: input.eventRecords
+    windowEvents: input.eventRecords,
+    now: dependencies.now(),
+    timezone: dependencies.resolvedTimezone.timezone
   });
 
   const dreamingResult = await runSpan(

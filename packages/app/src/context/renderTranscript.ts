@@ -5,12 +5,18 @@ import type {
 import { isSelfMessageEvent } from "../events/helpers";
 import type { MessageWindow, SessionEventRecord } from "../session/schemas";
 import type { ContextEventRecord } from "./selectContextEvents";
+import {
+  formatZonedDateTime,
+  renderCurrentEnvironment
+} from "./time";
 
 export interface RenderTranscriptInput {
   event: CanonicalEvent;
   window?: MessageWindow;
   windowEvents?: SessionEventRecord[];
   contextEvents?: ContextEventRecord[];
+  now: Date;
+  timezone: string;
 }
 
 export function renderConversationTranscript(
@@ -51,7 +57,10 @@ export function renderConversationTranscript(
   const body: string[] = [];
   let currentDate: string | undefined;
   for (const { record } of visibleRecords) {
-    const timestamp = formatChatTimestamp(record.event.occurredAt);
+    const timestamp = formatChatTimestamp(
+      record.event.occurredAt,
+      input.timezone
+    );
     if (timestamp.date !== currentDate) {
       if (body.length > 0) {
         body.push("");
@@ -59,10 +68,19 @@ export function renderConversationTranscript(
       body.push(timestamp.date);
       currentDate = timestamp.date;
     }
-    body.push("", renderMessage(record, timestamp.time, replyTargets));
+    body.push(
+      "",
+      renderMessage(record, timestamp.time, replyTargets, input.timezone)
+    );
   }
 
-  return [renderConversationHeading(conversation), "", ...body].join("\n");
+  return [
+    renderCurrentEnvironment(input.now, input.timezone),
+    "",
+    renderConversationHeading(conversation),
+    "",
+    ...body
+  ].join("\n");
 }
 
 function renderConversationHeading(conversation: {
@@ -83,7 +101,8 @@ function renderConversationHeading(conversation: {
 function renderMessage(
   record: SessionEventRecord,
   time: string,
-  replyTargets: ReadonlyMap<string, SessionEventRecord>
+  replyTargets: ReadonlyMap<string, SessionEventRecord>,
+  timezone: string
 ): string {
   const event = record.event;
   if (event.type !== "MessageReceived") {
@@ -101,7 +120,7 @@ function renderMessage(
 
   if (event.message.replyToMessageId) {
     const target = replyTargets.get(event.message.replyToMessageId);
-    lines.push(renderReply(event.message.replyToMessageId, target));
+    lines.push(renderReply(event.message.replyToMessageId, target, timezone));
   }
 
   lines.push(rawMessageText(event));
@@ -110,7 +129,8 @@ function renderMessage(
 
 function renderReply(
   replyToMessageId: string,
-  target: SessionEventRecord | undefined
+  target: SessionEventRecord | undefined,
+  timezone: string
 ): string {
   if (!target || target.event.type !== "MessageReceived") {
     return `In reply to message_id=${replyToMessageId} (the original message is not available here)`;
@@ -118,7 +138,7 @@ function renderReply(
 
   const event = target.event;
   const senderName = event.sender.displayName ?? event.sender.id;
-  const timestamp = formatChatTimestamp(event.occurredAt);
+  const timestamp = formatChatTimestamp(event.occurredAt, timezone);
   const selfLabel = isSelfMessageEvent(event) ? ", you" : "";
   const quote = rawMessageText(event)
     .split(/\r?\n/)
@@ -134,15 +154,14 @@ function rawMessageText(event: MessageReceivedEvent): string {
   return event.message.rawText ?? event.message.text;
 }
 
-function formatChatTimestamp(value: string): { date: string; time: string } {
-  const match = value.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}):(\d{2})/);
-  if (match?.[1] && match[2] && match[3]) {
-    return { date: match[1], time: `${match[2]}:${match[3]}` };
-  }
+function formatChatTimestamp(
+  value: string,
+  timezone: string
+): { date: string; time: string } {
   const parsed = new Date(value);
   if (!Number.isNaN(parsed.valueOf())) {
-    const iso = parsed.toISOString();
-    return { date: iso.slice(0, 10), time: iso.slice(11, 16) };
+    const zoned = formatZonedDateTime(parsed, timezone);
+    return { date: zoned.date, time: zoned.time };
   }
   return { date: "Unknown date", time: "??:??" };
 }

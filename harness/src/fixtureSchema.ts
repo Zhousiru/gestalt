@@ -194,6 +194,7 @@ export const ScenarioFixtureSchema = z
   .object({
     id: z.string().min(1),
     description: z.string().min(1),
+    now: z.string().datetime().optional(),
     homeFixture: z.string().min(1).optional(),
     configFixture: z.string().min(1).optional(),
     personaFixture: z.string().min(1).optional(),

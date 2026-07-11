@@ -43,6 +43,7 @@ import {
 } from "../session/schemas";
 import { createTraceRecorder } from "../trace/recorder";
 import { createDefaultGroupTriggers } from "../triggers/defaultTriggers";
+import { resolveTimezone } from "../context/time";
 import {
   evaluateGroupTriggers,
   type GroupTrigger
@@ -123,6 +124,7 @@ export async function createRuntime(
   );
   loadEnv(home);
   const config = await loadConfig(home);
+  const resolvedTimezone = resolveTimezone(config);
   const persona = await loadPersona(home);
   const memoryStore = createFileMemoryStore(home);
   const dreamingRunner =
@@ -204,6 +206,7 @@ export async function createRuntime(
     model,
     traceRecorder,
     now,
+    resolvedTimezone,
     sessionStore,
     maxSteersPerTurn: options.maxSteersPerTurn ?? 2,
     ...(options.liveEvents ? { liveEvents: options.liveEvents } : {}),

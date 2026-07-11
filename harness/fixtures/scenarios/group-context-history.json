@@ -1,6 +1,7 @@
 {
   "id": "group-context-history",
   "description": "A real group turn compiles configurable recent history, expands an older reply target, tags prior bot self messages, and injects all participant index memories in the carried context.",
+  "now": "2026-07-11T10:42:16.000Z",
   "homeFixture": "harness/fixtures/homes/simple-group-test",
   "configFixture": "harness/fixtures/configs/context-history.toml",
   "memoriesFixture": "harness/fixtures/memories/context-history",
@@ -50,8 +51,9 @@
     "modelInput": {
       "requests": 2,
       "contains": [
+        "Current environment:\n- Current local time: 2026-07-11 18:42\n- Day of week: Saturday\n- Timezone: Asia/Shanghai (UTC+08:00)",
         "Group chat \"Context Harness Group\" (group_id=context-group)",
-        "In reply to [",
+        "In reply to [2026-07-07 20:00]",
         "message_id=history-bob-1",
         "message_id=context-current-1",
         "原始方案：把 recent history、reply target 和 self message 标签都放进上下文。",
@@ -63,6 +65,7 @@
         "Ivan context memory baseline"
       ],
       "doesNotContain": [
+        "18:42:16",
         "这条 Carol 历史消息应该因为 recent count 不够而不进入上下文。",
         "context=current_window",
         "Initial conversation window",

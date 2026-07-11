@@ -39,6 +39,8 @@ export interface CompileContextInput {
   memories: MemoryFragment[];
   tools: ToolDefinition[];
   config: GestaltConfig;
+  now: Date;
+  timezone: string;
 }
 
 export function compileContext(input: CompileContextInput): CompiledContext {
@@ -46,7 +48,9 @@ export function compileContext(input: CompileContextInput): CompiledContext {
     event: input.event,
     ...(input.window ? { window: input.window } : {}),
     ...(input.windowEvents ? { windowEvents: input.windowEvents } : {}),
-    ...(input.contextEvents ? { contextEvents: input.contextEvents } : {})
+    ...(input.contextEvents ? { contextEvents: input.contextEvents } : {}),
+    now: input.now,
+    timezone: input.timezone
   });
 
   return {

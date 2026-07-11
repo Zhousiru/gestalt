@@ -9,6 +9,8 @@ model_tool_choice = "auto"
 model_prompt_cache_enabled = true
 model_prompt_cache_ttl = "5m"
 
+timezone = "Asia/Shanghai"
+
 trigger_keyword_names = "小格"
 trigger_activity_window_ms = 600000
 trigger_activity_min_messages = 5
