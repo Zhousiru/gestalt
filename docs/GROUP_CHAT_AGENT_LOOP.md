@@ -84,7 +84,6 @@ Current flat config keys:
 - `agent_loop_exit_say_nothing_count`
 - `agent_loop_exit_idle_enabled`
 - `agent_loop_exit_idle_ms`
-- `agent_loop_exit_leave_enabled`
 
 ### 2. Post-Trigger Agent Loop
 
@@ -154,8 +153,10 @@ The compiled transcript can include:
 
 - The current message window.
 - A configurable number of previous messages from the same conversation.
-- Reply target messages even when they are older than the recent-history window.
-- Prior bot messages marked as `sender_role=self`.
+- Reply target contents expanded directly beneath the replying message, even when the target is older than the recent-history window.
+- Prior bot messages marked naturally as `you`.
+
+The model-facing transcript is intentionally a compact chat log rather than a runtime event dump. It shows the conversation identity once, date boundaries, minute-level send times, display names, user and message ids, raw CQ-bearing message text, and `mentioned you` only for direct mentions of the bot. Window reasons, sequence numbers, context labels, steering metadata, and duplicated “decision target” summaries remain in traces and session state instead of the prompt.
 
 `context_recent_message_count` controls how many previous messages seed a newly activated model session. Once the active loop starts, completed assistant tool calls and tool results remain in the model message chain directly; later windows do not reconstruct that history as another transcript.
 
@@ -308,6 +309,8 @@ It handles one-active-turn-per-conversation, active-loop aggregation, steering, 
 It also owns one model session per active loop. That session keeps an append-only message journal, a stable provider session id, committed assistant/tool checkpoints, and the current cancellable provider request. After the loop exits, dreaming receives an immutable continuation of that same session and appends a terminal memory-maintenance message instead of rebuilding persona, memory, transcript, and tool history.
 
 The provider-facing tool protocol stays stable for the whole session because tool schemas are part of the cacheable prompt. Action tools and terminal dreaming tools are declared in one deterministic order from the first request. Runtime phase gates make `bash`/`finish_dreaming` unavailable during chat actions and make chat-action tools unavailable during dreaming.
+
+The action policy is a single fixed prompt and `leave` is always part of the action protocol and exit chain. Dreaming has no standalone prompt path: it requires the immutable continuation from the completed action session and appends one centrally managed dreaming task message.
 
 ### Exit Trigger Chain
 

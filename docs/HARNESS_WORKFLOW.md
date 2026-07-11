@@ -118,6 +118,19 @@ The current real-model baseline uses an AI SDK OpenAI-compatible model. Provider
 
 Some OpenAI-compatible providers reject forced tool choice. In that case use `model_tool_choice = "auto"` and let the model decide whether to call tools. Harness assertions must still verify that the real model actually called the expected tool.
 
+### Eval Judge Configuration
+
+The LLM judge is harness infrastructure, not part of the persona runtime. It reads `harness/config/eval.toml` and never inherits model settings from the production GestaltHome or a scenario fixture home. The committed config records provider, model, routing, thinking mode, temperature, and timeout while the API key remains in its named environment variable.
+
+Override the judge config with either:
+
+```text
+--eval-config path/to/eval.toml
+GESTALT_EVAL_CONFIG=path/to/eval.toml
+```
+
+Precedence is command-line override, environment override, then `harness/config/eval.toml`. Eval artifacts record the judge model plus the resolved config path and a content hash so results remain attributable. Judge protocol and output schema stay in code; provider, model, thinking, routing, temperature, and timeout stay in the harness config.
+
 ## Replay Flow
 
 The replay runner does this:
@@ -245,6 +258,12 @@ Run the tool contract e2e fixture:
 
 ```bash
 pnpm --filter @gestalt/harness run verify:tools
+```
+
+Run the centralized prompt catalog and hash checks:
+
+```bash
+pnpm --filter @gestalt/harness run verify:prompts
 ```
 
 Run all current LLM-judged evals:
@@ -386,8 +405,9 @@ For model behavior, verify:
 - The model request contains the relevant persona.
 - The model request contains the relevant message window.
 - The model request contains configured recent history when `context_recent_message_count` is set.
-- The model request expands reply targets that are outside the recent-history range.
-- Prior bot messages are marked with `sender_role=self`.
+- The model request expands reply target contents beneath the replying message, including targets outside the recent-history range.
+- Prior bot messages are marked naturally as `you`.
+- Chat logs use minute-level time, stable user/message ids, and raw CQ-bearing message text without runtime window narration.
 - The model request exposes the expected tools.
 - The exported model exchange records the expected purpose and real response.
 - Action selection is represented by model tool calls, not JSON text returned in assistant content.
@@ -447,14 +467,14 @@ For GestaltHome behavior, verify:
 - Icebreaker trigger creates an `icebreaker` window when imported session history shows the group was quiet long enough.
 - Exported `session.json` records the expected event sequence, window reason, and turn.
 - `model-requests.json` records that the real configured model saw the trigger-created window transcript.
-- Keyword and icebreaker windows currently verify `send_group_message -> leave`.
-- Activity windows currently verify `say_nothing -> leave`.
+- Keyword windows currently verify `send_group_message -> leave` because the message naturally addresses the persona by name.
+- Activity and icebreaker windows currently verify direct `leave` with no visible side effect when the chat itself does not invite the persona to join; the hidden trigger reason is not used to force a visible response.
 
 `group-context-history.json` verifies:
 
 - `context_recent_message_count` carries the configured number of previous messages.
 - A `reply_to` target older than the recent-history range is still included.
-- Prior bot messages are rendered with `sender_role=self`.
+- Prior bot messages are rendered with `you`.
 - Messages outside the configured recent-history range stay out of the prompt.
 - All participant `index.md` memories represented in the carried context are injected, without the old fixed fragment cap.
 - Successful bot replies are exported as self messages in `session.json`.
@@ -467,7 +487,7 @@ For GestaltHome behavior, verify:
 - The later message is batched by the active-loop aggregation timer.
 - The batched message enters the same turn as a `steer` window.
 - The exported session records two windows but only one completed turn with `steerCount: 1`.
-- The real configured model sees an initial `Window: mention, seq 1-1` message followed by an appended `Window: steer, seq 2-2` message.
+- The real configured model sees two natural chat-log messages appended to one model session, without initial/steer window narration.
 - The resulting turn verifies `send_group_message -> leave`.
 
 `multi-step-agent-tools.json` verifies:

@@ -1,5 +1,6 @@
 import { tool, type ToolSet } from "ai";
 import { z } from "zod";
+import { DREAMING_TOOL_PROMPTS } from "../prompts/tools";
 
 export const dreamingToolOrder = ["bash", "finish_dreaming"] as const;
 
@@ -18,16 +19,13 @@ export function buildDreamingTools(
 ): ToolSet {
   return {
     bash: tool({
-      description:
-        "Terminal dreaming phase only. Run one executable bash command in a virtual filesystem where only /memories is writable and persistent. Never use during the normal chat-action phase.",
+      description: DREAMING_TOOL_PROMPTS.bash.description,
       inputSchema: z
         .object({
           command: z
             .string()
             .min(1)
-            .describe(
-              "Executable shell code to run. Use paths under /memories for memory files. Examples: cat /memories/self/index.md ; printf 'text' >> /memories/users/alice/index.md"
-            )
+            .describe(DREAMING_TOOL_PROMPTS.bash.parameters.command)
         })
         .strict(),
       async execute({ command }) {
@@ -41,16 +39,13 @@ export function buildDreamingTools(
       }
     }),
     finish_dreaming: tool({
-      description:
-        "Terminal dreaming phase only. Finish after all useful memory inspection and updates are complete. Never use during the normal chat-action phase.",
+      description: DREAMING_TOOL_PROMPTS.finish_dreaming.description,
       inputSchema: z
         .object({
           summary: z
             .string()
             .min(1)
-            .describe(
-              "Short summary of what memory was updated, or why no update was needed."
-            )
+            .describe(DREAMING_TOOL_PROMPTS.finish_dreaming.parameters.summary)
         })
         .strict(),
       async execute({ summary }) {

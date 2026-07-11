@@ -65,19 +65,19 @@
       "connectorSideEffects": 0
     },
     "modelInput": {
-      "requests": 4,
+      "requests": 3,
       "contains": [
         "gestalt 帮我看看这个实现方向？",
         "gestalt 补充一下，要保持架构简单，先只验证后链路。",
-        "Window: mention, seq 2-2",
-        "Window: steer, seq 3-3"
+        "message_id=steer-message-1",
+        "message_id=steer-message-2"
       ]
     },
     "modelExchange": {
-      "exchanges": 4,
-      "responses": 3,
+      "exchanges": 3,
+      "responses": 2,
       "maxToolCallsPerResponse": 1,
-      "purposes": ["agent_action", "agent_action", "agent_action", "agent_action"],
+      "purposes": ["agent_action", "agent_action", "agent_action"],
       "responseContains": ["send_group_message", "leave"]
     },
     "promptCache": {

@@ -48,29 +48,32 @@
       "connectorSideEffects": 0
     },
     "modelInput": {
-      "requests": 3,
+      "requests": 2,
       "contains": [
-        "Window: keyword, seq 10-10",
-        "context=reply_target",
-        "context=history",
-        "context=current_window",
+        "Group chat \"Context Harness Group\" (group_id=context-group)",
+        "In reply to [",
+        "message_id=history-bob-1",
+        "message_id=context-current-1",
         "原始方案：把 recent history、reply target 和 self message 标签都放进上下文。",
         "Dave recent history marker.",
         "Ivan recent history marker.",
-        "sender_role=self",
+        "you, user_id=gestalt-bot",
         "我之前已经确认过：上下文里应该能看到自己的上一句。",
         "Alice context memory baseline",
         "Ivan context memory baseline"
       ],
       "doesNotContain": [
-        "这条 Carol 历史消息应该因为 recent count 不够而不进入上下文。"
+        "这条 Carol 历史消息应该因为 recent count 不够而不进入上下文。",
+        "context=current_window",
+        "Initial conversation window",
+        "Decision target:"
       ]
     },
     "modelExchange": {
-      "exchanges": 3,
-      "responses": 3,
+      "exchanges": 2,
+      "responses": 2,
       "maxToolCallsPerResponse": 1,
-      "purposes": ["agent_action", "agent_action", "agent_action"],
+      "purposes": ["agent_action", "agent_action"],
       "responseContains": ["send_group_message", "leave"]
     },
     "trace": {

@@ -542,6 +542,20 @@ async function writeArtifacts(input: {
         total + (exchange.response?.cacheUsage?.readTokens ?? 0),
       0
     ),
+    promptContentHashes: Array.from(
+      new Set(
+        input.modelRequests
+          .map((request) => request.prompt?.contentHash)
+          .filter((value): value is string => Boolean(value))
+      )
+    ),
+    toolPromptHashes: Array.from(
+      new Set(
+        input.modelRequests
+          .map((request) => request.prompt?.toolPromptHash)
+          .filter((value): value is string => Boolean(value))
+      )
+    ),
     turnResults: input.turnResults.length,
     toolCalls: input.mockTools.calls.map((call) => call.toolName),
     connectorSideEffects: input.connector.sentGroupMessages.length,

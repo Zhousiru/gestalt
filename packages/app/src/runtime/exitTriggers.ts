@@ -56,7 +56,6 @@ interface AgentLoopExitOptions {
   sayNothingCount: number;
   idleEnabled: boolean;
   idleMs: number;
-  leaveEnabled: boolean;
 }
 
 export function createDefaultAgentLoopExitTriggers(
@@ -64,7 +63,7 @@ export function createDefaultAgentLoopExitTriggers(
 ): AgentLoopExitTrigger[] {
   const options = readAgentLoopExitOptions(config);
   return [
-    createLeaveToolExitTrigger(options),
+    createLeaveToolExitTrigger(),
     createConsecutiveSayNothingExitTrigger(options),
     createIdleTimeoutExitTrigger(options)
   ].filter((trigger): trigger is AgentLoopExitTrigger => trigger !== undefined);
@@ -97,12 +96,7 @@ export function getNextAgentLoopIdleTimeoutMs(
 }
 
 function createLeaveToolExitTrigger(
-  options: AgentLoopExitOptions
-): AgentLoopExitTrigger | undefined {
-  if (!options.leaveEnabled) {
-    return undefined;
-  }
-
+): AgentLoopExitTrigger {
   return {
     name: "leave_tool",
     evaluate(input) {
@@ -194,8 +188,7 @@ function readAgentLoopExitOptions(config: GestaltConfig): AgentLoopExitOptions {
       flat,
       "agent_loop_exit_idle_ms",
       3 * 60 * 1000
-    ),
-    leaveEnabled: readBoolean(flat, "agent_loop_exit_leave_enabled", true)
+    )
   };
 }
 

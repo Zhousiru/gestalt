@@ -46,7 +46,8 @@
       "toolName": "send_group_message",
       "toolNames": ["send_group_message", "leave"],
       "groupId": "memory-group",
-      "textMinLength": 1
+      "textMinLength": 1,
+      "textDoesNotMatch": "现在不是|下次|等待|不能|不可用|触发"
     },
     "tools": {
       "calls": 2,

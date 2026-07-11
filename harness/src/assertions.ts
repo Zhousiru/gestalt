@@ -472,7 +472,7 @@ function assertTerminalDreamingContinuation(result: ReplayRunResult): void {
   assert.equal(terminalMessage?.role, "user");
   assert.match(
     terminalMessage?.content ?? "",
-    /Terminal phase: dreaming memory maintenance\./
+    /Now you are dreaming\./
   );
   assert.doesNotMatch(
     terminalMessage?.content ?? "",

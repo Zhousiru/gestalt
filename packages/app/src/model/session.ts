@@ -12,6 +12,7 @@ import type {
   ToolImplementations
 } from "../tools/executeActions";
 import type { ActionProposal, ToolDefinition } from "../tools/schemas";
+import type { PromptMetadata } from "../prompts/types";
 
 export interface ModelClient {
   name?: string;
@@ -46,6 +47,7 @@ export interface ModelSession {
  */
 export interface ModelSessionContinuation {
   instructions: string;
+  prompt: PromptMetadata;
   messages: readonly ModelMessage[];
   providerSessionId: string;
   promptCacheEnabled: boolean;
@@ -76,6 +78,7 @@ export interface ModelRequestTraceSnapshot {
   tools: string[];
   toolChoice?: unknown;
   requestBody?: unknown;
+  prompt?: PromptMetadata;
 }
 
 export interface ModelResponseTraceSnapshot {

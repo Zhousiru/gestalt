@@ -42,17 +42,17 @@
       "connectorSideEffects": 0
     },
     "modelInput": {
-      "requests": 3,
+      "requests": 2,
       "contains": [
-        "Window: keyword, seq 1-1",
+        "Group chat \"Mock Group\" (group_id=mock-group)",
         "小格，帮我记一下这个触发链路要保持简单。"
       ]
     },
     "modelExchange": {
-      "exchanges": 3,
-      "responses": 3,
+      "exchanges": 2,
+      "responses": 2,
       "maxToolCallsPerResponse": 1,
-      "purposes": ["agent_action", "agent_action", "agent_action"],
+      "purposes": ["agent_action", "agent_action"],
       "responseContains": ["send_group_message", "leave"]
     },
     "trace": {

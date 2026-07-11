@@ -128,10 +128,10 @@ export async function createRuntime(
   const dreamingRunner =
     options.dreamingRunner ?? createDreamingRunnerFromConfig(config);
   const inspectRunner = options.inspectRunner ?? createAiSdkInspectRunner(config);
-  const tools = filterToolsForConfig(
-    options.tools ?? createDefaultToolRegistry(),
-    config
-  );
+  const tools = options.tools ?? createDefaultToolRegistry();
+  if (!tools.some((tool) => tool.name === "leave")) {
+    throw new Error("The fixed agent tool protocol requires the leave tool.");
+  }
   const connector = options.connector ?? createMockConnector();
   const model = options.model ?? createMockModel({ now });
   const traceRecorder = createTraceRecorder(home);
@@ -593,16 +593,6 @@ function readAllowedGroupIds(config: GestaltConfig): Set<string> | undefined {
     throw new Error("Config value allowedgroups must be an array of group ids.");
   }
   return new Set(value.map(readAllowedGroupId));
-}
-
-function filterToolsForConfig(
-  tools: ToolDefinition[],
-  config: GestaltConfig
-): ToolDefinition[] {
-  if (readBoolean(config.flatValues, "agent_loop_exit_leave_enabled", true)) {
-    return tools;
-  }
-  return tools.filter((tool) => tool.name !== "leave");
 }
 
 function createDreamingRunnerFromConfig(config: GestaltConfig): DreamingRunner {

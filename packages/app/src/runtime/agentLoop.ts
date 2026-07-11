@@ -202,7 +202,8 @@ export async function runAgentTurn(
       ),
     { model: dependencies.model.name ?? "unknown" },
     (result) => ({
-      modelResponses: summarizeModelResponsesForTrace(result.modelResponses)
+      modelResponses: summarizeModelResponsesForTrace(result.modelResponses),
+      ...promptTraceAttributes(result.modelSteps)
     }),
     (result, span) => ({
       observations: createGenerationObservations({
@@ -524,6 +525,7 @@ export async function runDreamingForAgentTurn(
       addedFiles: dreamResult.addedFiles,
       changedFiles: dreamResult.changedFiles,
       removedFiles: dreamResult.removedFiles,
+      ...promptTraceAttributes(dreamResult.modelSteps),
       ...(dreamResult.error ? { error: dreamResult.error } : {})
     }),
     (dreamResult, span) => ({
@@ -735,6 +737,23 @@ function summarizeDreamingCommand(command: {
     stdout: truncateForTrace(command.stdout),
     stderr: truncateForTrace(command.stderr)
   };
+}
+
+function promptTraceAttributes(
+  steps: ModelStepTraceSnapshot[] | undefined
+): Record<string, unknown> {
+  const prompt = steps
+    ?.map((step) => step.request?.prompt)
+    .find((candidate) => candidate !== undefined);
+  return prompt
+    ? {
+        promptId: prompt.id,
+        promptContentHash: prompt.contentHash,
+        ...(prompt.toolPromptHash
+          ? { toolPromptHash: prompt.toolPromptHash }
+          : {})
+      }
+    : {};
 }
 
 function createGenerationObservations(input: {

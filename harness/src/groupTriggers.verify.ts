@@ -67,7 +67,6 @@ async function verifyAllowedGroups(): Promise<{
         'allowedgroups = ["allowed-group"]',
         "trigger_activity_enabled = false",
         "trigger_icebreaker_enabled = false",
-        "agent_loop_exit_leave_enabled = false",
         "agent_loop_exit_idle_ms = 1"
       ].join("\n"),
       "utf8"
@@ -139,7 +138,7 @@ async function verifyAllowedGroups(): Promise<{
     );
     assert.ok(allowedResult);
     await runtime.whenIdle();
-    assert.ok(!visibleTools.includes("leave"));
+    assert.ok(visibleTools.includes("leave"));
 
     const session = runtime.exportSession();
     const conversation = session.conversations[0];

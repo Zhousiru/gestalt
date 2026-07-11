@@ -30,8 +30,14 @@ assert.match(result.event.message.text, /\[CQ:reply,id=111\]/);
 assert.match(result.event.message.text, /\[CQ:at,qq=10001,name=小格\]/);
 assert.match(result.event.message.text, /\[CQ:image,file=cat\.png,url=https:\/\/example\.test\/cat\.png,summary=一张测试图片\]/);
 assert.match(result.event.message.text, /\[CQ:face,id=14,name=微笑\]/);
+assert.equal(
+  result.event.message.rawText,
+  "[CQ:reply,id=111][CQ:at,qq=10001] 小格看看这张图 [CQ:image,file=cat.png,url=https://example.test/cat.png] [CQ:face,id=14]"
+);
+assert.match(transcriptText, /\[CQ:at,qq=10001\]/);
 assert.match(transcriptText, /\[CQ:image,file=cat\.png/);
-assert.match(transcriptText, /\[CQ:face,id=14,name=微笑\]/);
+assert.match(transcriptText, /\[CQ:face,id=14\]/);
+assert.doesNotMatch(transcriptText, /\[CQ:face,id=14,name=微笑\]/);
 assert.ok(apiCall, "expected send_group_msg API call");
 assert.equal(apiCall.params?.group_id, 123456);
 const action = turn.proposedActions.find(

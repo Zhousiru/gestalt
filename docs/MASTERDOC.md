@@ -419,6 +419,8 @@ The compiler should preserve distinctions such as:
 
 Context injection should feel like useful situational awareness, not a database export.
 
+Runtime-owned model instructions and tool descriptions are centrally managed under `packages/app/src/prompts/`; eval-only judge prompts live separately under `harness/src/prompts/`. Prompt renderers expose stable ids and automatically derived content hashes for traces and replay. Fixed policy prompts must not branch on runtime configuration or tool availability. See `docs/PROMPT_MANAGEMENT.md`.
+
 ## 9. Memory Model
 
 Memory should be natural-language-first.

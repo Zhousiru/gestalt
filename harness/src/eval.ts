@@ -3,16 +3,18 @@ import {
   runScenarioEval,
   type EvalRunResult
 } from "./evalRunner";
+import { parseEvalCliArguments } from "./evalModelConfig";
 
+const cli = parseEvalCliArguments(process.argv.slice(2));
 const fixturePaths =
-  process.argv.slice(2).length > 0
-    ? process.argv.slice(2)
-    : getDefaultEvalFixtures();
+  cli.fixturePaths.length > 0 ? cli.fixturePaths : getDefaultEvalFixtures();
 
 const runs: EvalRunResult[] = [];
 
 for (const fixturePath of fixturePaths) {
-  const run = await runScenarioEval(fixturePath);
+  const run = await runScenarioEval(fixturePath, {
+    ...(cli.evalConfigPath ? { evalConfigPath: cli.evalConfigPath } : {})
+  });
   runs.push(run);
   for (const result of run.results) {
     console.log(

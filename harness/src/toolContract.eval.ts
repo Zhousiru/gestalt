@@ -1,14 +1,17 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { generateText, tool, type LanguageModel } from "ai";
-import { config as loadDotenvFile } from "dotenv";
-import {
-  createLanguageModelFromConfig,
-  type ModelProviderOptions,
-  type ModelToolChoiceMode
-} from "@gestalt/app";
+import { generateText, tool } from "ai";
 import { z } from "zod";
+import {
+  loadEvalModelConfig,
+  type EvalModelConfig
+} from "./evalModelConfig";
 import { runToolContractE2E } from "./toolContractRunner";
+import {
+  TOOL_CONTRACT_JUDGE_INSTRUCTIONS,
+  TOOL_CONTRACT_JUDGE_TOOL_DESCRIPTION,
+  TOOL_CONTRACT_RUBRIC
+} from "./prompts";
 
 interface JudgeResult {
   label: "pass" | "warn" | "fail";
@@ -28,26 +31,10 @@ const JudgeResultSchema = z
   })
   .strict();
 
-const repoRoot = path.resolve(import.meta.dirname, "..", "..");
-loadLocalEnv(repoRoot);
-
 const result = await runToolContractE2E();
 const input = {
   scenario: result.id,
-  rubric: {
-    id: "tool_contract_quality",
-    title: "Tool Contract Quality",
-    criteria: [
-      "Each tool should have a clear single responsibility and explicit parameters.",
-      "Mock tools should record every tool call without real external side effects.",
-      "OneBot connector mappings should use the expected API action for each side-effecting tool.",
-      "Read-only helper tools should expose fetched message or image data through tool results without visible chat side effects.",
-      "poke_user should map to NapCat's QQ poke API and recall_own_message should map to OneBot delete_msg while preserving the safer tool name.",
-      "OneBot outbound messages should preserve CQ markup as strings with auto_escape=false.",
-      "The mface sticker payload should preserve opaque package/id/key fields and not be converted away.",
-      "say_nothing and leave should not produce OneBot API side effects."
-    ]
-  },
+  rubric: TOOL_CONTRACT_RUBRIC,
   evidence: {
     proposals: result.proposals,
     mockToolCalls: result.mockToolCalls,
@@ -57,8 +44,14 @@ const input = {
     artifacts: result.artifactPaths
   }
 };
-const judged = await judge(input);
-const paths = await writeEvalArtifacts(result.artifactPaths.report, input, judged);
+const judgeConfig = await loadEvalModelConfig();
+const judged = await judge(input, judgeConfig);
+const paths = await writeEvalArtifacts(
+  result.artifactPaths.report,
+  input,
+  judged,
+  judgeConfig
+);
 
 console.log(
   JSON.stringify(
@@ -68,6 +61,9 @@ console.log(
       label: judged.label,
       score: judged.score,
       summary: judged.summary,
+      judgeModel: judgeConfig.modelName,
+      judgeConfig: judgeConfig.configPath,
+      judgeConfigVersion: judgeConfig.configVersion,
       artifacts: {
         ...result.artifactPaths,
         ...paths
@@ -82,8 +78,10 @@ if (judged.label === "fail") {
   process.exitCode = 1;
 }
 
-async function judge(input: unknown): Promise<JudgeResult> {
-  const config = await readJudgeConfig();
+async function judge(
+  input: unknown,
+  config: EvalModelConfig
+): Promise<JudgeResult> {
   const result = await generateText({
     model: config.languageModel,
     temperature: config.temperature,
@@ -91,25 +89,16 @@ async function judge(input: unknown): Promise<JudgeResult> {
       ? { providerOptions: config.providerOptions }
       : {}),
     timeout: {
-      totalMs: 300_000
+      totalMs: config.timeoutMs
     },
-    instructions: [
-      "You are an LLM judge for tool contracts in an AI persona chatbot runtime.",
-      "Judge only from the provided artifacts.",
-      "Call the record_judgment tool exactly once.",
-      "Do not answer in normal text."
-    ].join("\n"),
+    instructions: TOOL_CONTRACT_JUDGE_INSTRUCTIONS,
     prompt: JSON.stringify(input, null, 2),
     tools: {
       record_judgment: tool({
-        description: "Record the final tool-contract evaluation judgment.",
+        description: TOOL_CONTRACT_JUDGE_TOOL_DESCRIPTION,
         inputSchema: JudgeResultSchema
       })
-    },
-    toolChoice: {
-      type: "tool",
-      toolName: "record_judgment"
-    } as const
+    }
   });
 
   const toolCall = result.toolCalls.find(
@@ -126,48 +115,11 @@ async function judge(input: unknown): Promise<JudgeResult> {
   return JudgeResultSchema.parse(toolCall.input);
 }
 
-async function readJudgeConfig(): Promise<{
-  languageModel: LanguageModel;
-  modelName: string;
-  temperature: number;
-  providerOptions?: ModelProviderOptions;
-  toolChoice?: ModelToolChoiceMode;
-}> {
-  const configPath = path.join(
-    repoRoot,
-    "harness/fixtures/homes/simple-group-test/config.toml"
-  );
-  const raw = await readFile(configPath, "utf8");
-  const values = parseFlatTomlValues(raw);
-  const model = readRequiredString(values, "model_name");
-  const apiKeyEnv =
-    readOptionalString(values, "model_api_key_env") ?? "MODEL_API_KEY";
-  const resolved = createLanguageModelFromConfig({
-    path: configPath,
-    raw,
-    flatValues: {
-      ...values,
-      model_name: model,
-      model_api_key_env: apiKeyEnv
-    }
-  });
-  return {
-    languageModel: resolved.languageModel,
-    modelName: model,
-    temperature: 0.1,
-    ...(resolved.toolChoice !== undefined
-      ? { toolChoice: resolved.toolChoice }
-      : {}),
-    ...(resolved.providerOptions
-      ? { providerOptions: resolved.providerOptions }
-      : {})
-  };
-}
-
 async function writeEvalArtifacts(
   reportPath: string,
   input: unknown,
-  result: JudgeResult
+  result: JudgeResult,
+  config: EvalModelConfig
 ): Promise<{ evalInputs: string; evalResults: string; evalReport: string }> {
   const artifactDir = path.dirname(reportPath);
   await mkdir(artifactDir, { recursive: true });
@@ -178,7 +130,10 @@ async function writeEvalArtifacts(
   };
   await Promise.all([
     writeJson(paths.evalInputs, input),
-    writeJson(paths.evalResults, result),
+    writeJson(paths.evalResults, {
+      judge: summarizeJudgeConfig(config),
+      result
+    }),
     writeFile(
       paths.evalReport,
       [
@@ -186,6 +141,9 @@ async function writeEvalArtifacts(
         "",
         `- Label: ${result.label}`,
         `- Score: ${result.score}`,
+        `- Judge model: ${config.modelName}`,
+        `- Judge config: ${config.configPath}`,
+        `- Judge config version: ${config.configVersion}`,
         "",
         result.summary,
         "",
@@ -204,66 +162,15 @@ async function writeEvalArtifacts(
   return paths;
 }
 
-function parseFlatTomlValues(raw: string): Record<string, string | number | boolean> {
-  const values: Record<string, string | number | boolean> = {};
-  for (const line of raw.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith("[")) {
-      continue;
-    }
-    const separator = trimmed.indexOf("=");
-    if (separator <= 0) {
-      continue;
-    }
-    values[trimmed.slice(0, separator).trim()] = parseScalarValue(
-      trimmed.slice(separator + 1).trim()
-    );
-  }
-  return values;
-}
-
-function parseScalarValue(value: string): string | number | boolean {
-  if (value === "true") {
-    return true;
-  }
-  if (value === "false") {
-    return false;
-  }
-  const quoted = value.match(/^"(.*)"$/);
-  if (quoted?.[1] !== undefined) {
-    return quoted[1];
-  }
-  const numeric = Number(value);
-  return Number.isFinite(numeric) && value !== "" ? numeric : value;
-}
-
-function readRequiredString(
-  values: Record<string, string | number | boolean>,
-  key: string
-): string {
-  const value = readOptionalString(values, key);
-  if (!value) {
-    throw new Error(`Missing required config value "${key}".`);
-  }
-  return value;
-}
-
-function readOptionalString(
-  values: Record<string, string | number | boolean>,
-  key: string
-): string | undefined {
-  const value = values[key];
-  return typeof value === "string" && value.trim() ? value : undefined;
-}
-
-function loadLocalEnv(root: string): void {
-  for (const fileName of [".env", ".env.local"]) {
-    loadDotenvFile({
-      path: path.join(root, fileName),
-      override: false,
-      quiet: true
-    });
-  }
+function summarizeJudgeConfig(config: EvalModelConfig): Record<string, unknown> {
+  return {
+    model: config.modelName,
+    configPath: config.configPath,
+    configVersion: config.configVersion,
+    temperature: config.temperature,
+    timeoutMs: config.timeoutMs,
+    ...(config.thinking ? { thinking: config.thinking } : {})
+  };
 }
 
 async function writeJson(filePath: string, value: unknown): Promise<void> {

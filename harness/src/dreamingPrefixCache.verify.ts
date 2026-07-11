@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { assertReplayRun } from "./assertions";
 import { runScenarioFixture } from "./replayRunner";
 
@@ -14,6 +15,14 @@ const dreamingExchanges = result.modelExchanges.filter(
 );
 const dreamingCacheReads = dreamingExchanges.map(
   (exchange) => exchange.response?.cacheUsage?.readTokens ?? 0
+);
+assert.equal(
+  dreamingExchanges[0]?.request.prompt?.id,
+  "runtime.dreaming.task"
+);
+assert.match(
+  dreamingExchanges[0]?.request.prompt?.contentHash ?? "",
+  /^[a-f0-9]{16}$/
 );
 
 console.log(

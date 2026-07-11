@@ -9,6 +9,7 @@ import {
   type BashExecResult
 } from "just-bash";
 import { ToolLoopAgent, hasToolCall, stepCountIs } from "ai";
+import { isSelfMessageEvent } from "../events/helpers";
 import type { CanonicalEvent } from "../events/schemas";
 import type { GestaltConfig } from "../home/loadConfig";
 import type { GestaltHome } from "../home/resolveGestaltHome";
@@ -32,6 +33,7 @@ import type { MessageWindow, SessionEventRecord } from "../session/schemas";
 import type { ToolExecutionResult } from "../tools/executeActions";
 import type { ActionProposal } from "../tools/schemas";
 import type { MemoryFragment } from "./store";
+import { renderDreamingTaskPrompt } from "../prompts/dreaming";
 
 export interface MemoryBashCommandResult {
   command: string;
@@ -165,7 +167,6 @@ export function createAiSdkDreamingRunner(
       return {
         modelSteps: await runDreamingToolLoop(
           config,
-          buildDreamingPrompt(input),
           input,
           options
         )
@@ -202,107 +203,8 @@ export function createMemoryBashTool(home: GestaltHome): MemoryBashTool {
   };
 }
 
-interface DreamingPrompt {
-  instructions: string;
-  prompt: string;
-}
-
-function buildDreamingPrompt(input: DreamingBashAgentInput): DreamingPrompt {
-  const participants = getParticipantSummaries(input.eventRecords);
-  const memories = renderInjectedMemories(input.memories);
-  const proposedActions = input.proposedActions
-    .map(
-      (action) =>
-        `- ${action.toolName}: ${JSON.stringify(action.params)}${
-          action.reason ? ` (${action.reason})` : ""
-        }`
-    )
-    .join("\n");
-  const toolResults = input.toolResults
-    .map(
-      (result) =>
-        `- ${result.proposal.toolName}: ${result.status}${
-          result.reason ? ` (${result.reason})` : ""
-        }`
-      )
-    .join("\n");
-
-  return {
-    instructions: [
-      "You are the dreaming memory maintainer for a persona group-chat runtime.",
-      "You maintain Markdown files by calling the bash tool.",
-      "The bash tool runs in a virtual filesystem whose writable memory folder is /memories.",
-      "Do not write bash commands in normal message text; call the bash tool instead.",
-      "The bash command argument must be executable shell code, not an explanation or status sentence.",
-      "If a bash command fails, inspect the tool result and recover with another bash command.",
-      "Use concise bash commands. Prefer cat, mkdir, printf, test, and redirection.",
-      "Always inspect relevant index files before writing.",
-      "Update self memory under /memories/self/ and participant memory under /memories/users/<id>/.",
-      "If the transcript asks to remember explicit facts or wording, preserve the concrete meaning and important phrases.",
-      "If the transcript corrects an existing memory, edit or replace the old claim instead of appending a contradictory new note.",
-      "If the transcript says a memory is stale or no longer current, delete or rewrite the stale wording so it no longer reads as current truth.",
-      "Never access files outside /memories.",
-      "When no more memory changes are needed, call the finish_dreaming tool.",
-      "Do not answer with status JSON in normal message text."
-    ].join("\n"),
-    prompt: [
-        "Memory root layout:",
-        "- /memories/self/index.md",
-        "- /memories/self/<subject>.md",
-        "- /memories/users/<id>/index.md",
-        "- /memories/users/<id>/<subject>.md",
-        "",
-        "Participants:",
-        participants || "(none)",
-        "",
-        "Injected memory:",
-        memories || "(none)",
-        "",
-        "Turn transcript:",
-        input.transcript,
-        "",
-        "Agent proposed actions:",
-        proposedActions || "(none)",
-        "",
-        "Tool results:",
-        toolResults || "(none)",
-        "",
-        "Task:",
-        "Use the bash tool to update useful long-term memory for self and participants.",
-        "When creating or editing files, keep content short, inspectable, and narrative.",
-        "If the transcript names specific target memory files, update those files through the bash tool.",
-        "Prefer correcting, pruning, or rewriting existing memory over piling up conflicting notes."
-      ].join("\n")
-  };
-}
-
-function buildDreamingContinuationPrompt(
-  input: DreamingBashAgentInput,
-  dreamingPrompt: DreamingPrompt
-): string {
-  return [
-    "Terminal phase: dreaming memory maintenance.",
-    "The preceding messages are the authoritative transcript and action/tool history for this agent loop; do not ask for them to be repeated.",
-    "For this terminal phase, follow these additional instructions:",
-    dreamingPrompt.instructions,
-    "",
-    "Memory root layout:",
-    "- /memories/self/index.md",
-    "- /memories/self/<subject>.md",
-    "- /memories/users/<id>/index.md",
-    "- /memories/users/<id>/<subject>.md",
-    "",
-    "Participants:",
-    getParticipantSummaries(input.eventRecords) || "(none)",
-    "",
-    "Use bash to update useful long-term memory for self and participants, then call finish_dreaming.",
-    "Keep files concise and narrative. Correct, prune, or rewrite stale/conflicting memory instead of accumulating contradictions."
-  ].join("\n");
-}
-
 async function runDreamingToolLoop(
   config: GestaltConfig,
-  dreamingPrompt: DreamingPrompt,
   input: DreamingBashAgentInput,
   options: CreateAiSdkDreamingRunnerOptions
 ): Promise<ModelStepTraceSnapshot[]> {
@@ -312,33 +214,35 @@ async function runDreamingToolLoop(
   const temperature = options.temperature ?? readModelTemperature(config) ?? 1;
   const modelStepRecorder = createModelStepRecorder(input.now);
   const continuation = input.modelContinuation;
-  const providerOptions = continuation
-    ? createModelSessionProviderOptions(
-        resolved.providerOptions,
-        resolved.providerName,
-        continuation.providerSessionId,
-        continuation.promptCacheEnabled,
-        continuation.promptCacheTtl
-      )
-    : resolved.providerOptions;
-  const tools = continuation
-    ? {
-        ...buildActionTools(continuation.actionTools),
-        ...buildDreamingTools(input.bash)
-      }
-    : buildDreamingTools(input.bash);
+  if (!continuation) {
+    throw new Error(
+      "Dreaming requires a completed action model session continuation."
+    );
+  }
+  const dreamingTask = renderDreamingTaskPrompt({
+    participants: getParticipantSummaries(input.eventRecords)
+  });
+  const providerOptions = createModelSessionProviderOptions(
+    resolved.providerOptions,
+    resolved.providerName,
+    continuation.providerSessionId,
+    continuation.promptCacheEnabled,
+    continuation.promptCacheTtl
+  );
+  const tools = {
+    ...buildActionTools(continuation.actionTools),
+    ...buildDreamingTools(input.bash)
+  };
   const agent = new ToolLoopAgent({
     id: "gestalt-dreaming",
     model: resolved.languageModel,
-    instructions: continuation?.instructions ?? dreamingPrompt.instructions,
+    instructions: continuation.instructions,
     tools,
     temperature,
-    toolOrder: continuation
-      ? [
-          ...continuation.actionTools.map((candidate) => candidate.name),
-          ...dreamingToolOrder
-        ]
-      : [...dreamingToolOrder],
+    toolOrder: [
+      ...continuation.actionTools.map((candidate) => candidate.name),
+      ...dreamingToolOrder
+    ],
     ...(providerOptions ? { providerOptions } : {}),
     stopWhen: [hasToolCall("finish_dreaming"), stepCountIs(maxModelTurns)],
     include: {
@@ -364,12 +268,15 @@ async function runDreamingToolLoop(
         providerName: resolved.providerName,
         modelName: resolved.modelName,
         temperature,
-        ...(continuation
-          ? {
-              sessionId: continuation.providerSessionId,
-              promptCacheEnabled: continuation.promptCacheEnabled
-            }
-          : {})
+        sessionId: continuation.providerSessionId,
+        promptCacheEnabled: continuation.promptCacheEnabled,
+        prompt: {
+          id: dreamingTask.id,
+          contentHash: dreamingTask.contentHash,
+          ...(continuation.prompt.toolPromptHash
+            ? { toolPromptHash: continuation.prompt.toolPromptHash }
+            : {})
+        }
       });
       modelStepRecorder.recordRequest(request);
       options.onRequest?.(request);
@@ -382,21 +289,16 @@ async function runDreamingToolLoop(
   });
 
   const timeout = { totalMs: timeoutMs };
-  const result = continuation
-    ? await agent.generate({
-        messages: [
-          ...continuation.messages,
-          {
-            role: "user",
-            content: buildDreamingContinuationPrompt(input, dreamingPrompt)
-          }
-        ],
-        timeout
-      })
-    : await agent.generate({
-        prompt: dreamingPrompt.prompt,
-        timeout
-      });
+  const result = await agent.generate({
+    messages: [
+      ...continuation.messages,
+      {
+        role: "user",
+        content: dreamingTask.content
+      }
+    ],
+    timeout
+  });
 
   if (!result.toolCalls.some((call) => call.toolName === "finish_dreaming")) {
     throw new Error(`Dreaming model exceeded ${maxModelTurns} model turns.`);
@@ -404,19 +306,13 @@ async function runDreamingToolLoop(
   return modelStepRecorder.steps;
 }
 
-function renderInjectedMemories(memories: MemoryFragment[]): string {
-  return memories
-    .map(
-      (memory) =>
-        `# ${memory.relativePath}\n${memory.content.trim() || "(empty)"}`
-    )
-    .join("\n\n");
-}
-
 function getParticipantSummaries(records: SessionEventRecord[]): string {
   const participants = new Map<string, string>();
   for (const record of records) {
-    if (record.event.type === "MessageReceived") {
+    if (
+      record.event.type === "MessageReceived" &&
+      !isSelfMessageEvent(record.event)
+    ) {
       participants.set(
         record.event.sender.id,
         record.event.sender.displayName ?? record.event.sender.id

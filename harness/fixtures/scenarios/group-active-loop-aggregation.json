@@ -53,18 +53,18 @@
       "connectorSideEffects": 0
     },
     "modelInput": {
-      "requests": 4,
+      "requests": 3,
       "contains": [
-        "Window: mention, seq 1-1",
-        "Window: steer, seq 2-2",
+        "message_id=active-loop-message-1",
+        "message_id=active-loop-message-2",
         "补充：Agent Loop 运行时，新消息应该通过时间聚合进入同一个 loop。"
       ]
     },
     "modelExchange": {
-      "exchanges": 4,
-      "responses": 3,
+      "exchanges": 3,
+      "responses": 2,
       "maxToolCallsPerResponse": 1,
-      "purposes": ["agent_action", "agent_action", "agent_action", "agent_action"],
+      "purposes": ["agent_action", "agent_action", "agent_action"],
       "responseContains": ["send_group_message", "leave"]
     },
     "trace": {

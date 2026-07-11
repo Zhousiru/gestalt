@@ -20,6 +20,7 @@ export * from "./memory/dreaming";
 export * from "./model/aiSdkModel";
 export * from "./model/session";
 export * from "./persona/loadPersona";
+export * from "./prompts";
 export * from "./runtime/createRuntime";
 export * from "./runtime/agentLoop";
 export * from "./runtime/exitTriggers";

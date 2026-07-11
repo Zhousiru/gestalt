@@ -59,7 +59,7 @@
       "messageId": "activity-message-6",
       "senderId": "carol",
       "senderName": "Carol",
-      "text": "第六条消息应该触发一次 activity window。",
+      "text": "那就先按这个边界继续实现吧。",
       "mentionsBot": false
     }
   ],
@@ -78,26 +78,26 @@
       "windowEventSeqs": [[1, 2, 3, 4, 5, 6]]
     },
     "action": {
-      "toolNames": ["say_nothing", "leave"]
+      "toolNames": ["leave"]
     },
     "tools": {
-      "calls": 2,
-      "toolNames": ["say_nothing", "leave"],
+      "calls": 1,
+      "toolNames": ["leave"],
       "connectorSideEffects": 0
     },
     "modelInput": {
-      "requests": 3,
+      "requests": 1,
       "contains": [
-        "Window: activity, seq 1-6",
-        "第六条消息应该触发一次 activity window。"
+        "Group chat \"Mock Group\" (group_id=mock-group)",
+        "那就先按这个边界继续实现吧。"
       ]
     },
     "modelExchange": {
-      "exchanges": 3,
-      "responses": 3,
+      "exchanges": 1,
+      "responses": 1,
       "maxToolCallsPerResponse": 1,
-      "purposes": ["agent_action", "agent_action", "agent_action"],
-      "responseContains": ["say_nothing", "leave"]
+      "purposes": ["agent_action"],
+      "responseContains": ["leave"]
     },
     "trace": {
       "traces": 1,
@@ -107,7 +107,7 @@
         "model.decide",
         "tool.execute"
       ],
-      "toolNames": ["say_nothing", "leave"]
+      "toolNames": ["leave"]
     }
   }
 }

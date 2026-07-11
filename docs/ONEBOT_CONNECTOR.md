@@ -120,7 +120,7 @@ Sticker and platform emoji output uses the same CQ string boundary. For QQ marke
 
 `react_to_message` currently maps to NapCat's `set_msg_emoji_like` extension.
 
-`fetch_message` maps to OneBot `get_msg`. It is a read-only helper for cases where a current message has `reply_to=...` but the quoted original is not already present in the compiled transcript as `context=reply_target`.
+`fetch_message` maps to OneBot `get_msg`. It is a read-only helper for cases where a reply's quoted original cannot be expanded beneath that message in the compiled chat log.
 
 `read_image` maps to OneBot `get_image`. It fetches platform-cached image data or metadata by image `file` id. It does not by itself perform full visual reasoning; it gives the model an explicit read-tool result before the model describes or reacts to image content.
 

@@ -15,18 +15,18 @@
       "messageId": "icebreaker-message-1",
       "senderId": "alice",
       "senderName": "Alice",
-      "text": "隔了很久又有人说话了，看看是否会触发破冰窗口。",
+      "text": "不用回复，我只是随口记一下：今天下班路上风还挺舒服的。",
       "mentionsBot": false
     }
   ],
   "expectations": {
     "session": {
       "conversations": 1,
-      "events": 3,
-      "selfMessages": 1,
+      "events": 2,
+      "selfMessages": 0,
       "windows": 1,
       "turns": 1,
-      "nextSeq": 4,
+      "nextSeq": 3,
       "turnStatus": "completed",
       "loopExits": 1,
       "loopExitReasons": ["leave_tool"],
@@ -35,29 +35,27 @@
       "windowEventSeqs": [[2]]
     },
     "action": {
-      "toolName": "send_group_message",
-      "toolNames": ["send_group_message", "leave"],
-      "groupId": "mock-group",
-      "textMinLength": 1
+      "toolName": "leave",
+      "toolNames": ["leave"]
     },
     "tools": {
-      "calls": 2,
-      "toolNames": ["send_group_message", "leave"],
+      "calls": 1,
+      "toolNames": ["leave"],
       "connectorSideEffects": 0
     },
     "modelInput": {
-      "requests": 3,
+      "requests": 1,
       "contains": [
-        "Window: icebreaker, seq 2-2",
-        "隔了很久又有人说话了，看看是否会触发破冰窗口。"
+        "Group chat (group_id=mock-group)",
+        "不用回复，我只是随口记一下：今天下班路上风还挺舒服的。"
       ]
     },
     "modelExchange": {
-      "exchanges": 3,
-      "responses": 3,
+      "exchanges": 1,
+      "responses": 1,
       "maxToolCallsPerResponse": 1,
-      "purposes": ["agent_action", "agent_action", "agent_action"],
-      "responseContains": ["send_group_message", "leave"]
+      "purposes": ["agent_action"],
+      "responseContains": ["leave"]
     },
     "trace": {
       "traces": 1,
@@ -67,7 +65,7 @@
         "model.decide",
         "tool.execute"
       ],
-      "toolNames": ["send_group_message", "leave"]
+      "toolNames": ["leave"]
     }
   }
 }

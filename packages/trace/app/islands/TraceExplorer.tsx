@@ -2146,29 +2146,20 @@ function contentToText(value: unknown): string {
 
 function promptMarkers(content: string): string[] {
   const markers: string[] = [];
-  if (content.includes("context=current_window")) {
-    markers.push("current_window");
-  }
-  if (content.includes("Relevant memory:")) {
+  if (content.includes("What you remember:")) {
     markers.push("memory");
   }
   if (content.includes("Available tools:")) {
     markers.push("tools");
   }
-  if (content.includes("Initial conversation window for this agent session.")) {
-    markers.push("initial");
-  }
-  if (content.includes("New conversation window received while this agent session is active.")) {
-    markers.push("steer");
-  }
-  if (content.includes("Terminal phase: dreaming memory maintenance.")) {
+  if (content.includes("Now you are dreaming.")) {
     markers.push("dreaming");
   }
-  if (content.includes("Conversation transcript:")) {
+  if (
+    content.startsWith("Group chat ") ||
+    content.startsWith("Private chat ")
+  ) {
     markers.push("transcript");
-  }
-  if (content.includes("Decision target:")) {
-    markers.push("target");
   }
   return markers;
 }

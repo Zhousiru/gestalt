@@ -53,22 +53,29 @@
       "connectorSideEffects": 0
     },
     "modelInput": {
-      "requests": 3,
+      "requests": 2,
       "contains": [
         "Harness Test Friend",
         "Self memory baseline",
         "Alice memory baseline",
-        "sender=Alice id=alice",
-        "mentions_bot=true",
+        "Alice (user_id=alice, message_id=message-1, mentioned you)",
+        "mentioned you",
         "gestalt 请你直接回复一句：这个测试 persona 可以先这样。"
+      ],
+      "doesNotContain": [
+        "Initial conversation window",
+        "New conversation window",
+        "Decision target:",
+        "context=current_window",
+        "mentions_bot=true"
       ],
       "tools": ["send_group_message", "say_nothing"]
     },
     "modelExchange": {
-      "exchanges": 3,
-      "responses": 3,
+      "exchanges": 2,
+      "responses": 2,
       "maxToolCallsPerResponse": 1,
-      "purposes": ["agent_action", "agent_action", "agent_action"],
+      "purposes": ["agent_action", "agent_action"],
       "responseContains": ["send_group_message", "leave"]
     },
     "trace": {

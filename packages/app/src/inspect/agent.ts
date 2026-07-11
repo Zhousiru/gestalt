@@ -17,6 +17,12 @@ import {
   type CreateAiSdkModelFromConfigOptions
 } from "../model/aiSdkModel";
 import type { SessionEventRecord, SessionSnapshot } from "../session/schemas";
+import {
+  INSPECT_TOOL_PROMPTS,
+  renderInspectSystemPrompt,
+  renderInspectTaskPrompt,
+  type RenderedPrompt
+} from "../prompts";
 
 export interface InspectCommand {
   query: string;
@@ -68,8 +74,8 @@ export interface CreateAiSdkInspectRunnerOptions
 }
 
 interface InspectPrompt {
-  instructions: string;
-  prompt: string;
+  instructions: RenderedPrompt;
+  prompt: RenderedPrompt;
 }
 
 const inspectCommandPattern = /(?:^|\s)\/inspect(?:\s+([\s\S]*))?$/;
@@ -160,19 +166,16 @@ async function runAiSdkInspectAgent(
   const agent = new ToolLoopAgent({
     id: "gestalt-inspect",
     model: resolved.languageModel,
-    instructions: prompt.instructions,
+    instructions: prompt.instructions.content,
     tools: {
       bash: tool({
-        description:
-          "Run one read-only bash command in a virtual filesystem. Mounted evidence: /sessions and /traces. Use this to inspect JSONL files before reporting.",
+        description: INSPECT_TOOL_PROMPTS.bash.description,
         inputSchema: z
           .object({
             command: z
               .string()
               .min(1)
-              .describe(
-                "Executable shell code for read-only inspection. Prefer ls, cat, head, tail, grep-like shell pipelines, and python/json parsing. Do not write files."
-              )
+              .describe(INSPECT_TOOL_PROMPTS.bash.parameters.command)
           })
           .strict(),
         async execute({ command }) {
@@ -180,15 +183,14 @@ async function runAiSdkInspectAgent(
         }
       }),
       send_inspect_report: tool({
-        description:
-          "Submit the final inspect diagnosis. This does not send directly to the chat platform; the runtime will send the report text after this tool is called.",
+        description: INSPECT_TOOL_PROMPTS.send_inspect_report.description,
         inputSchema: z
           .object({
             report: z
               .string()
               .min(1)
               .describe(
-                "Final diagnosis in plain text. Do not use Markdown formatting, bullet lists, tables, headings, code fences, or links."
+                INSPECT_TOOL_PROMPTS.send_inspect_report.parameters.report
               )
           })
           .strict(),
@@ -227,7 +229,7 @@ async function runAiSdkInspectAgent(
 
   try {
     const result = await agent.generate({
-      prompt: prompt.prompt,
+      prompt: prompt.prompt.content,
       timeout: {
         totalMs: timeoutMs
       }
@@ -280,39 +282,18 @@ function buildInspectPrompt(input: InspectRunInput): InspectPrompt {
   );
 
   return {
-    instructions: [
-      "You are the inspect agent for a dev/debug chatbot runtime.",
-      "Your job is to answer why a message, tool call, window, turn, or loop decision happened.",
-      "You must ground the answer in session and trace evidence.",
-      "You have a read-only bash tool with virtual filesystem mounts:",
-      "- /sessions contains rotated realtime session snapshots as JSONL.",
-      "- /traces contains rotated agent turn traces as JSONL.",
-      "Do not attempt to modify files. The mounted evidence is read-only.",
-      "Use bash to inspect the evidence before answering.",
-      "Mention missing evidence explicitly instead of guessing.",
-      "Keep the report concise and useful for an engineer.",
-      "When you have enough evidence, call send_inspect_report with the final diagnosis.",
-      "Do not finish in normal text. send_inspect_report is the only valid way to complete inspect.",
-      "The report must be plain text only. Do not use Markdown formatting, bullet lists, tables, headings, code fences, or links."
-    ].join("\n"),
-    prompt: [
-      "Current time:",
-      input.now().toISOString(),
-      "",
-      "User inspect request:",
-      input.command.query || "(no explicit inspect query; diagnose the current conversation state)",
-      "",
-      "Current inspect command event:",
-      `- conversation: ${conversation.kind}:${conversation.id}`,
-      `- event_id: ${event.id}`,
-      `- session_seq: ${input.eventRecord.seq}`,
-      `- message_id: ${event.message.id}`,
-      `- sender: ${event.sender.displayName ?? event.sender.id} (${event.sender.id})`,
-      `- received_at: ${input.eventRecord.receivedAt}`,
-      `- text: ${event.message.text}`,
-      "",
-      "Current conversation snapshot summary:",
-      latestConversation
+    instructions: renderInspectSystemPrompt(),
+    prompt: renderInspectTaskPrompt({
+      now: input.now().toISOString(),
+      query: input.command.query,
+      conversation: `${conversation.kind}:${conversation.id}`,
+      eventId: event.id,
+      sessionSeq: input.eventRecord.seq,
+      messageId: event.message.id,
+      sender: `${event.sender.displayName ?? event.sender.id} (${event.sender.id})`,
+      receivedAt: input.eventRecord.receivedAt,
+      text: event.message.text,
+      conversationSummary: latestConversation
         ? [
             `- nextSeq: ${latestConversation.nextSeq}`,
             `- events: ${latestConversation.events.length}`,
@@ -320,17 +301,8 @@ function buildInspectPrompt(input: InspectRunInput): InspectPrompt {
             `- turns: ${latestConversation.turns.length}`,
             `- loopExits: ${latestConversation.loopExits.length}`
           ].join("\n")
-        : "(conversation not found in current snapshot)",
-      "",
-      "Suggested first steps:",
-      "- List /sessions and /traces.",
-      "- Read the latest session JSONL line for the current conversation.",
-      "- Find the relevant self message/action/turn if the request mentions one.",
-      "- Use the turn traceId to inspect /traces when available.",
-      "- Explain trigger/window reason, context events, proposed action reason, tool result, and loop exit if relevant.",
-      "- Finish by calling send_inspect_report.",
-      "- Final report style: plain text only, no Markdown."
-    ].join("\n")
+        : "(conversation not found in current snapshot)"
+    })
   };
 }
 

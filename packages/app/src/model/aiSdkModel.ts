@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import {
+  hasToolCall,
   ToolLoopAgent,
   stepCountIs,
   tool,
@@ -12,6 +13,15 @@ import { z } from "zod";
 import type { CompiledContext } from "../context/compileContext";
 import type { MessageReceivedEvent } from "../events/schemas";
 import type { GestaltConfig } from "../home/loadConfig";
+import {
+  ACTION_TOOL_PROMPTS,
+  hashModelToolPrompts,
+  renderActionSystemPrompt,
+  renderActionToolDescription,
+  renderActionWindowPrompt,
+  type PromptMetadata,
+  type RenderedPrompt
+} from "../prompts";
 import {
   isTurnSteeredError,
   readTurnAbortError,
@@ -82,6 +92,7 @@ export interface ModelRequestSnapshot {
   requestBody?: unknown;
   sessionId?: string;
   promptCacheEnabled?: boolean;
+  prompt?: PromptMetadata;
 }
 
 export interface ModelResponseSnapshot {
@@ -193,6 +204,7 @@ function createAiSdkModelSession(
   const modelStepRecorder = createModelStepRecorder(now);
   const committedToolResults: ToolExecutionResult[] = [];
   let instructions: string | undefined;
+  let sessionPrompt: RenderedPrompt | undefined;
   let messages: ModelMessage[] = [];
   let currentContext: CompiledContext | undefined;
   let attemptController: AbortController | undefined;
@@ -214,11 +226,21 @@ function createAiSdkModelSession(
       throwIfTurnSteered(runOptions.signal);
       currentContext = context;
       if (!initialized) {
-        instructions = buildSessionInstructions(context);
-        messages.push({ role: "user", content: buildWindowPrompt(context, false) });
+        sessionPrompt = renderActionSystemPrompt({
+          persona: context.persona,
+          memories: context.memories
+        });
+        instructions = sessionPrompt.content;
+        messages.push({
+          role: "user",
+          content: renderActionWindowPrompt(context.transcript).content
+        });
         initialized = true;
       } else {
-        messages.push({ role: "user", content: buildWindowPrompt(context, true) });
+        messages.push({
+          role: "user",
+          content: renderActionWindowPrompt(context.transcript).content
+        });
       }
 
       const runStepOffset = modelStepRecorder.steps.length;
@@ -236,7 +258,8 @@ function createAiSdkModelSession(
           const attemptToolResults: ToolExecutionResult[] = [];
           let committedAttemptTools = 0;
           const attemptContext = currentContext;
-          if (!attemptContext || !instructions) {
+          const attemptSessionPrompt = sessionPrompt;
+          if (!attemptContext || !instructions || !attemptSessionPrompt) {
             throw new Error("AI SDK model session was not initialized.");
           }
           const attemptRunOptions: ModelRunOptions = {
@@ -263,7 +286,7 @@ function createAiSdkModelSession(
               ...dreamingToolOrder
             ],
             ...(providerOptions ? { providerOptions } : {}),
-            stopWhen: stepCountIs(maxSteps),
+            stopWhen: [hasToolCall("leave"), stepCountIs(maxSteps)],
             temperature,
             include: {
               requestBody: true,
@@ -276,7 +299,14 @@ function createAiSdkModelSession(
                 modelName: options.modelName,
                 temperature,
                 sessionId,
-                promptCacheEnabled: options.promptCacheEnabled ?? false
+                promptCacheEnabled: options.promptCacheEnabled ?? false,
+                prompt: {
+                  id: attemptSessionPrompt.id,
+                  contentHash: attemptSessionPrompt.contentHash,
+                  toolPromptHash: hashModelToolPrompts(
+                    attemptContext.tools.map((candidate) => candidate.name)
+                  )
+                }
               });
               modelStepRecorder.recordRequest(request);
               options.onRequest?.(request);
@@ -346,17 +376,27 @@ function createAiSdkModelSession(
         return false;
       }
       currentContext = context;
-      messages.push({ role: "user", content: buildWindowPrompt(context, true) });
+      messages.push({
+        role: "user",
+        content: renderActionWindowPrompt(context.transcript).content
+      });
       attemptController?.abort(new TurnSteeredError());
       return true;
     },
 
     continuation(): ModelSessionContinuation | undefined {
-      if (!initialized || running || !instructions) {
+      if (!initialized || running || !instructions || !sessionPrompt) {
         return undefined;
       }
       return {
         instructions,
+        prompt: {
+          id: sessionPrompt.id,
+          contentHash: sessionPrompt.contentHash,
+          toolPromptHash: hashModelToolPrompts(
+            (currentContext?.tools ?? []).map((candidate) => candidate.name)
+          )
+        },
         messages: [...messages],
         providerSessionId: sessionId,
         promptCacheEnabled: options.promptCacheEnabled ?? false,
@@ -614,6 +654,7 @@ export function snapshotStepRequest(
     temperature: number;
     sessionId?: string;
     promptCacheEnabled?: boolean;
+    prompt?: PromptMetadata;
   }
 ): ModelRequestSnapshot {
   return {
@@ -627,7 +668,8 @@ export function snapshotStepRequest(
     ...(fallback.sessionId ? { sessionId: fallback.sessionId } : {}),
     ...(fallback.promptCacheEnabled !== undefined
       ? { promptCacheEnabled: fallback.promptCacheEnabled }
-      : {})
+      : {}),
+    ...(fallback.prompt ? { prompt: fallback.prompt } : {})
   };
 }
 
@@ -718,127 +760,6 @@ function readCacheUsage(usage: unknown): ModelCacheUsageSnapshot | undefined {
   };
 }
 
-function buildActionInstructions(tools: ToolDefinition[]): string {
-  const hasLeaveTool = tools.some((candidate) => candidate.name === "leave");
-  const instructions = [
-    "You are the main multi-step agent for a group-chat persona runtime.",
-    "You may call tools as needed across multiple steps, like a coding agent.",
-    "Call at most one tool in a single model step, including say_nothing.",
-    "After each tool result, reassess the conversation and decide whether to call another tool, call say_nothing, or stay active.",
-    "Tool calls are the only way to create visible side effects or lifecycle changes.",
-    "The bash and finish_dreaming tools are reserved for an explicitly announced terminal dreaming phase. Never call them during the normal chat-action phase.",
-    "Conversation messages may contain OneBot-style CQ markup such as [CQ:at,qq=...], [CQ:reply,id=...], [CQ:image,file=...,url=...], [CQ:face,id=...], and [CQ:mface,emoji_package_id=...,emoji_id=...,key=...].",
-    "When repeating or preserving platform-specific parts of a message, copy the CQ markup exactly in the relevant tool input.",
-    "When visibly replying to the current message, start send_group_message text with [CQ:reply,id=<message_id>] using the current transcript message_id value.",
-    "For example, if the current transcript metadata says message_id=321, reply text should start with [CQ:reply,id=321].",
-    "Use send_image only with image file ids, URLs, file URIs, or base64:// payloads that appear in context or are explicitly provided.",
-    "Use send_sticker only when exact [CQ:face,...] or [CQ:mface,...] markup is available to copy.",
-    "Use fetch_message before answering when the current message has reply_to=... and the corresponding quoted message is not already visible as context=reply_target.",
-    "Use read_image before describing or interpreting image contents when the transcript only has [CQ:image,...] metadata.",
-    "Use react_to_message for lightweight acknowledgement when a reaction is better than a full message.",
-    "Use poke_user only as an explicitly invited or clearly playful QQ poke/nudge, and avoid repeated pokes.",
-    "Use recall_own_message only for a message sent by this bot, such as a recent tool result externalId or sender_role=self message id.",
-    "Use send_dm only when private follow-up was clearly invited or a public reply would expose private context.",
-    "Do not invent image file names, URLs, sticker ids, face ids, mface keys, emoji ids, or user ids. Reuse identifiers only when they appear in the transcript or the user explicitly provides them.",
-    "mentions_bot=true is an authoritative normalized signal that the bot was addressed.",
-    "Window reasons keyword and reply_to_bot are also normalized trigger signals that the bot was invoked.",
-    "Transcript records may be labeled context=history, context=current_window, and context=reply_target.",
-    "Use context=current_window as the current decision input. Use history and reply_target records only to understand continuity.",
-    "Records labeled sender_role=self are messages previously sent by this bot.",
-    "If any current-window group message has mentions_bot=true, or the window reason is keyword or reply_to_bot, usually choose send_group_message.",
-    "For activity windows, usually observe with say_nothing unless someone clearly asks for the bot.",
-    "For icebreaker windows, a brief warm reply is appropriate when the latest message invites renewed conversation or discusses the icebreaker trigger.",
-    "Do not infer from persona role name alone whether the bot was addressed; use normalized trigger signals instead.",
-    "Use say_nothing when this turn should intentionally produce no visible action while leaving loop shutdown to exit triggers or later context.",
-    "Keep visible messages short and natural.",
-    "Do not call the same visible side-effect tool repeatedly unless the user explicitly requested multiple actions."
-  ];
-
-  if (hasLeaveTool) {
-    instructions.splice(
-      5,
-      0,
-      "When the current active loop is complete, call leave as the final tool before stopping.",
-      "Only stop with a brief private final note without leave when the active loop should remain open for later window steering. That final note is recorded for trace only and is not sent to chat."
-    );
-    instructions.splice(
-      instructions.length - 2,
-      0,
-      "Use leave when you explicitly want the current active loop to end and future messages should return to pre-trigger handling.",
-      "Do not call say_nothing and leave for the same decision.",
-      "After calling leave, do not call more tools in this turn.",
-      "Do not use leave when a visible reply is still needed."
-    );
-  } else {
-    instructions.splice(
-      5,
-      0,
-      "The active loop is configured to stay open for later window steering, so do not try to end it with a lifecycle tool.",
-      "When no visible action is needed, use say_nothing or stop with a brief private final note; that final note is recorded for trace only and is not sent to chat."
-    );
-  }
-
-  return instructions.join("\n");
-}
-
-function buildSessionInstructions(context: CompiledContext): string {
-  const persona = context.persona.fragments
-    .map((fragment) => `# ${fragment.name}\n${fragment.content}`)
-    .join("\n\n");
-  const memories = context.memories
-    .map(
-      (memory) =>
-        `# ${memory.relativePath}\n${memory.content.trim() || "(empty)"}`
-    )
-    .join("\n\n");
-  return [
-    buildActionInstructions(context.tools),
-    "",
-    "Persona:",
-    persona || "(empty)",
-    "",
-    "Relevant memory:",
-    memories || "(none)"
-  ].join("\n");
-}
-
-function buildWindowPrompt(context: CompiledContext, isSteer: boolean): string {
-  const currentEvent = selectCurrentMessageEvent(context);
-  return [
-    isSteer
-      ? "New conversation window received while this agent session is active."
-      : "Initial conversation window for this agent session.",
-    "Treat this as new user-side context appended after all earlier messages and tool results.",
-    "",
-    "Conversation transcript:",
-    context.transcript,
-    "",
-    "Decision target:",
-    "The latest message in this window is the current message to answer or ignore.",
-    describeCurrentMessage(currentEvent),
-    "",
-    "Current conversation:",
-    `${currentEvent.conversation.kind}:${currentEvent.conversation.id}`
-  ].join("\n");
-}
-
-function describeCurrentMessage(event: MessageReceivedEvent): string {
-  return [
-    `- latest_seq_message_id: ${event.message.id}`,
-    `- latest_sender: ${event.sender.displayName ?? event.sender.id} (${event.sender.id})`,
-    `- latest_mentions_bot: ${event.message.mentionsBot}`,
-    `- latest_text: ${event.message.text}`
-  ].join("\n");
-}
-
-function renderToolDescription(definition: ToolDefinition): string {
-  return [
-    definition.purpose,
-    `Useful when: ${definition.whenUseful.join("; ")}`,
-    `Avoid when: ${definition.avoidWhen.join("; ")}`
-  ].join("\n");
-}
-
 export interface ActionToolRuntime {
   context: CompiledContext;
   now: () => Date;
@@ -863,17 +784,17 @@ function createActionTool(
 ): ToolSet[string] {
   if (definition.name === "fetch_message") {
     return tool({
-      description: renderToolDescription(definition),
+      description: renderActionToolDescription(definition.name),
       inputSchema: z
         .object({
           message_id: z
             .string()
             .min(1)
-            .describe("Message id to fetch, copied from reply_to metadata."),
+            .describe(toolParameterPrompt(definition.name, "message_id")),
           reason: z
             .string()
             .optional()
-            .describe("Brief reason for fetching this message.")
+            .describe(toolParameterPrompt(definition.name, "reason"))
         })
         .strict(),
       async execute(input) {
@@ -884,19 +805,17 @@ function createActionTool(
 
   if (definition.name === "read_image") {
     return tool({
-      description: renderToolDescription(definition),
+      description: renderActionToolDescription(definition.name),
       inputSchema: z
         .object({
           file: z
             .string()
             .min(1)
-            .describe(
-              "Image file id copied from [CQ:image,file=...] in the transcript."
-            ),
+            .describe(toolParameterPrompt(definition.name, "file")),
           reason: z
             .string()
             .optional()
-            .describe("Brief reason for reading this image.")
+            .describe(toolParameterPrompt(definition.name, "reason"))
         })
         .strict(),
       async execute(input) {
@@ -907,19 +826,17 @@ function createActionTool(
 
   if (definition.name === "send_group_message") {
     return tool({
-      description: renderToolDescription(definition),
+      description: renderActionToolDescription(definition.name),
       inputSchema: z
         .object({
           text: z
             .string()
             .min(1)
-            .describe(
-              "Message text to send. May include CQ markup such as [CQ:reply,id=321] or [CQ:face,id=14]."
-            ),
+            .describe(toolParameterPrompt(definition.name, "text")),
           reason: z
             .string()
             .optional()
-            .describe("Brief reason for choosing this action.")
+            .describe(toolParameterPrompt(definition.name, "reason"))
         })
         .strict(),
       async execute(input) {
@@ -930,21 +847,21 @@ function createActionTool(
 
   if (definition.name === "send_dm") {
     return tool({
-      description: renderToolDescription(definition),
+      description: renderActionToolDescription(definition.name),
       inputSchema: z
         .object({
           user_id: z
             .string()
             .min(1)
-            .describe("Target user id copied from transcript metadata."),
+            .describe(toolParameterPrompt(definition.name, "user_id")),
           text: z
             .string()
             .min(1)
-            .describe("Private message text. May include CQ markup if needed."),
+            .describe(toolParameterPrompt(definition.name, "text")),
           reason: z
             .string()
             .optional()
-            .describe("Brief reason for choosing this action.")
+            .describe(toolParameterPrompt(definition.name, "reason"))
         })
         .strict(),
       async execute(input) {
@@ -955,31 +872,29 @@ function createActionTool(
 
   if (definition.name === "send_image") {
     return tool({
-      description: renderToolDescription(definition),
+      description: renderActionToolDescription(definition.name),
       inputSchema: z
         .object({
           file: z
             .string()
             .min(1)
-            .describe(
-              "Image file id, URL, file URI, or base64:// payload copied from context or explicitly provided."
-            ),
+            .describe(toolParameterPrompt(definition.name, "file")),
           caption: z
             .string()
             .optional()
-            .describe("Optional short caption to place before the image."),
+            .describe(toolParameterPrompt(definition.name, "caption")),
           summary: z
             .string()
             .optional()
-            .describe("Optional image summary for platform metadata."),
+            .describe(toolParameterPrompt(definition.name, "summary")),
           reply_to_message_id: z
             .string()
             .optional()
-            .describe("Optional message id to quote before the image."),
+            .describe(toolParameterPrompt(definition.name, "reply_to_message_id")),
           reason: z
             .string()
             .optional()
-            .describe("Brief reason for choosing this action.")
+            .describe(toolParameterPrompt(definition.name, "reason"))
         })
         .strict(),
       async execute(input) {
@@ -990,23 +905,21 @@ function createActionTool(
 
   if (definition.name === "send_sticker") {
     return tool({
-      description: renderToolDescription(definition),
+      description: renderActionToolDescription(definition.name),
       inputSchema: z
         .object({
           sticker_cq: z
             .string()
             .min(1)
-            .describe(
-              "Exact [CQ:face,...] or [CQ:mface,...] markup copied from the transcript or user request."
-            ),
+            .describe(toolParameterPrompt(definition.name, "sticker_cq")),
           reply_to_message_id: z
             .string()
             .optional()
-            .describe("Optional message id to quote before the sticker."),
+            .describe(toolParameterPrompt(definition.name, "reply_to_message_id")),
           reason: z
             .string()
             .optional()
-            .describe("Brief reason for choosing this action.")
+            .describe(toolParameterPrompt(definition.name, "reason"))
         })
         .strict(),
       async execute(input) {
@@ -1017,17 +930,17 @@ function createActionTool(
 
   if (definition.name === "poke_user") {
     return tool({
-      description: renderToolDescription(definition),
+      description: renderActionToolDescription(definition.name),
       inputSchema: z
         .object({
           user_id: z
             .string()
             .min(1)
-            .describe("Target user id copied from transcript metadata."),
+            .describe(toolParameterPrompt(definition.name, "user_id")),
           reason: z
             .string()
             .optional()
-            .describe("Brief reason for choosing this action.")
+            .describe(toolParameterPrompt(definition.name, "reason"))
         })
         .strict(),
       async execute(input) {
@@ -1038,19 +951,17 @@ function createActionTool(
 
   if (definition.name === "recall_own_message") {
     return tool({
-      description: renderToolDescription(definition),
+      description: renderActionToolDescription(definition.name),
       inputSchema: z
         .object({
           own_message_id: z
             .string()
             .min(1)
-            .describe(
-              "Message id for a message sent by this bot, copied from a tool result externalId or sender_role=self transcript record."
-            ),
+            .describe(toolParameterPrompt(definition.name, "own_message_id")),
           reason: z
             .string()
             .optional()
-            .describe("Brief reason for recalling this bot message.")
+            .describe(toolParameterPrompt(definition.name, "reason"))
         })
         .strict(),
       async execute(input) {
@@ -1061,27 +972,25 @@ function createActionTool(
 
   if (definition.name === "react_to_message") {
     return tool({
-      description: renderToolDescription(definition),
+      description: renderActionToolDescription(definition.name),
       inputSchema: z
         .object({
           message_id: z
             .string()
             .optional()
-            .describe(
-              "Target message id. Defaults to the latest transcript message when omitted."
-            ),
+            .describe(toolParameterPrompt(definition.name, "message_id")),
           emoji_id: z
             .string()
             .min(1)
-            .describe("Platform emoji id copied from context or configuration."),
+            .describe(toolParameterPrompt(definition.name, "emoji_id")),
           remove: z
             .boolean()
             .optional()
-            .describe("Set true to remove the reaction instead of adding it."),
+            .describe(toolParameterPrompt(definition.name, "remove")),
           reason: z
             .string()
             .optional()
-            .describe("Brief reason for choosing this action.")
+            .describe(toolParameterPrompt(definition.name, "reason"))
         })
         .strict(),
       async execute(input) {
@@ -1091,19 +1000,34 @@ function createActionTool(
   }
 
   return tool({
-    description: renderToolDescription(definition),
+    description: renderActionToolDescription(definition.name),
     inputSchema: z
       .object({
         reason: z
           .string()
           .optional()
-          .describe("Brief reason for choosing this action.")
+          .describe(toolParameterPrompt(definition.name, "reason"))
       })
       .strict(),
     async execute(input) {
       return executeActionToolInput(definition, input, runtime);
     }
   }) as unknown as ToolSet[string];
+}
+
+function toolParameterPrompt(
+  toolName: ToolDefinition["name"],
+  parameter: string
+): string {
+  const parameters: Readonly<Record<string, string>> =
+    ACTION_TOOL_PROMPTS[toolName].parameters;
+  const description = parameters[parameter];
+  if (!description) {
+    throw new Error(
+      `Missing prompt for tool parameter ${toolName}.${parameter}.`
+    );
+  }
+  return description;
 }
 
 function collectModelActionResult(
