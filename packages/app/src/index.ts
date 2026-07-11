@@ -14,6 +14,7 @@ export * from "./events/schemas";
 export * from "./home/loadEnv";
 export * from "./home/loadConfig";
 export * from "./home/resolveGestaltHome";
+export * from "./home/resolveAppHostConfig";
 export * from "./inspect/agent";
 export * from "./live";
 export * from "./memory/store";

@@ -5,6 +5,8 @@
   "description": "AI-native persona chatbot runtime and harness.",
   "scripts": {
     "build": "pnpm -r --if-present run build",
+    "docker:build": "docker build --tag gestalt:local .",
+    "verify:build": "pnpm run build && pnpm --filter @gestalt/harness run verify:build",
     "dev:trace": "pnpm --filter @gestalt/trace dev",
     "test": "pnpm -r --if-present run test",
     "lint": "pnpm -r --if-present run lint",

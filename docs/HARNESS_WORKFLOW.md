@@ -45,6 +45,7 @@ harness/
     modelE2E.verify.ts
     multiStepAgent.verify.ts
     memory.verify.ts
+    liveUiBuild.verify.ts
     onebotProtocol.verify.ts
     toolContract.verify.ts
     eval.ts
@@ -64,6 +65,7 @@ Important files:
 - `eval.ts`: CLI entry for LLM-judged scenario evals.
 - `toolContractRunner.ts`: executes fixed action proposals through mock tools and OneBot connector mappings.
 - `multiStepAgent.verify.ts`: verifies the main agent can run a coding-agent-like multi-step tool loop in one turn.
+- `liveUiBuild.verify.ts`: starts the built App with a temporary GestaltHome and verifies that the Live API, HTML, and UI assets share one origin.
 - `fixtures/scenarios/*.json`: durable behavior fixtures.
 - `fixtures/homes/*`: complete or partial GestaltHome fixtures.
 - `fixtures/memories/*`: memory snapshots copied into temporary GestaltHome runs.
@@ -289,6 +291,22 @@ Run the production bundle check:
 ```bash
 pnpm run build
 ```
+
+The app build keeps npm dependencies external and runs them from the existing
+`node_modules`. Verify that the generated ESM entry can load dotenv, config, and
+the runtime from the committed smoke-test GestaltHome, not only that compilation
+succeeded:
+
+```bash
+pnpm run verify:build
+```
+
+The workspace dependency graph builds `@gestalt/trace` before `@gestalt/app`.
+The App build copies the completed Trace UI into `packages/app/dist/live-ui/`;
+it does not invoke Vite or reach into the Trace package's dependencies. The
+build verification then starts the generated app on a temporary port and proves
+that the health API, HTML shell, and a built UI asset are all served from that
+one origin.
 
 Clean generated build output before finishing work if `packages/app/dist/` was created.
 

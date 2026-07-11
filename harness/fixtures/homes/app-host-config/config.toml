@@ -1,0 +1,7 @@
+connector = "onebot-forward-ws"
+onebot_ws_url = "ws://127.0.0.1:3001"
+onebot_access_token_env = "GESTALT_TEST_ONEBOT_TOKEN"
+
+live_enabled = true
+live_host = "0.0.0.0"
+live_port = 6175

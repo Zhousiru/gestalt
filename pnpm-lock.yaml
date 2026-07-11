@@ -3,6 +3,7 @@ lockfileVersion: '9.0'
 settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
+  injectWorkspacePackages: true
 
 importers:
 
@@ -64,9 +65,15 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3
     devDependencies:
+      '@gestalt/trace':
+        specifier: workspace:*
+        version: link:../trace
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.1
+      esbuild:
+        specifier: ^0.28.1
+        version: 0.28.1
 
   packages/trace:
     dependencies:

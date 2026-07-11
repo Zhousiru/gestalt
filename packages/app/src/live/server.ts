@@ -1,4 +1,4 @@
-import { createReadStream } from "node:fs";
+import { createReadStream, existsSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import path from "node:path";
@@ -35,7 +35,7 @@ interface ResolvedLiveDebugServerOptions {
 }
 
 const DEFAULT_HOST = "127.0.0.1";
-const DEFAULT_PORT = 5175;
+const DEFAULT_PORT = 3000;
 
 export async function startLiveDebugServer(
   options: StartLiveDebugServerOptions
@@ -159,7 +159,7 @@ async function handleRequest(
 
   sendJson(response, 404, {
     error: "Not found",
-    hint: "Configure --live-ui-dir to serve built trace UI assets."
+    hint: "Live UI assets are missing from the application distribution."
   });
 }
 
@@ -334,8 +334,10 @@ function contentType(filePath: string): string {
 }
 
 export function resolveDefaultTraceUiDir(fromUrl: string): string {
-  return path.resolve(
-    path.dirname(fileURLToPath(fromUrl)),
-    "../../../trace/dist"
-  );
+  const moduleDir = path.dirname(fileURLToPath(fromUrl));
+  const candidates = [
+    path.join(moduleDir, "live-ui"),
+    path.resolve(moduleDir, "../dist/live-ui")
+  ];
+  return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0]!;
 }

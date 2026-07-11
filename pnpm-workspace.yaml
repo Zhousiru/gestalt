@@ -1,6 +1,7 @@
 packages:
-  - "packages/*"
-  - "harness"
+  - 'packages/*'
+  - 'harness'
+injectWorkspacePackages: true
 allowBuilds:
   '@mongodb-js/zstd': false
   esbuild: true

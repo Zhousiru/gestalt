@@ -144,17 +144,47 @@ Two transport modes exist:
 
 Both modes use OneBot's `echo` field to correlate API calls with responses.
 
-CLI examples:
+Configure the transport in GestaltHome `config.toml`:
 
-```bash
-pnpm --filter @gestalt/app dev -- --connector onebot-forward-ws --onebot-ws-url ws://127.0.0.1:3001
+```toml
+connector = "onebot-forward-ws"
+onebot_ws_url = "ws://127.0.0.1:3001"
+onebot_access_token_env = "ONEBOT_ACCESS_TOKEN"
 ```
 
+```toml
+connector = "onebot-reverse-ws"
+onebot_host = "0.0.0.0"
+onebot_port = 16700
+onebot_path = "/onebot/v11/ws"
+onebot_access_token_env = "ONEBOT_ACCESS_TOKEN"
+```
+
+The access token itself stays in the named environment variable rather than in
+the config file or process arguments. Start the configured app with only its
+GestaltHome location:
+
 ```bash
-pnpm --filter @gestalt/app dev -- --connector onebot-reverse-ws --onebot-port 16700 --onebot-path /onebot/v11/ws
+pnpm --filter @gestalt/app dev -- --home .gestalt
 ```
 
 For live OneBot mode, the runtime uses the model configured in GestaltHome.
+
+The same host config controls the optional live trace server:
+
+```toml
+live_enabled = true
+live_host = "127.0.0.1"
+live_port = 3000
+```
+
+`live_enabled` defaults to `false`, and `live_port` defaults to `3000`. When
+enabled, the Gestalt app owns the single public port: it serves `/api/live/*`,
+SSE, and the bundled Live UI from the same HTTP server and origin.
+
+Connector, OneBot transport, and live host/port settings are no longer accepted
+as CLI arguments. `--home` remains the bootstrap override, and
+`--live-ui-dir` remains an optional static-asset override.
 
 ## Harness Verification
 

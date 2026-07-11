@@ -5,9 +5,17 @@ import {
   createOneBotRuntime,
   createOneBotTransportFromConfig
 } from "./connectors/onebot/live";
+import { loadConfig } from "./home/loadConfig";
+import { loadEnv } from "./home/loadEnv";
+import {
+  resolveAppHostConfig,
+  type AppHostConfig
+} from "./home/resolveAppHostConfig";
+import { resolveGestaltHome } from "./home/resolveGestaltHome";
 import {
   createLiveEventBus,
   createLiveRunStore,
+  resolveDefaultTraceUiDir,
   startLiveDebugServer,
   type LiveDebugServer,
   type LiveEventBus,
@@ -17,19 +25,10 @@ import { createRuntime } from "./runtime/createRuntime";
 
 interface CliOptions {
   home?: string;
-  connector: "mock" | "onebot-forward-ws" | "onebot-reverse-ws";
   message: string;
   groupId: string;
   senderId: string;
   mentionsBot: boolean;
-  onebotWsUrl?: string;
-  onebotHost?: string;
-  onebotPort?: number;
-  onebotPath?: string;
-  onebotAccessToken?: string;
-  live: boolean;
-  liveHost?: string;
-  livePort?: number;
   liveUiDir?: string;
 }
 
@@ -46,34 +45,41 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (options.connector !== "mock") {
-    const liveSupport = options.live ? createLiveSupport() : undefined;
+  const home = await resolveGestaltHome(
+    options.home ? { homePath: options.home } : {}
+  );
+  loadEnv(home);
+  const hostConfig = resolveAppHostConfig(await loadConfig(home));
+
+  if (hostConfig.connector !== "mock") {
+    const liveSupport = hostConfig.live.enabled ? createLiveSupport() : undefined;
     const runtime = await createOneBotRuntime({
-      ...(options.home ? { gestaltHome: options.home } : {}),
+      gestaltHome: home.root,
       ...(liveSupport ? { liveEvents: liveSupport.bus } : {}),
       transport: createOneBotTransportFromConfig({
         mode:
-          options.connector === "onebot-forward-ws"
+          hostConfig.connector === "onebot-forward-ws"
             ? "forward_ws"
             : "reverse_ws",
-        ...(options.onebotWsUrl ? { url: options.onebotWsUrl } : {}),
-        ...(options.onebotHost ? { host: options.onebotHost } : {}),
-        ...(options.onebotPort ? { port: options.onebotPort } : {}),
-        ...(options.onebotPath ? { path: options.onebotPath } : {}),
-        ...(options.onebotAccessToken
-          ? { accessToken: options.onebotAccessToken }
-        : {})
+        ...(hostConfig.onebot.wsUrl ? { url: hostConfig.onebot.wsUrl } : {}),
+        ...(hostConfig.onebot.host ? { host: hostConfig.onebot.host } : {}),
+        ...(hostConfig.onebot.port ? { port: hostConfig.onebot.port } : {}),
+        ...(hostConfig.onebot.path ? { path: hostConfig.onebot.path } : {}),
+        ...(hostConfig.onebot.accessToken
+          ? { accessToken: hostConfig.onebot.accessToken }
+          : {})
       })
     });
     const liveServer = await startLiveServerIfEnabled(
       options,
+      hostConfig,
       liveSupport,
       runtime
     );
     console.log(
       JSON.stringify(
         {
-          connector: options.connector,
+          connector: hostConfig.connector,
           gestaltHome: runtime.home.root,
           status: "listening",
           ...(liveServer ? { liveUrl: liveServer.url } : {})
@@ -87,14 +93,15 @@ async function main(): Promise<void> {
   }
 
   const connector = createMockConnector();
-  const liveSupport = options.live ? createLiveSupport() : undefined;
+  const liveSupport = hostConfig.live.enabled ? createLiveSupport() : undefined;
   const runtime = await createRuntime({
-    ...(options.home ? { gestaltHome: options.home } : {}),
+    gestaltHome: home.root,
     connector,
     ...(liveSupport ? { liveEvents: liveSupport.bus } : {})
   });
   const liveServer = await startLiveServerIfEnabled(
     options,
+    hostConfig,
     liveSupport,
     runtime
   );
@@ -141,12 +148,10 @@ async function main(): Promise<void> {
 
 function parseArgs(args: string[]): CliOptions | "help" {
   const options: CliOptions = {
-    connector: "mock",
     message: "gestalt 在吗？",
     groupId: "mock-group",
     senderId: "mock-user",
-    mentionsBot: true,
-    live: false
+    mentionsBot: true
   };
 
   for (let index = 0; index < args.length; index += 1) {
@@ -157,64 +162,6 @@ function parseArgs(args: string[]): CliOptions | "help" {
     }
     if (arg === "--home") {
       options.home = readValue(args, index, arg);
-      index += 1;
-      continue;
-    }
-    if (arg === "--connector") {
-      const connector = readValue(args, index, arg);
-      if (
-        connector !== "mock" &&
-        connector !== "onebot-forward-ws" &&
-        connector !== "onebot-reverse-ws"
-      ) {
-        throw new Error(`Unsupported connector "${connector}".`);
-      }
-      options.connector = connector;
-      index += 1;
-      continue;
-    }
-    if (arg === "--onebot-ws-url") {
-      options.onebotWsUrl = readValue(args, index, arg);
-      index += 1;
-      continue;
-    }
-    if (arg === "--onebot-host") {
-      options.onebotHost = readValue(args, index, arg);
-      index += 1;
-      continue;
-    }
-    if (arg === "--onebot-port") {
-      options.onebotPort = Number(readValue(args, index, arg));
-      if (!Number.isInteger(options.onebotPort) || options.onebotPort <= 0) {
-        throw new Error("--onebot-port must be a positive integer.");
-      }
-      index += 1;
-      continue;
-    }
-    if (arg === "--onebot-path") {
-      options.onebotPath = readValue(args, index, arg);
-      index += 1;
-      continue;
-    }
-    if (arg === "--onebot-access-token") {
-      options.onebotAccessToken = readValue(args, index, arg);
-      index += 1;
-      continue;
-    }
-    if (arg === "--live") {
-      options.live = true;
-      continue;
-    }
-    if (arg === "--live-host") {
-      options.liveHost = readValue(args, index, arg);
-      index += 1;
-      continue;
-    }
-    if (arg === "--live-port") {
-      options.livePort = Number(readValue(args, index, arg));
-      if (!Number.isInteger(options.livePort) || options.livePort <= 0) {
-        throw new Error("--live-port must be a positive integer.");
-      }
       index += 1;
       continue;
     }
@@ -267,6 +214,7 @@ function createLiveSupport(): LiveSupport {
 
 async function startLiveServerIfEnabled(
   options: CliOptions,
+  hostConfig: AppHostConfig,
   liveSupport: LiveSupport | undefined,
   runtime: Awaited<ReturnType<typeof createRuntime>>
 ): Promise<LiveDebugServer | undefined> {
@@ -277,9 +225,11 @@ async function startLiveServerIfEnabled(
     runtime,
     bus: liveSupport.bus,
     runStore: liveSupport.runStore,
-    ...(options.liveHost ? { host: options.liveHost } : {}),
-    ...(options.livePort ? { port: options.livePort } : {}),
-    ...(options.liveUiDir ? { uiDir: resolveLiveUiDir(options.liveUiDir) } : {})
+    host: hostConfig.live.host,
+    port: hostConfig.live.port,
+    uiDir: options.liveUiDir
+      ? resolveLiveUiDir(options.liveUiDir)
+      : resolveDefaultTraceUiDir(import.meta.url)
   });
 }
 
@@ -302,20 +252,14 @@ function printHelp(): void {
 
 Options:
   --home <path>        GestaltHome path. Defaults to .gestalt or GESTALT_HOME.
-  --connector <name>   mock, onebot-forward-ws, or onebot-reverse-ws.
   --message <text>     Mock message text.
   --group <id>         Mock group id.
   --sender <id>        Mock sender id.
   --no-mention         Mark the mock event as not directly mentioning the bot.
-  --live               Start the local runtime live API/SSE server.
-  --live-host <host>   Live server host. Defaults to 127.0.0.1.
-  --live-port <port>   Live server port. Defaults to 5175.
-  --live-ui-dir <dir>  Serve built trace UI assets from this directory.
-  --onebot-ws-url <url>       OneBot forward WebSocket URL.
-  --onebot-host <host>        Reverse WebSocket host. Defaults to 0.0.0.0.
-  --onebot-port <port>        Reverse WebSocket port.
-  --onebot-path <path>        Reverse WebSocket path. Defaults to /onebot/v11/ws.
-  --onebot-access-token <t>   OneBot access token.
+  --live-ui-dir <dir>  Override the Live UI assets included in dist.
+
+Connector, OneBot transport, and live server settings are read from
+GestaltHome/config.toml.
 `);
 }
 

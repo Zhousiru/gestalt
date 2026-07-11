@@ -4,7 +4,7 @@ import { defineConfig, loadEnv } from "vite";
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
   const liveTarget =
-    env.VITE_GESTALT_LIVE_URL?.trim() || "http://127.0.0.1:5175";
+    env.VITE_GESTALT_LIVE_URL?.trim() || "http://127.0.0.1:3000";
 
   return {
     plugins: [tailwindcss()],

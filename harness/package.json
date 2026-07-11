@@ -20,6 +20,8 @@
     "verify:dream-cache": "tsx src/dreamingPrefixCache.verify.ts",
     "verify:eval-config": "tsx src/evalModelConfig.verify.ts",
     "verify:prompts": "tsx src/promptCatalog.verify.ts",
+    "verify:app-config": "tsx src/appHostConfig.verify.ts",
+    "verify:build": "tsx src/liveUiBuild.verify.ts",
     "eval": "tsx src/eval.ts && tsx src/onebotProtocol.eval.ts && tsx src/toolContract.eval.ts",
     "eval:group": "tsx src/eval.ts harness/fixtures/scenarios/group-chat-loop-steer.json",
     "eval:context": "tsx src/eval.ts harness/fixtures/scenarios/group-context-history.json",

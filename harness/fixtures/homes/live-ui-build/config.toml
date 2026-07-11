@@ -1,0 +1,6 @@
+connector = "mock"
+allowedgroups = []
+dreaming_enabled = false
+live_enabled = false
+live_host = "127.0.0.1"
+live_port = 3000
