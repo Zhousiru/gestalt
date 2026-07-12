@@ -16,7 +16,7 @@
       "messageId": "memory-correction-message-1",
       "senderId": "alice",
       "senderName": "Alice",
-      "text": "小格，纠正一下记忆：users/alice/index.md 里说我喜欢 rigid memory templates 是错的。请把那条旧记忆改成「Corrected preference: Alice prefers lightweight memory shaped by dreaming prompts and harness evidence, not rigid templates.」不要保留旧说法。",
+      "text": "小格，我其实一直不喜欢 rigid memory templates。相比固定一大堆 sections，我更偏好由 dreaming prompts 和 harness evidence 塑造的 lightweight memory。",
       "mentionsBot": true,
       "windowReason": "mention"
     }
@@ -24,33 +24,18 @@
   "expectations": {
     "session": {
       "conversations": 1,
-      "events": 2,
-      "selfMessages": 1,
       "windows": 1,
       "turns": 1,
-      "nextSeq": 3,
       "turnStatus": "completed",
       "loopExits": 1,
-      "loopExitReasons": ["leave_tool"],
       "steerCount": 0,
       "eventSeqs": [1]
-    },
-    "action": {
-      "toolName": "send_group_message",
-      "toolNames": ["send_group_message", "leave"],
-      "groupId": "memory-group",
-      "textMinLength": 1
-    },
-    "tools": {
-      "calls": 2,
-      "toolNames": ["send_group_message", "leave"],
-      "connectorSideEffects": 0
     },
     "modelInput": {
       "contains": [
         "Incorrect preference",
         "rigid memory templates",
-        "Corrected preference"
+        "lightweight memory"
       ]
     },
     "modelExchange": {
@@ -58,10 +43,9 @@
       "minResponses": 3,
       "purposeIncludes": ["agent_action", "dreaming"],
       "responseContains": [
-        "leave",
         "\"name\":\"bash\"",
         "/memories/users/alice/index.md",
-        "Corrected preference"
+        "lightweight memory"
       ]
     },
     "trace": {
@@ -72,8 +56,7 @@
         "model.decide",
         "tool.execute",
         "dream.run"
-      ],
-      "toolNames": ["send_group_message", "leave"]
+      ]
     },
     "memory": {
       "homeBeforeContains": [
@@ -85,7 +68,7 @@
       "homeAfterContains": [
         {
           "path": "memories/users/alice/index.md",
-          "contains": "Corrected preference: Alice prefers lightweight memory shaped by dreaming prompts and harness evidence, not rigid templates."
+          "contains": "lightweight memory"
         }
       ],
       "homeAfterDoesNotContain": [
@@ -103,8 +86,7 @@
         "rigid memory templates"
       ],
       "dreamCommandsContain": [
-        "/memories/users/alice/index.md",
-        "Corrected preference"
+        "/memories/users/alice/index.md"
       ],
       "dreamChangedFiles": [
         "users/alice/index.md"

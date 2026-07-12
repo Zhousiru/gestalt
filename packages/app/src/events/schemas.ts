@@ -25,13 +25,28 @@ export const SenderSchema = z
   })
   .strict();
 
+export const SourceMessageSegmentSchema = z
+  .object({
+    type: z.string().min(1),
+    data: z.record(z.string(), z.unknown()).default({})
+  })
+  .passthrough();
+
+export const MessageSourceContentSchema = z
+  .object({
+    format: z.string().min(1),
+    segments: z.array(SourceMessageSegmentSchema)
+  })
+  .strict();
+
 export const MessageSchema = z
   .object({
     id: z.string().min(1),
     text: z.string(),
     rawText: z.string().optional(),
     mentionsBot: z.boolean().default(false),
-    replyToMessageId: z.string().min(1).optional()
+    replyToMessageId: z.string().min(1).optional(),
+    sourceContent: MessageSourceContentSchema.optional()
   })
   .strict();
 

@@ -130,6 +130,24 @@ export function createMockToolKit(
         } satisfies ToolHandlerResult;
       },
 
+      async search_sticker(proposal) {
+        recordCall(proposal);
+        return {
+          status: "executed",
+          result: {
+            ok: true,
+            data: {
+              stickers: [
+                {
+                  sticker_id: "stk_mock",
+                  desc: "mock sticker"
+                }
+              ]
+            }
+          }
+        } satisfies ToolHandlerResult;
+      },
+
       async send_sticker(proposal) {
         recordCall(proposal);
         return {

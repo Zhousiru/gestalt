@@ -6,3 +6,6 @@ allowBuilds:
   '@mongodb-js/zstd': false
   esbuild: true
   node-liblzma: false
+  onnxruntime-node: false
+  protobufjs: false
+  sharp: true

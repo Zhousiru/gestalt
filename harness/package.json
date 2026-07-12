@@ -21,6 +21,11 @@
     "verify:eval-config": "tsx src/evalModelConfig.verify.ts",
     "verify:prompts": "tsx src/promptCatalog.verify.ts",
     "verify:app-config": "tsx src/appHostConfig.verify.ts",
+    "verify:model-config": "tsx src/modelConfig.verify.ts",
+    "verify:stickers": "tsx src/stickers.verify.ts",
+    "verify:sticker-media": "tsx src/stickerMedia.verify.ts",
+    "verify:stickers-ui": "tsx src/liveStickersUi.verify.ts",
+    "preview:stickers-ui": "tsx src/liveStickersUi.verify.ts --hold",
     "verify:build": "tsx src/liveUiBuild.verify.ts",
     "eval": "tsx src/eval.ts && tsx src/onebotProtocol.eval.ts && tsx src/toolContract.eval.ts",
     "eval:group": "tsx src/eval.ts harness/fixtures/scenarios/group-chat-loop-steer.json",
@@ -30,12 +35,14 @@
     "eval:agent": "tsx src/eval.ts harness/fixtures/scenarios/multi-step-agent-tools.json",
     "eval:onebot": "tsx src/onebotProtocol.eval.ts",
     "eval:tools": "tsx src/toolContract.eval.ts",
+    "eval:stickers": "tsx src/stickersSocial.eval.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@gestalt/app": "workspace:*",
     "ai": "^7.0.16",
     "dotenv": "^17.4.2",
+    "sharp": "^0.35.3",
     "ws": "^8.21.0",
     "zod": "^4.4.3"
   },

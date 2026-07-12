@@ -116,13 +116,37 @@ Message text may contain normal text or CQ-like markup. The OneBot connector sen
 
 If the model wants to reply to a specific message, it should put `[CQ:reply,id=...]` at the start of `text`.
 
-Sticker and platform emoji output uses the same CQ string boundary. For QQ marketplace stickers through NapCat-style extensions, `send_sticker` preserves exact `[CQ:mface,...]` markup copied from the transcript or an explicit user request. The model should not invent `emoji_package_id`, `emoji_id`, or `key`.
+The connector also preserves parsed OneBot segments in canonical
+`message.sourceContent`. The background sticker extractor uses these structured
+segments rather than reparsing CQ text. It accepts NapCat custom image stickers
+with `image.sub_type=1`, direct `mface`, and marketplace stickers reported as
+images with mface fields. See [STICKER_SYSTEM.md](STICKER_SYSTEM.md).
+
+The model-facing sticker boundary is `search_sticker` followed by
+`send_sticker({ sticker_id })`. Incoming direct `mface`, `image.sub_type=1`,
+and marketplace-compatible `image` segments remain complete CQ markup in the
+agent-facing transcript. This lets the model use the exact image `file` value
+with `read_image`. For collected-sticker output, the model should still use the
+stable-id tools rather than handcrafting a transport payload. The runtime sends native
+mface when available and otherwise sends the cached asset as
+`[CQ:image,...,sub_type=1]`.
 
 `react_to_message` currently maps to NapCat's `set_msg_emoji_like` extension.
 
-`fetch_message` maps to OneBot `get_msg`. It is a read-only helper for cases where a reply's quoted original cannot be expanded beneath that message in the compiled chat log.
+`fetch_message` maps to OneBot `get_msg`. It is a read-only helper for cases
+where a reply's quoted original cannot be expanded beneath that message in the
+compiled chat log. The connector retains structured fetched segments for the
+media resolver, while the tool implementation returns normalized message
+metadata and complete CQ text to the model. `read_image` likewise retains the
+connector-provided image file and metadata in its tool result.
 
-`read_image` maps to OneBot `get_image`. It fetches platform-cached image data or metadata by image `file` id. It does not by itself perform full visual reasoning; it gives the model an explicit read-tool result before the model describes or reacts to image content.
+`read_image` maps to OneBot `get_image`. It fetches platform-cached image data by image `file` id. Connector-owned base64, HTTPS, or local-cache media is resolved by the runtime and appended immediately after the tool result as a multimodal user message, so the main model reads the actual pixels on its next step. OpenAI-compatible tool messages themselves are text-only, which is why the adjacent image message is required. Metadata alone is reported as unavailable rather than being mistaken for visual understanding.
+
+For background sticker ingestion, successful `get_msg`/`get_image` actions also
+produce connector-owned media references outside the model-visible segment
+contract. This explicit action boundary is what authorizes HTTPS/base64 or a
+trusted local cache path; raw incoming `path` and URL fields are never opened
+directly by the sticker worker.
 
 `poke_user` maps to NapCat's `send_poke` extension. In group conversations the connector includes `group_id`; otherwise it sends a private/friend poke.
 
@@ -130,7 +154,7 @@ Sticker and platform emoji output uses the same CQ string boundary. For QQ marke
 
 Current reading boundary:
 
-- Image input is not yet automatically sent to the model as pixels. The model sees OneBot metadata such as `file`, `url`, and `summary`, and may call `read_image` to fetch platform-cached image data.
+- Image and sticker CQ metadata remains visible. The main model calls `read_image` with the exact `file` value, after which its next step receives the image itself as multimodal input.
 - Platform emoji input is visible as tags such as `[CQ:face,id=14,name=微笑]`.
 - Mentions are visible as `[CQ:at,qq=...,name=...]`, and `mentionsBot` remains the authoritative bot-addressed signal.
 - Replies are visible as `[CQ:reply,id=...]` and `replyToMessageId`; the quoted original content is only visible if it is already in the session transcript.
@@ -182,6 +206,12 @@ live_port = 3000
 enabled, the Gestalt app owns the single public port: it serves `/api/live/*`,
 SSE, and the bundled Live UI from the same HTTP server and origin.
 
+The first-version Live server has no authentication and refuses non-loopback
+bindings. Keep `live_host` on `127.0.0.1`, `::1`, or `localhost`; binding it to
+`0.0.0.0` or a LAN address fails closed at startup. Requests whose `Host` or
+optional `Origin` is not loopback are also rejected to close the DNS-rebinding
+path against this unauthenticated debug surface.
+
 Connector, OneBot transport, and live host/port settings are no longer accepted
 as CLI arguments. `--home` remains the bootstrap override, and
 `--live-ui-dir` remains an optional static-asset override.
@@ -195,8 +225,10 @@ It verifies:
 - Raw OneBot group message event arrives over WebSocket.
 - Reply, mention, text, image, and platform emoji information survives as CQ-like message text.
 - The model request transcript includes readable, copyable CQ markup.
+- Complete sticker CQ payloads remain present in canonical artifacts and model request transcripts so image reads are possible.
 - The runtime stays on the normal trigger and agent-loop path.
 - Optional read-only helper tool execution can call `get_msg` or `get_image` before a visible send action.
+- A `fetch_message` result preserves complete mface and custom-sticker CQ text, and `read_image` preserves metadata while attaching connector-returned image bytes to the next main-model step.
 - Tool execution sends a `send_group_msg` OneBot API call over WebSocket with CQ string message text.
 - The API response is matched by `echo`.
 
@@ -228,11 +260,11 @@ Important artifacts:
 
 The first implementation intentionally does not yet include:
 
-- Full vision-model interpretation of image pixels beyond the `read_image` connector fetch result.
+- Automatic vision interpretation without an explicit `read_image` call. Sticker media has its own background analysis pipeline.
 - Audio or video download/cache handling.
 - Group administration actions.
 - Friend or group request handling.
 - Group member profile cache.
-- OneBot implementation-specific extensions beyond safe CQ markup preservation, `set_msg_emoji_like`, and NapCat `send_poke`.
+- OneBot implementation-specific extensions beyond documented sticker handling, `set_msg_emoji_like`, and NapCat `send_poke`.
 
 These should be added as explicit tools or connector capabilities when the agent behavior needs them.

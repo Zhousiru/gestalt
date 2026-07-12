@@ -10,9 +10,9 @@ export interface ActionToolPrompt {
 
 export const ACTION_TOOL_PROMPTS = {
   say_nothing: {
-    purpose: "Stay quiet and let the conversation continue without adding anything visible.",
-    whenUseful: ["You were not directly addressed.", "The conversation is ongoing and a response would feel intrusive.", "There is not enough context for a useful social move."],
-    avoidWhen: ["Someone directly asks you a clear question.", "A visible clarification or refusal is more appropriate.", "You are ready to leave this moment; call leave directly instead."],
+    purpose: "Add nothing visible right now while remaining present for follow-up messages and new context in the active conversation.",
+    whenUseful: ["You have finished your visible reply and want to remain available for a response.", "The conversation may continue but there is nothing useful to add yet.", "A response would be intrusive, but you still want to follow what happens next."],
+    avoidWhen: ["Someone directly asks you a clear question that still needs an answer.", "A visible clarification or refusal is more appropriate.", "You explicitly want to disengage from this topic entirely."],
     parameters: { reason: "Brief reason for choosing this action." }
   },
   fetch_message: {
@@ -22,34 +22,40 @@ export const ACTION_TOOL_PROMPTS = {
     parameters: { message_id: "Message id to fetch, copied from reply_to metadata.", reason: "Brief reason for fetching this message." }
   },
   read_image: {
-    purpose: "Fetch platform-cached image data or metadata for an image file id from the transcript before commenting on image contents.",
+    purpose: "Read the actual platform-cached image for an image file id and return a visual description before commenting on its contents.",
     whenUseful: ["A user asks what is in an image or asks the bot to react to the image itself.", "The image file id is visible in CQ markup such as [CQ:image,file=...].", "The image meaning matters and the current text metadata is not enough."],
     avoidWhen: ["The user only asks to resend the image rather than understand it.", "No image file id is available.", "The image content is not needed for the social response."],
     parameters: { file: "Image file id copied from [CQ:image,file=...] in the transcript.", reason: "Brief reason for reading this image." }
   },
   send_group_message: {
-    purpose: "Send a short message into a group conversation. The text may include CQ markup such as [CQ:reply,id=...] or [CQ:face,id=...].",
+    purpose: "Send a short plain-text message into a group conversation. Do not use HTML or Markdown tags or formatting. OneBot CQ markup such as [CQ:reply,id=...] or [CQ:face,id=...] is allowed only as platform control syntax.",
     whenUseful: ["You were directly addressed in a group.", "A brief public reply fits the current group context."],
     avoidWhen: ["The reply would expose private context.", "A private message would be more appropriate.", "The message repeats something you already said."],
-    parameters: { text: "Message text to send. May include CQ markup such as [CQ:reply,id=321] or [CQ:face,id=14].", reason: "Brief reason for choosing this action." }
+    parameters: { text: "Plain text to send, without HTML or Markdown. May include necessary OneBot CQ control markup such as [CQ:reply,id=321] or [CQ:face,id=14].", reason: "Brief reason for choosing this action." }
   },
   send_dm: {
-    purpose: "Send a private message to a specific user when the conversation clearly calls for one-on-one follow-up.",
+    purpose: "Send a plain-text private message to a specific user when the conversation clearly calls for one-on-one follow-up. Do not use HTML or Markdown tags or formatting.",
     whenUseful: ["The user explicitly asks for a private reply.", "A public group reply would expose personal context.", "The next useful step is clearly one-on-one and non-intrusive."],
     avoidWhen: ["The user did not invite private contact.", "The answer belongs in the group conversation.", "A DM would feel surprising or socially pushy."],
-    parameters: { user_id: "Target user id copied from transcript metadata.", text: "Private message text. May include CQ markup if needed.", reason: "Brief reason for choosing this action." }
+    parameters: { user_id: "Target user id copied from transcript metadata.", text: "Plain private-message text without HTML or Markdown. May include necessary OneBot CQ control markup.", reason: "Brief reason for choosing this action." }
   },
   send_image: {
-    purpose: "Send an image into the current conversation using a file id, URL, file URI, or base64:// payload, with an optional short caption.",
+    purpose: "Send an image into the current conversation using a file id, URL, file URI, or base64:// payload, with an optional short plain-text caption. Do not use HTML or Markdown in the caption.",
     whenUseful: ["The user asked the bot to send or repeat an image.", "The image reference is already present in the transcript or explicitly provided.", "A visual reply is more appropriate than text alone."],
     avoidWhen: ["You would need to invent an image URL or file id.", "A text response is enough.", "The image could reveal private or unrelated content."],
-    parameters: { file: "Image file id, URL, file URI, or base64:// payload copied from context or explicitly provided.", caption: "Optional short caption to place before the image.", summary: "Optional image summary for platform metadata.", reply_to_message_id: "Optional message id to quote before the image.", reason: "Brief reason for choosing this action." }
+    parameters: { file: "Image file id, URL, file URI, or base64:// payload copied from context or explicitly provided.", caption: "Optional short plain-text caption without HTML or Markdown.", summary: "Optional image summary for platform metadata.", reply_to_message_id: "Optional message id to quote before the image.", reason: "Brief reason for choosing this action." }
+  },
+  search_sticker: {
+    purpose: "Search your collected sticker library by conversational meaning and return stable sticker ids with descriptions.",
+    whenUseful: ["A sticker could express the reaction more naturally than another text message.", "You know the feeling or social move you want but not a sticker id.", "A lightweight visual response fits the persona and current chat rhythm."],
+    avoidWhen: ["A precise factual answer or serious clarification is required.", "You have just used a sticker and another would feel repetitive.", "No sticker response is socially appropriate."],
+    parameters: { query: "Short natural-language description of the emotion, attitude, or conversational response to find.", limit: "Optional number of candidates from 1 to 20.", reason: "Brief reason for searching the sticker library." }
   },
   send_sticker: {
-    purpose: "Send a platform sticker or QQ expression by copying exact CQ markup such as [CQ:face,...] or [CQ:mface,...] from context.",
-    whenUseful: ["The user asks the bot to repeat a sticker or platform expression.", "A lightweight sticker response fits the group tone.", "The exact sticker CQ markup is available in the transcript."],
-    avoidWhen: ["The sticker id, mface key, or package id is not known.", "A sticker would be ambiguous, insensitive, or too noisy.", "A text reply is required for clarity."],
-    parameters: { sticker_cq: "Exact [CQ:face,...] or [CQ:mface,...] markup copied from the transcript or user request.", reply_to_message_id: "Optional message id to quote before the sticker.", reason: "Brief reason for choosing this action." }
+    purpose: "Send one collected sticker by its stable sticker id.",
+    whenUseful: ["A candidate returned by search_sticker fits the exact reaction.", "A sticker alone is a natural, low-noise response.", "The persona's sticker habits and recent transcript support using one now."],
+    avoidWhen: ["You have not obtained the sticker id from search_sticker or visible context.", "A sticker would be ambiguous, insensitive, repetitive, or too noisy.", "A text reply is required for clarity."],
+    parameters: { sticker_id: "Stable sticker id returned by search_sticker.", reply_to_message_id: "Optional message id to quote before the sticker.", reason: "Brief reason for choosing this sticker." }
   },
   react_to_message: {
     purpose: "Add or remove a lightweight emoji reaction on an existing message.",
@@ -70,9 +76,9 @@ export const ACTION_TOOL_PROMPTS = {
     parameters: { own_message_id: "Message id for a message sent by you, copied from a tool result externalId or a chat message marked 'you'.", reason: "Brief reason for recalling this bot message." }
   },
   leave: {
-    purpose: "Exit the currently active agent loop and wait for a future pre-trigger activation.",
-    whenUseful: ["The current active loop has no more useful work to do.", "You are ready to stop following this moment closely and wait for something new."],
-    avoidWhen: ["A short visible reply is still needed.", "You should stay present because people are still adding relevant context."],
+    purpose: "Deliberately stop following the current topic, exit its active agent loop, and require a future trigger to become active again.",
+    whenUseful: ["You explicitly no longer want to participate in or follow this topic.", "The conversation has clearly moved on and you intentionally want to disengage."],
+    avoidWhen: ["You merely finished one reply or have nothing more to say right now.", "A follow-up message or new context is still plausible.", "You want to stay present silently; use say_nothing instead."],
     parameters: { reason: "Brief reason for choosing this action." }
   }
 } satisfies Record<ToolName, ActionToolPrompt>;

@@ -179,6 +179,13 @@ function assertAction(result: ReplayRunResult): void {
       expected.toolNames
     );
   }
+  const actionToolNames = actions.map((candidate) => candidate.toolName);
+  for (const toolName of expected.toolNamesInclude ?? []) {
+    assert.ok(
+      actionToolNames.some((candidate) => candidate === toolName),
+      `missing proposed action ${toolName}`
+    );
+  }
 
   const selectedAction =
     expected.toolName !== undefined
@@ -218,6 +225,13 @@ function assertTools(result: ReplayRunResult): void {
     assert.deepEqual(
       result.mockTools.calls.map((call) => call.toolName),
       expected.toolNames
+    );
+  }
+  const executedToolNames = result.mockTools.calls.map((call) => call.toolName);
+  for (const toolName of expected.toolNamesInclude ?? []) {
+    assert.ok(
+      executedToolNames.some((candidate) => candidate === toolName),
+      `missing executed tool ${toolName}`
     );
   }
   if (expected.connectorSideEffects !== undefined) {
@@ -335,6 +349,9 @@ function assertModelExchange(result: ReplayRunResult): void {
     .join("\n");
   for (const pattern of expected.responseContains ?? []) {
     assert.match(responseText, new RegExp(escapeRegExp(pattern)));
+  }
+  for (const pattern of expected.responseDoesNotContain ?? []) {
+    assert.doesNotMatch(responseText, new RegExp(escapeRegExp(pattern)));
   }
 }
 
@@ -543,8 +560,7 @@ function assertTrace(result: ReplayRunResult): void {
   for (const spanName of expected.spans ?? []) {
     assert.ok(spanNames.includes(spanName), `missing trace span ${spanName}`);
   }
-  if (expected.toolNames !== undefined) {
-    const tracedToolNames = result.traces
+  const tracedToolNames = result.traces
       .flatMap((trace) => trace.spans)
       .filter((span) => span.name === "tool.execute")
       .flatMap((span) => {
@@ -553,7 +569,11 @@ function assertTrace(result: ReplayRunResult): void {
           ? toolCalls.map(readToolCallName).filter((name): name is string => Boolean(name))
           : [];
       });
+  if (expected.toolNames !== undefined) {
     assert.deepEqual(tracedToolNames, expected.toolNames);
+  }
+  for (const toolName of expected.toolNamesInclude ?? []) {
+    assert.ok(tracedToolNames.includes(toolName), `missing traced tool ${toolName}`);
   }
   const tracedModelResponses = result.traces
     .flatMap((trace) => trace.observations)
@@ -562,6 +582,9 @@ function assertTrace(result: ReplayRunResult): void {
     .join("\n");
   for (const pattern of expected.modelResponseContains ?? []) {
     assert.match(tracedModelResponses, new RegExp(escapeRegExp(pattern)));
+  }
+  for (const pattern of expected.modelResponseDoesNotContain ?? []) {
+    assert.doesNotMatch(tracedModelResponses, new RegExp(escapeRegExp(pattern)));
   }
 }
 

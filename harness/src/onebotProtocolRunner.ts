@@ -149,7 +149,7 @@ function createOneBotGroupMessageEvent(): Record<string, unknown> {
     group_id: 123456,
     user_id: 424242,
     raw_message:
-      "[CQ:reply,id=111][CQ:at,qq=10001] 小格看看这张图 [CQ:image,file=cat.png,url=https://example.test/cat.png] [CQ:face,id=14]",
+      "[CQ:reply,id=111][CQ:at,qq=10001] 小格看看这张图 [CQ:image,file=cat.png,url=https://example.test/cat.png] [CQ:face,id=14] [CQ:mface,emoji_id=emoji-direct-secret,emoji_package_id=package-direct-secret,key=REAL_DIRECT_MFACE_KEY,url=https://stickers.example.test/direct.gif?signature=SIGNED_DIRECT_TOKEN,file=marketface] [CQ:image,file=custom-sticker-secret.gif,path=C:\\private\\custom-sticker-secret.gif,url=https://stickers.example.test/custom.gif?signature=SIGNED_CUSTOM_TOKEN,sub_type=1] [CQ:image,file=marketface,url=https://stickers.example.test/compat.gif?signature=SIGNED_COMPAT_TOKEN,emoji_id=emoji-compat-secret,emoji_package_id=package-compat-secret,key=REAL_COMPAT_MFACE_KEY]",
     message: [
       {
         type: "reply",
@@ -183,6 +183,35 @@ function createOneBotGroupMessageEvent(): Record<string, unknown> {
         data: {
           id: "14",
           name: "微笑"
+        }
+      },
+      {
+        type: "mface",
+        data: {
+          emoji_id: "emoji-direct-secret",
+          emoji_package_id: "package-direct-secret",
+          key: "REAL_DIRECT_MFACE_KEY",
+          url: "https://stickers.example.test/direct.gif?signature=SIGNED_DIRECT_TOKEN",
+          file: "marketface"
+        }
+      },
+      {
+        type: "image",
+        data: {
+          file: "custom-sticker-secret.gif",
+          path: "C:\\private\\custom-sticker-secret.gif",
+          url: "https://stickers.example.test/custom.gif?signature=SIGNED_CUSTOM_TOKEN",
+          sub_type: "1"
+        }
+      },
+      {
+        type: "image",
+        data: {
+          file: "marketface",
+          url: "https://stickers.example.test/compat.gif?signature=SIGNED_COMPAT_TOKEN",
+          emoji_id: "emoji-compat-secret",
+          emoji_package_id: "package-compat-secret",
+          key: "REAL_COMPAT_MFACE_KEY"
         }
       }
     ],
@@ -313,7 +342,8 @@ function createOneBotActionResponseData(call: OneBotApiCall): unknown {
   if (call.action === "get_image") {
     return {
       file: "/mock/onebot/image/cat.png",
-      url: "https://example.test/cat.png"
+      base64:
+        "base64://iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
     };
   }
 

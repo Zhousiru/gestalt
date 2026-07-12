@@ -87,12 +87,14 @@ export const ScenarioActionExpectationsSchema = z
         "send_group_message",
         "send_dm",
         "send_image",
+        "search_sticker",
         "send_sticker",
         "react_to_message",
         "leave"
       ])
       .optional(),
     toolNames: z.array(z.string().min(1)).optional(),
+    toolNamesInclude: z.array(z.string().min(1)).optional(),
     groupId: z.string().min(1).optional(),
     textMaxLength: z.number().int().positive().optional(),
     textMinLength: z.number().int().nonnegative().optional(),
@@ -104,6 +106,7 @@ export const ScenarioToolExpectationsSchema = z
   .object({
     calls: z.number().int().nonnegative().optional(),
     toolNames: z.array(z.string().min(1)).optional(),
+    toolNamesInclude: z.array(z.string().min(1)).optional(),
     connectorSideEffects: z.number().int().nonnegative().optional()
   })
   .strict();
@@ -126,7 +129,8 @@ export const ScenarioModelExchangeExpectationsSchema = z
     maxToolCallsPerResponse: z.number().int().nonnegative().optional(),
     purposes: z.array(z.enum(["agent_action", "dreaming"])).optional(),
     purposeIncludes: z.array(z.enum(["agent_action", "dreaming"])).optional(),
-    responseContains: z.array(z.string().min(1)).optional()
+    responseContains: z.array(z.string().min(1)).optional(),
+    responseDoesNotContain: z.array(z.string().min(1)).optional()
   })
   .strict();
 
@@ -152,7 +156,9 @@ export const ScenarioTraceExpectationsSchema = z
     traces: z.number().int().nonnegative().optional(),
     spans: z.array(z.string().min(1)).optional(),
     toolNames: z.array(z.string().min(1)).optional(),
-    modelResponseContains: z.array(z.string().min(1)).optional()
+    toolNamesInclude: z.array(z.string().min(1)).optional(),
+    modelResponseContains: z.array(z.string().min(1)).optional(),
+    modelResponseDoesNotContain: z.array(z.string().min(1)).optional()
   })
   .strict();
 

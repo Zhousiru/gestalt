@@ -35,6 +35,23 @@ export interface ReadImageInput {
   file: string;
 }
 
+/**
+ * A media reference minted by an explicit connector action. Incoming message
+ * fields are deliberately not assignable to this trust boundary.
+ */
+export interface ConnectorMediaReference {
+  source: "connector-action";
+  kind: "base64" | "https-url" | "local-file";
+  value: string;
+}
+
+export interface ConnectorFetchedSegment {
+  segmentIndex: number;
+  type: string;
+  data: Record<string, unknown>;
+  media?: ConnectorMediaReference;
+}
+
 export interface ReactToMessageInput {
   messageId: string;
   emojiId: string;
@@ -55,7 +72,15 @@ export interface ConnectorCallResult {
   externalId?: string;
   error?: string;
   data?: unknown;
+  /** Media minted by an explicit connector read action. */
+  media?: ConnectorMediaReference;
 }
+
+export interface FetchMessageResult extends ConnectorCallResult {
+  segments?: ConnectorFetchedSegment[];
+}
+
+export interface ReadImageResult extends ConnectorCallResult {}
 
 export interface Connector {
   name: string;
@@ -65,8 +90,8 @@ export interface Connector {
   ): Promise<ConnectorCallResult>;
   sendImage(input: SendImageInput): Promise<ConnectorCallResult>;
   sendSticker(input: SendStickerInput): Promise<ConnectorCallResult>;
-  fetchMessage(input: FetchMessageInput): Promise<ConnectorCallResult>;
-  readImage(input: ReadImageInput): Promise<ConnectorCallResult>;
+  fetchMessage(input: FetchMessageInput): Promise<FetchMessageResult>;
+  readImage(input: ReadImageInput): Promise<ReadImageResult>;
   reactToMessage(input: ReactToMessageInput): Promise<ConnectorCallResult>;
   pokeUser(input: PokeUserInput): Promise<ConnectorCallResult>;
   recallOwnMessage(

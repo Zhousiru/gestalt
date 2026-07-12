@@ -58,6 +58,14 @@ import {
 } from "../tools/executeActions";
 import { createDefaultToolRegistry } from "../tools/registry";
 import type { ToolDefinition } from "../tools/schemas";
+import {
+  createConfiguredStickerService,
+  createStickerToolImplementations,
+  isStickerSubsystemConfigured,
+  readOperatorUserIds,
+  readStickerScrapingEnabled
+} from "../stickers/integration";
+import type { StickerService } from "../stickers/service";
 import { type AgentTurnResult } from "./agentLoop";
 import {
   canInjectIntoActiveLoop,
@@ -74,6 +82,7 @@ import {
 
 export interface Runtime {
   home: GestaltHome;
+  stickers?: StickerService;
   ingestEvent(event: unknown): SessionEventRecord;
   handleEvent(event: unknown): Promise<AgentTurnResult | undefined>;
   handleMessageWindow(
@@ -104,6 +113,7 @@ export interface CreateRuntimeOptions {
   triggers?: GroupTrigger[];
   exitTriggers?: AgentLoopExitTrigger[];
   liveEvents?: LiveEventSink;
+  stickerService?: StickerService;
   now?: () => Date;
 }
 
@@ -141,6 +151,26 @@ export async function createRuntime(
     throw new Error("The fixed agent tool protocol requires the leave tool.");
   }
   const connector = options.connector ?? createMockConnector();
+  readStickerScrapingEnabled(config);
+  const stickerService =
+    options.stickerService ??
+    (isStickerSubsystemConfigured(config)
+      ? await createConfiguredStickerService({
+          home,
+          config,
+          connector,
+          ...(options.liveEvents ? { liveEvents: options.liveEvents } : {}),
+          now
+        })
+      : undefined);
+  const operatorUserIds = readOperatorUserIds(config);
+  const stickerToolImplementations = stickerService
+    ? createStickerToolImplementations(stickerService)
+    : {};
+  const toolImplementations = {
+    ...stickerToolImplementations,
+    ...(options.toolImplementations ?? {})
+  };
   const model = options.model ?? createMockModel({ now });
   const traceRecorder = createTraceRecorder(home);
   const sessionRecorder = createSessionRecorder(home);
@@ -223,8 +253,8 @@ export async function createRuntime(
     sessionStore,
     maxSteersPerTurn: options.maxSteersPerTurn ?? 2,
     ...(options.liveEvents ? { liveEvents: options.liveEvents } : {}),
-    ...(options.toolImplementations
-      ? { toolImplementations: options.toolImplementations }
+    ...(Object.keys(toolImplementations).length > 0
+      ? { toolImplementations }
       : {})
   };
 
@@ -533,6 +563,7 @@ export async function createRuntime(
 
   return {
     home,
+    ...(stickerService ? { stickers: stickerService } : {}),
     ingestEvent,
 
     async handleEvent(event) {
@@ -543,6 +574,43 @@ export async function createRuntime(
 
       const record = appendParsedEvent(parsedEvent);
       const conversationKey = getConversationKey(record.event.conversation);
+      const scrapeCommand = parseScrapeStickerCommand(record.event);
+      if (scrapeCommand) {
+        const authorized = operatorUserIds.has(record.event.sender.id);
+        let reply: string;
+        if (!authorized) {
+          reply = "无权执行该命令";
+        } else if (!stickerService) {
+          reply = "表情系统未配置 embedding_model_*";
+        } else if (scrapeCommand.mode === "invalid") {
+          reply = "用法：/scrape-sticker [on|off]";
+        } else {
+          const context = {
+            actorUserId: record.event.sender.id,
+            sourceEventId: record.event.id,
+            at: dependencies.now().toISOString()
+          };
+          const enabled =
+            scrapeCommand.mode === "toggle"
+              ? await stickerService.toggleScraping(context)
+              : await stickerService.setScrapingOverride(
+                  scrapeCommand.mode === "on",
+                  context
+                );
+          reply = enabled ? "表情采集已开启" : "表情采集已关闭";
+        }
+        const sendResult = await sendRuntimeControlReply(
+          dependencies.connector,
+          record.event,
+          reply
+        );
+        if (sendResult.ok) {
+          appendRuntimeControlReply(record, reply, sendResult);
+          await sessionRecorder.flush();
+        }
+        return undefined;
+      }
+
       if (isSlashLeaveCommand(record.event)) {
         const activeTurn = activeTurns.get(conversationKey);
         if (!activeTurn) {
@@ -565,6 +633,22 @@ export async function createRuntime(
       if (inspectCommand) {
         await handleInspectRecord(record, inspectCommand);
         return undefined;
+      }
+
+      if (stickerService && record.event.type === "MessageReceived") {
+        try {
+          await stickerService.observe(record.event);
+        } catch (error) {
+          try {
+            options.liveEvents?.publish("sticker.job.updated", {
+              sourceEventId: record.event.id,
+              error: error instanceof Error ? error.message : String(error)
+            });
+          } catch {
+            // Sticker Live events are diagnostics and must not interrupt
+            // ordinary message ingestion when their sink is unavailable.
+          }
+        }
       }
 
       const activeTurn = activeTurns.get(conversationKey);
@@ -597,8 +681,50 @@ export async function createRuntime(
         );
       }
       await sessionRecorder.flush();
+      await stickerService?.whenIdle();
     }
   };
+
+  function appendRuntimeControlReply(
+    record: SessionEventRecord,
+    text: string,
+    sendResult: ConnectorCallResult
+  ): void {
+    const selfId =
+      readOptionalString(dependencies.config.flatValues, "bot_user_id") ??
+      record.event.source.accountId ??
+      "gestalt-bot";
+    const selfName =
+      readOptionalString(dependencies.config.flatValues, "bot_display_name") ??
+      "Gestalt";
+    const occurredAt = dependencies.now().toISOString();
+    dependencies.sessionStore.appendEvent(
+      {
+        id: `self-control-${record.event.id}`,
+        type: "MessageReceived",
+        occurredAt,
+        source: {
+          platform: record.event.source.platform,
+          connector: "runtime-control",
+          accountId: selfId,
+          rawEventId: sendResult.externalId ?? `control-${record.event.id}`
+        },
+        conversation: record.event.conversation,
+        sender: { id: selfId, displayName: selfName, isSelf: true },
+        message: {
+          id: sendResult.externalId ?? `self-control-message-${record.event.id}`,
+          text,
+          rawText: text,
+          mentionsBot: false
+        },
+        raw: {
+          generatedBy: "runtime-control",
+          requestEventId: record.event.id
+        }
+      },
+      { receivedAt: occurredAt }
+    );
+  }
 }
 
 function isAllowedGroupEvent(
@@ -621,6 +747,40 @@ function isSlashLeaveCommand(event: CanonicalEvent): boolean {
     !isSelfMessageEvent(event) &&
     event.message.text.trim() === "/leave"
   );
+}
+
+type ScrapeStickerCommand = {
+  mode: "on" | "off" | "toggle" | "invalid";
+};
+
+function parseScrapeStickerCommand(
+  event: CanonicalEvent
+): ScrapeStickerCommand | undefined {
+  if (event.type !== "MessageReceived" || isSelfMessageEvent(event)) {
+    return undefined;
+  }
+  const parts = event.message.text.trim().split(/\s+/);
+  if (parts[0] !== "/scrape-sticker") {
+    return undefined;
+  }
+  if (parts.length === 1) {
+    return { mode: "toggle" };
+  }
+  if (parts.length === 2 && (parts[1] === "on" || parts[1] === "off")) {
+    return { mode: parts[1] };
+  }
+  return { mode: "invalid" };
+}
+
+async function sendRuntimeControlReply(
+  connector: Connector,
+  event: CanonicalEvent,
+  text: string
+): Promise<ConnectorCallResult> {
+  if (event.conversation.kind === "group") {
+    return connector.sendGroupMessage({ groupId: event.conversation.id, text });
+  }
+  return connector.sendPrivateMessage({ userId: event.conversation.id, text });
 }
 
 function readAllowedGroupIds(config: GestaltConfig): Set<string> | undefined {

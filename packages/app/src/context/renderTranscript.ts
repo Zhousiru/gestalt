@@ -1,7 +1,4 @@
-import type {
-  CanonicalEvent,
-  MessageReceivedEvent
-} from "../events/schemas";
+import type { CanonicalEvent, MessageReceivedEvent } from "../events/schemas";
 import { isSelfMessageEvent } from "../events/helpers";
 import type { MessageWindow, SessionEventRecord } from "../session/schemas";
 import type { ContextEventRecord } from "./selectContextEvents";
@@ -123,7 +120,7 @@ function renderMessage(
     lines.push(renderReply(event.message.replyToMessageId, target, timezone));
   }
 
-  lines.push(rawMessageText(event));
+  lines.push(messageTranscriptText(event));
   return lines.join("\n");
 }
 
@@ -140,7 +137,7 @@ function renderReply(
   const senderName = event.sender.displayName ?? event.sender.id;
   const timestamp = formatChatTimestamp(event.occurredAt, timezone);
   const selfLabel = isSelfMessageEvent(event) ? ", you" : "";
-  const quote = rawMessageText(event)
+  const quote = messageTranscriptText(event)
     .split(/\r?\n/)
     .map((line) => `> ${line}`)
     .join("\n");
@@ -150,7 +147,7 @@ function renderReply(
   ].join("\n");
 }
 
-function rawMessageText(event: MessageReceivedEvent): string {
+function messageTranscriptText(event: MessageReceivedEvent): string {
   return event.message.rawText ?? event.message.text;
 }
 

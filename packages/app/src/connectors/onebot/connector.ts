@@ -1,13 +1,19 @@
+import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import type { MessageReceivedEvent } from "../../events/schemas";
 import type {
   Connector,
   ConnectorCallResult,
+  ConnectorFetchedSegment,
+  ConnectorMediaReference,
   ConversationTarget,
   FetchMessageInput,
+  FetchMessageResult,
   PokeUserInput,
   ReactToMessageInput,
   ReadImageInput,
+  ReadImageResult,
   RecallOwnMessageInput,
   SendGroupMessageInput,
   SendImageInput,
@@ -106,31 +112,38 @@ export function createOneBotConnector(
       return normalizeSendResult(result);
     },
 
-    async fetchMessage(input: FetchMessageInput): Promise<ConnectorCallResult> {
+    async fetchMessage(input: FetchMessageInput): Promise<FetchMessageResult> {
       const result = await options.caller.callAction("get_msg", {
         message_id: Number(input.messageId)
       });
       if (!result.ok) {
         return result;
       }
+      const segments = normalizeFetchedMediaSegments(result.data);
       return {
         ok: true,
         externalId: input.messageId,
-        data: normalizeFetchedMessageData(result.data, input.messageId)
+        data: normalizeFetchedMessageData(
+          result.data,
+          input.messageId
+        ),
+        ...(segments ? { segments } : {})
       };
     },
 
-    async readImage(input: ReadImageInput): Promise<ConnectorCallResult> {
+    async readImage(input: ReadImageInput): Promise<ReadImageResult> {
       const result = await options.caller.callAction("get_image", {
         file: input.file
       });
       if (!result.ok) {
         return result;
       }
+      const media = normalizeReadImageMedia(result.data, input.file);
       return {
         ok: true,
         externalId: input.file,
-        data: normalizeImageData(result.data, input.file)
+        data: normalizeImageData(result.data, input.file),
+        ...(media ? { media } : {})
       };
     },
 
@@ -225,6 +238,10 @@ export function normalizeOneBotMessageEvent(
       text,
       rawText: event.raw_message,
       mentionsBot: hasOneBotMentionTarget(onebotSegments, accountId),
+      sourceContent: {
+        format: "onebot-v11",
+        segments: onebotSegments
+      },
       ...(replyToMessageId ? { replyToMessageId } : {})
     },
     raw: event
@@ -371,12 +388,13 @@ function normalizeFetchedMessageData(
   const raw = readRecord(data);
   const rawMessage = raw ? readOptionalString(raw.raw_message) : undefined;
   const message = raw ? raw.message : undefined;
-  const text =
+  const renderedText =
     message !== undefined
       ? renderOneBotMessageMarkup(
           normalizeOneBotMessageSegments(OneBotMessageSchema.parse(message))
         )
       : rawMessage;
+  const text = renderedText;
   const sender = readRecord(raw?.sender);
   const senderId = readOptionalString(sender?.user_id);
   const senderName =
@@ -399,8 +417,9 @@ function normalizeFetchedMessageData(
         }
       : {}),
     ...(text ? { text } : {}),
-    ...(rawMessage && rawMessage !== text ? { rawText: rawMessage } : {}),
-    raw: data
+    ...(rawMessage && rawMessage !== text
+      ? { rawText: rawMessage }
+      : {})
   };
 }
 
@@ -415,6 +434,102 @@ function normalizeImageData(
     ...(readOptionalString(raw?.url) ? { url: readOptionalString(raw?.url) } : {}),
     raw: data
   };
+}
+
+function normalizeFetchedMediaSegments(
+  data: unknown
+): ConnectorFetchedSegment[] | undefined {
+  const raw = readRecord(data);
+  if (raw?.message === undefined) {
+    return undefined;
+  }
+  const parsed = OneBotMessageSchema.safeParse(raw.message);
+  if (!parsed.success) {
+    return undefined;
+  }
+  return normalizeOneBotMessageSegments(parsed.data).map((segment, segmentIndex) => {
+    const media = isImageLikeSegment(segment.type)
+      ? normalizeActionMediaFromData(segment.data, { allowLocalFile: false })
+      : undefined;
+    return {
+      segmentIndex,
+      type: segment.type,
+      data: segment.data,
+      ...(media ? { media } : {})
+    };
+  });
+}
+
+function normalizeReadImageMedia(
+  data: unknown,
+  fallbackFile: string
+): ConnectorMediaReference | undefined {
+  const raw = readRecord(data);
+  if (!raw) {
+    return undefined;
+  }
+  return normalizeActionMediaFromData(raw, {
+    allowLocalFile: true,
+    fallbackOpaqueToken: fallbackFile
+  });
+}
+
+function normalizeActionMediaFromData(
+  data: Record<string, unknown>,
+  options: { allowLocalFile: boolean; fallbackOpaqueToken?: string }
+): ConnectorMediaReference | undefined {
+  for (const candidate of [data.base64, data.url, data.file]) {
+    const value = readOptionalString(candidate);
+    if (!value) {
+      continue;
+    }
+    if (isBase64Reference(value)) {
+      return { source: "connector-action", kind: "base64", value };
+    }
+    if (isHttpsReference(value)) {
+      return { source: "connector-action", kind: "https-url", value };
+    }
+  }
+
+  if (!options.allowLocalFile) {
+    return undefined;
+  }
+  const file = readOptionalString(data.file);
+  if (
+    !file ||
+    file === options.fallbackOpaqueToken ||
+    !isAbsoluteLocalReference(file)
+  ) {
+    return undefined;
+  }
+  return { source: "connector-action", kind: "local-file", value: file };
+}
+
+function isImageLikeSegment(type: string): boolean {
+  return type === "image" || type === "mface";
+}
+
+function isBase64Reference(value: string): boolean {
+  return value.startsWith("base64://") || /^data:image\/[a-z0-9.+-]+;base64,/i.test(value);
+}
+
+function isHttpsReference(value: string): boolean {
+  try {
+    return new URL(value).protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function isAbsoluteLocalReference(value: string): boolean {
+  if (value.startsWith("file://")) {
+    try {
+      return path.isAbsolute(fileURLToPath(value));
+    } catch {
+      return false;
+    }
+  }
+  return path.isAbsolute(value);
 }
 
 function readRecord(value: unknown): Record<string, unknown> | undefined {

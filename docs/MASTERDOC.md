@@ -206,8 +206,10 @@ The initial implementation should use:
 - `esbuild` for production builds and bundling.
 - Zod for runtime schema validation.
 - Vercel AI SDK for model integration.
+- Three explicit runtime model roles; see [MODEL_CONFIGURATION.md](MODEL_CONFIGURATION.md).
+- Background QQ sticker collection with one bot-wide content-addressed catalog and one LanceDB vector row per sticker; see [STICKER_SYSTEM.md](STICKER_SYSTEM.md).
 - File-backed configuration, persona, logs, traces, sessions, and memory under an explicit GestaltHome directory for the first implementation.
-- No vector retrieval dependency in the initial storage design; vector search can be added later when the memory workload justifies it.
+- Narrative memory has no vector retrieval dependency. The separate sticker catalog uses local LanceDB over generated sticker descriptions.
 - OneBot v11 as the initial connector protocol.
 - OpenTelemetry-style spans as the internal trace shape.
 - Langfuse-compatible traces and scores for trace inspection, evaluation, and LLM-as-judge workflows.

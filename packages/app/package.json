@@ -22,9 +22,11 @@
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^3.0.5",
+    "@lancedb/lancedb": "^0.31.0",
     "ai": "^7.0.16",
     "dotenv": "^17.4.2",
     "just-bash": "^3.0.2",
+    "sharp": "^0.35.3",
     "ws": "^8.21.0",
     "zod": "^4.4.3"
   },

@@ -240,7 +240,7 @@ The initial default exit triggers are:
 - `idle_timeout`: exits after the configured active-loop idle duration with no new messages.
 - `leave_tool`: exits when the model chooses the `leave` tool.
 
-The `leave` tool has no connector side effect. It is a model-visible lifecycle action that records the exit request and lets the runtime close the active loop.
+The `leave` tool has no connector side effect. It is an intentional disengagement action: finishing a reply or having nothing visible to add is not sufficient reason to call it. In those ordinary cases the model uses `say_nothing`, which ends the current model tool run while keeping the active loop available for later messages. `leave` records an explicit exit request and lets the runtime close the active loop.
 
 Loop exits are exported in session state as `loopExits`, with the exit reason and the turn ids covered by that loop.
 

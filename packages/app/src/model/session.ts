@@ -100,6 +100,7 @@ export interface ModelRunOptions {
   signal?: AbortSignal;
   connector?: Connector;
   now?: () => Date;
+  traceId?: string;
   toolImplementations?: ToolImplementations;
   onModelAttemptStart?: () => void;
   onToolExecutionStart?: (proposal: ActionProposal) => void;

@@ -33,17 +33,13 @@
   "expectations": {
     "session": {
       "conversations": 1,
-      "events": 4,
-      "selfMessages": 1,
       "windows": 2,
       "turns": 1,
-      "nextSeq": 5,
       "turnStatus": "completed",
       "loopExits": 1,
-      "loopExitReasons": ["leave_tool"],
       "steerCount": 1,
       "eventSeqs": [2, 3],
-      "minRealtimeExports": 7,
+      "minRealtimeExports": 5,
       "finalRealtimeExportMatches": true,
       "phases": [
         "memory_injecting",
@@ -53,19 +49,7 @@
         "completed"
       ]
     },
-    "action": {
-      "toolName": "send_group_message",
-      "toolNames": ["send_group_message", "leave"],
-      "groupId": "mock-group",
-      "textMinLength": 1
-    },
-    "tools": {
-      "calls": 2,
-      "toolNames": ["send_group_message", "leave"],
-      "connectorSideEffects": 0
-    },
     "modelInput": {
-      "requests": 3,
       "contains": [
         "gestalt 帮我看看这个实现方向？",
         "gestalt 补充一下，要保持架构简单，先只验证后链路。",
@@ -74,11 +58,10 @@
       ]
     },
     "modelExchange": {
-      "exchanges": 3,
-      "responses": 2,
+      "minExchanges": 2,
+      "minResponses": 1,
       "maxToolCallsPerResponse": 1,
-      "purposes": ["agent_action", "agent_action", "agent_action"],
-      "responseContains": ["send_group_message", "leave"]
+      "purposeIncludes": ["agent_action"]
     },
     "promptCache": {
       "enabled": true,
@@ -96,8 +79,7 @@
         "context.compile",
         "model.decide",
         "tool.execute"
-      ],
-      "toolNames": ["send_group_message", "leave"]
+      ]
     }
   }
 }

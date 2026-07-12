@@ -13,6 +13,7 @@ import { z } from "zod";
 import type { CompiledContext } from "../context/compileContext";
 import type { MessageReceivedEvent } from "../events/schemas";
 import type { GestaltConfig } from "../home/loadConfig";
+import { sanitizeUntrustedValue } from "../privacy/stickerRedaction";
 import {
   ACTION_TOOL_PROMPTS,
   hashModelToolPrompts,
@@ -47,6 +48,34 @@ import {
   type ModelStepTraceSnapshot
 } from "./session";
 import { buildDreamingTools, dreamingToolOrder } from "./dreamingTools";
+import {
+  readLanguageMaxSteps,
+  readLanguagePromptCacheEnabled,
+  readLanguagePromptCacheTtl,
+  readLanguageTemperature,
+  readLanguageToolChoice,
+  resolveLanguageModelConfig,
+  type LanguageModelRole,
+  type ModelProviderOptions,
+  type ModelToolChoiceMode,
+  type ResolvedLanguageModelConfig
+} from "./modelConfig";
+import { readImageContentForModel } from "./readImageContent";
+
+export {
+  resolveEmbeddingModelConfig,
+  resolveLanguageModelConfig,
+  resolveMainModelConfig,
+  resolveSubModelConfig
+} from "./modelConfig";
+export type {
+  LanguageModelRole,
+  ModelJsonValue,
+  ModelProviderOptions,
+  ModelToolChoiceMode,
+  ResolvedEmbeddingModelConfig,
+  ResolvedLanguageModelConfig
+} from "./modelConfig";
 
 export interface ModelMessageSnapshot {
   role: string;
@@ -65,21 +94,6 @@ export interface ModelToolResultSnapshot {
   output?: unknown;
   error?: unknown;
 }
-
-export type ModelJsonValue =
-  | string
-  | number
-  | boolean
-  | null
-  | ModelJsonValue[]
-  | { [key: string]: ModelJsonValue | undefined };
-
-export type ModelProviderOptions = Record<
-  string,
-  { [key: string]: ModelJsonValue | undefined }
->;
-
-export type ModelToolChoiceMode = "required" | "auto" | "none";
 
 export interface ModelRequestSnapshot {
   provider: string;
@@ -112,16 +126,9 @@ export interface ModelCacheUsageSnapshot {
   writeTokens?: number;
 }
 
-export interface ResolvedAiSdkLanguageModel {
+export interface ResolvedAiSdkLanguageModel
+  extends ResolvedLanguageModelConfig {
   languageModel: LanguageModel;
-  providerName: string;
-  modelName: string;
-  baseUrl: string;
-  apiKeyEnv: string;
-  providerOptions?: ModelProviderOptions;
-  toolChoice?: ModelToolChoiceMode;
-  promptCacheEnabled?: boolean;
-  promptCacheTtl?: "5m" | "1h";
 }
 
 export interface CreateAiSdkModelOptions {
@@ -142,6 +149,7 @@ export interface CreateAiSdkModelOptions {
 
 export interface CreateAiSdkModelFromConfigOptions
   extends Omit<CreateAiSdkModelOptions, "languageModel" | "modelName"> {
+  role?: LanguageModelRole;
   apiKeyEnvOverride?: string;
   fetch?: typeof fetch;
   headers?: Record<string, string>;
@@ -256,6 +264,7 @@ function createAiSdkModelSession(
             controller
           );
           const attemptToolResults: ToolExecutionResult[] = [];
+          const pendingImageContents: PendingImageContent[] = [];
           let committedAttemptTools = 0;
           const attemptContext = currentContext;
           const attemptSessionPrompt = sessionPrompt;
@@ -270,7 +279,8 @@ function createAiSdkModelSession(
             context: attemptContext,
             now,
             runOptions: attemptRunOptions,
-            executedToolResults: attemptToolResults
+            executedToolResults: attemptToolResults,
+            pendingImageContents
           });
           Object.assign(tools, buildDreamingTools());
           runOptions.onModelAttemptStart?.();
@@ -286,8 +296,40 @@ function createAiSdkModelSession(
               ...dreamingToolOrder
             ],
             ...(providerOptions ? { providerOptions } : {}),
-            stopWhen: [hasToolCall("leave"), stepCountIs(maxSteps)],
+            stopWhen: [
+              hasToolCall("say_nothing"),
+              hasToolCall("leave"),
+              stepCountIs(maxSteps)
+            ],
             temperature,
+            prepareStep({ messages: stepMessages }) {
+              if (pendingImageContents.length === 0) {
+                return undefined;
+              }
+              const images = pendingImageContents.splice(
+                0,
+                pendingImageContents.length
+              );
+              return {
+                messages: [
+                  ...stepMessages,
+                  {
+                    role: "user",
+                    content: images.flatMap((image) => [
+                      {
+                        type: "text" as const,
+                        text: `Image content returned by read_image for file ${JSON.stringify(image.file)}.`
+                      },
+                      {
+                        type: "file" as const,
+                        data: image.data,
+                        mediaType: image.mediaType
+                      }
+                    ])
+                  }
+                ]
+              };
+            },
             include: {
               requestBody: true,
               requestMessages: true,
@@ -462,14 +504,26 @@ export function createAiSdkModelFromConfig(
   config: GestaltConfig,
   options: CreateAiSdkModelFromConfigOptions = {}
 ): ModelClient {
-  const resolved = createLanguageModelFromConfig(config, options);
-  const temperature = options.temperature ?? readModelTemperature(config);
+  const {
+    role = "main",
+    apiKeyEnvOverride,
+    fetch,
+    headers,
+    ...modelOptions
+  } = options;
+  const resolved = createLanguageModelFromConfig(config, {
+    role,
+    ...(apiKeyEnvOverride ? { apiKeyEnvOverride } : {}),
+    ...(fetch ? { fetch } : {}),
+    ...(headers ? { headers } : {})
+  });
+  const temperature = modelOptions.temperature ?? resolved.temperature;
   return createAiSdkModel({
-    ...options,
+    ...modelOptions,
     languageModel: resolved.languageModel,
     modelName: resolved.modelName,
     providerName: resolved.providerName,
-    maxSteps: readModelMaxSteps(config),
+    maxSteps: resolved.maxSteps,
     ...(temperature !== undefined ? { temperature } : {}),
     ...(resolved.toolChoice !== undefined
       ? { toolChoice: resolved.toolChoice }
@@ -489,45 +543,33 @@ export function createAiSdkModelFromConfig(
 export function createLanguageModelFromConfig(
   config: GestaltConfig,
   options: {
+    role?: LanguageModelRole;
     apiKeyEnvOverride?: string;
     fetch?: typeof fetch;
     headers?: Record<string, string>;
   } = {}
 ): ResolvedAiSdkLanguageModel {
-  const modelName = readRequiredConfigString(config, "model_name");
-  const providerName =
-    readOptionalConfigString(config, "model_provider") ?? "openai-compatible";
-  const apiKeyEnv =
-    options.apiKeyEnvOverride ??
-    readOptionalConfigString(config, "model_api_key_env") ??
-    "MODEL_API_KEY";
+  const resolved = resolveLanguageModelConfig(
+    config,
+    options.role ?? "main"
+  );
+  const apiKeyEnv = options.apiKeyEnvOverride ?? resolved.apiKeyEnv;
   const apiKey = process.env[apiKeyEnv];
   if (!apiKey) {
     throw new Error(`Missing ${apiKeyEnv}.`);
   }
-
-  const baseUrl = resolveModelBaseUrl(config);
-  const toolChoice = readModelToolChoice(config);
-  const promptCacheEnabled = readModelPromptCacheEnabled(config, providerName);
-  const promptCacheTtl = readModelPromptCacheTtl(config);
   const provider = createOpenAICompatible({
-    name: providerName,
-    baseURL: baseUrl,
+    name: resolved.providerName,
+    baseURL: resolved.baseUrl,
     apiKey,
     ...(options.headers ? { headers: options.headers } : {}),
     ...(options.fetch ? { fetch: options.fetch } : {})
   });
 
   return {
-    languageModel: provider.chatModel(modelName),
-    providerName,
-    modelName,
-    baseUrl,
-    apiKeyEnv,
-    ...(toolChoice !== undefined ? { toolChoice } : {}),
-    promptCacheEnabled,
-    ...(promptCacheTtl ? { promptCacheTtl } : {}),
-    ...optionalProviderOptions(config, providerName)
+    ...resolved,
+    languageModel: provider.chatModel(resolved.modelName),
+    apiKeyEnv
   };
 }
 
@@ -535,84 +577,44 @@ export function readModelPromptCacheEnabled(
   config: GestaltConfig,
   providerName?: string
 ): boolean {
-  return (
-    readOptionalConfigBoolean(config, "model_prompt_cache_enabled") ??
-    providerName === "openrouter"
-  );
+  return readLanguagePromptCacheEnabled(config, "main", providerName);
 }
 
 export function readModelPromptCacheTtl(
   config: GestaltConfig
 ): "5m" | "1h" | undefined {
-  const value = readOptionalConfigString(config, "model_prompt_cache_ttl");
-  if (value === undefined || value === "5m" || value === "1h") {
-    return value;
-  }
-  throw new Error('model_prompt_cache_ttl must be "5m" or "1h".');
+  return readLanguagePromptCacheTtl(config, "main");
 }
 
 export function readModelToolChoice(
   config: GestaltConfig
 ): ModelToolChoiceMode | undefined {
-  const value = readOptionalConfigString(config, "model_tool_choice");
-  if (!value) {
-    return undefined;
-  }
-  if (value === "required" || value === "auto" || value === "none") {
-    return value;
-  }
-  throw new Error(
-    `Invalid model_tool_choice "${value}". Expected required, auto, or none.`
-  );
+  return readLanguageToolChoice(config, "main");
 }
 
 export function readModelMaxSteps(config: GestaltConfig): number {
-  const value = config.flatValues.model_max_steps;
-  const numericValue =
-    typeof value === "number"
-      ? value
-      : typeof value === "string"
-        ? Number(value)
-        : undefined;
-  if (numericValue === undefined) {
-    return 1000;
-  }
-  if (!Number.isInteger(numericValue) || numericValue <= 0) {
-    throw new Error("model_max_steps must be a positive integer.");
-  }
-  return numericValue;
+  return readLanguageMaxSteps(config, "main");
 }
 
 export function readModelTemperature(config: GestaltConfig): number | undefined {
-  const value = config.flatValues.model_temperature;
-  const numericValue =
-    typeof value === "number"
-      ? value
-      : typeof value === "string"
-        ? Number(value)
-        : undefined;
-  if (numericValue === undefined) {
-    return undefined;
-  }
-  if (!Number.isFinite(numericValue) || numericValue < 0) {
-    throw new Error("model_temperature must be a non-negative number.");
-  }
-  return numericValue;
+  return readLanguageTemperature(config, "main");
 }
 
 export function optionalProviderOptions(
   config: GestaltConfig,
   providerName: string
 ): { providerOptions: ModelProviderOptions } | {} {
-  const providerSpecificOptions = readModelProviderOptions(config);
-  if (!providerSpecificOptions) {
+  const resolved = resolveLanguageModelConfig(config, "main");
+  const providerOptions = resolved.providerOptions;
+  if (!providerOptions) {
     return {};
   }
 
   return {
-    providerOptions: {
-      [providerName]: providerSpecificOptions
-    }
+    providerOptions:
+      providerName === resolved.providerName
+        ? providerOptions
+        : { [providerName]: Object.values(providerOptions)[0] ?? {} }
   };
 }
 
@@ -765,6 +767,13 @@ export interface ActionToolRuntime {
   now: () => Date;
   runOptions: ModelRunOptions;
   executedToolResults: ToolExecutionResult[];
+  pendingImageContents: PendingImageContent[];
+}
+
+interface PendingImageContent {
+  file: string;
+  data: Uint8Array;
+  mediaType: string;
 }
 
 export function buildActionTools(
@@ -903,15 +912,43 @@ function createActionTool(
     }) as unknown as ToolSet[string];
   }
 
+  if (definition.name === "search_sticker") {
+    return tool({
+      description: renderActionToolDescription(definition.name),
+      inputSchema: z
+        .object({
+          query: z
+            .string()
+            .min(1)
+            .describe(toolParameterPrompt(definition.name, "query")),
+          limit: z
+            .number()
+            .int()
+            .min(1)
+            .max(20)
+            .optional()
+            .describe(toolParameterPrompt(definition.name, "limit")),
+          reason: z
+            .string()
+            .optional()
+            .describe(toolParameterPrompt(definition.name, "reason"))
+        })
+        .strict(),
+      async execute(input) {
+        return executeActionToolInput(definition, input, runtime);
+      }
+    }) as unknown as ToolSet[string];
+  }
+
   if (definition.name === "send_sticker") {
     return tool({
       description: renderActionToolDescription(definition.name),
       inputSchema: z
         .object({
-          sticker_cq: z
+          sticker_id: z
             .string()
             .min(1)
-            .describe(toolParameterPrompt(definition.name, "sticker_cq")),
+            .describe(toolParameterPrompt(definition.name, "sticker_id")),
           reply_to_message_id: z
             .string()
             .optional()
@@ -1091,6 +1128,9 @@ async function executeActionToolInput(
     connector,
     proposals: [proposal],
     now: runtime.runOptions.now ?? runtime.now,
+    ...(runtime.runOptions.traceId
+      ? { traceId: runtime.runOptions.traceId }
+      : {}),
     ...(runtime.runOptions.toolImplementations
       ? { toolImplementations: runtime.runOptions.toolImplementations }
       : {})
@@ -1099,13 +1139,47 @@ async function executeActionToolInput(
     throw new Error(`Action tool ${definition.name} did not return a result.`);
   }
 
+  let imageRead:
+    | { attached: true; mediaType: string }
+    | { attached: false; error: string }
+    | undefined;
+  if (
+    result.proposal.toolName === "read_image" &&
+    result.status === "executed"
+  ) {
+    if (!result.result?.media) {
+      imageRead = {
+        attached: false,
+        error: "The connector returned image metadata but no readable media."
+      };
+    } else {
+      try {
+        const content = await readImageContentForModel(result.result.media);
+        runtime.pendingImageContents.push({
+          file: result.proposal.params.file,
+          data: content.data,
+          mediaType: content.mediaType
+        });
+        imageRead = { attached: true, mediaType: content.mediaType };
+      } catch (error) {
+        imageRead = {
+          attached: false,
+          error: error instanceof Error ? error.message : String(error)
+        };
+      }
+    }
+  }
+
   runtime.executedToolResults.push(result);
   runtime.runOptions.onToolExecutionEnd?.(proposal, result);
-  return summarizeToolResultForModel(result);
+  return summarizeToolResultForModel(result, imageRead);
 }
 
 function summarizeToolResultForModel(
-  result: ToolExecutionResult
+  result: ToolExecutionResult,
+  imageRead?:
+    | { attached: true; mediaType: string }
+    | { attached: false; error: string }
 ): Record<string, unknown> {
   return {
     toolName: result.proposal.toolName,
@@ -1114,8 +1188,14 @@ function summarizeToolResultForModel(
     ...(result.result?.externalId ? { externalId: result.result.externalId } : {}),
     ...(result.result?.error ? { error: result.result.error } : {}),
     ...(result.result?.data !== undefined
-      ? { data: summarizeConnectorData(result.result.data) }
-      : {})
+      ? {
+          data: summarizeConnectorData(
+            result.result.data,
+            result.proposal.toolName !== "fetch_message"
+          )
+        }
+      : {}),
+    ...(imageRead ? { image: imageRead } : {})
   };
 }
 
@@ -1203,15 +1283,26 @@ function actionFromToolInput(
     };
   }
 
+  if (toolName === "search_sticker") {
+    return {
+      ...base,
+      toolName: "search_sticker",
+      params: {
+        query: readRequiredStringArgument(args, "query", toolName),
+        ...(typeof args.limit === "number" ? { limit: args.limit } : {})
+      }
+    };
+  }
+
   if (toolName === "send_sticker") {
     return {
       ...base,
       toolName: "send_sticker",
       params: {
         conversation: currentConversationTarget(currentEvent),
-        sticker: readRequiredStringArgument(
+        stickerId: readRequiredStringArgument(
           args,
-          "sticker_cq",
+          "sticker_id",
           toolName
         ),
         ...optionalStringArgument(args, "reply_to_message_id", {
@@ -1263,10 +1354,11 @@ function actionFromToolInput(
   throw new Error(`Unsupported action tool: ${toolName}`);
 }
 
-function summarizeConnectorData(value: unknown): unknown {
-  const json = safeJsonStringify(value);
+function summarizeConnectorData(value: unknown, sanitize = true): unknown {
+  const visible = sanitize ? sanitizeUntrustedValue(value) : value;
+  const json = safeJsonStringify(visible);
   if (!json || json.length <= 4000) {
-    return value;
+    return visible;
   }
   return {
     truncated: true,
@@ -1471,90 +1563,4 @@ function forwardAbortSignal(
   }
   source.addEventListener("abort", abort, { once: true });
   return () => source.removeEventListener("abort", abort);
-}
-
-function resolveModelBaseUrl(config: GestaltConfig): string {
-  const baseUrl = readOptionalConfigString(config, "model_base_url");
-  if (baseUrl) {
-    return baseUrl.replace(/\/+$/, "");
-  }
-
-  throw new Error("AI SDK model requires model_base_url.");
-}
-
-function readModelProviderOptions(
-  config: GestaltConfig
-): { [key: string]: ModelJsonValue | undefined } | undefined {
-  const routing = readModelRouting(config);
-  const thinking = readOptionalConfigString(config, "model_thinking");
-  const providerOptions: { [key: string]: ModelJsonValue | undefined } = {};
-
-  if (routing) {
-    providerOptions.provider = routing;
-  }
-  if (thinking) {
-    providerOptions.thinking = { type: thinking };
-  }
-
-  return Object.keys(providerOptions).length > 0 ? providerOptions : undefined;
-}
-
-function readModelRouting(
-  config: GestaltConfig
-): { [key: string]: ModelJsonValue | undefined } | undefined {
-  const order = readOptionalConfigStringList(config, "model_routing_order");
-  const allowFallbacks = readOptionalConfigBoolean(
-    config,
-    "model_routing_allow_fallbacks"
-  );
-  const sort = readOptionalConfigString(config, "model_routing_sort");
-
-  const routing: { [key: string]: ModelJsonValue | undefined } = {};
-  if (order.length > 0) {
-    routing.order = order;
-  }
-  if (allowFallbacks !== undefined) {
-    routing.allow_fallbacks = allowFallbacks;
-  }
-  if (sort) {
-    routing.sort = sort;
-  }
-
-  return Object.keys(routing).length > 0 ? routing : undefined;
-}
-
-function readRequiredConfigString(config: GestaltConfig, key: string): string {
-  const value = readOptionalConfigString(config, key);
-  if (!value) {
-    throw new Error(`Missing required config value "${key}".`);
-  }
-  return value;
-}
-
-function readOptionalConfigString(
-  config: GestaltConfig,
-  key: string
-): string | undefined {
-  const value = config.flatValues[key];
-  return typeof value === "string" && value.trim() ? value : undefined;
-}
-
-function readOptionalConfigStringList(
-  config: GestaltConfig,
-  key: string
-): string[] {
-  return (
-    readOptionalConfigString(config, key)
-      ?.split(",")
-      .map((value) => value.trim())
-      .filter(Boolean) ?? []
-  );
-}
-
-function readOptionalConfigBoolean(
-  config: GestaltConfig,
-  key: string
-): boolean | undefined {
-  const value = config.flatValues[key];
-  return typeof value === "boolean" ? value : undefined;
 }

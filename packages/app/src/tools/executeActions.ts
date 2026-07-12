@@ -1,4 +1,5 @@
 import type { Connector, ConnectorCallResult } from "../connectors/types";
+import { redactSensitiveString } from "../privacy/stickerRedaction";
 import type { ActionProposal, ToolName } from "./schemas";
 
 export interface ToolExecutionResult {
@@ -12,6 +13,7 @@ export interface ToolExecutionResult {
 export interface ToolHandlerContext {
   connector: Connector;
   now: () => Date;
+  traceId?: string;
 }
 
 export interface ToolHandlerResult {
@@ -31,6 +33,7 @@ export interface ExecuteActionsInput {
   connector: Connector;
   proposals: ActionProposal[];
   now?: () => Date;
+  traceId?: string;
   toolImplementations?: ToolImplementations;
 }
 
@@ -59,7 +62,8 @@ export async function executeActions(
 
     const handlerResult = await implementation(proposal, {
       connector: input.connector,
-      now
+      now,
+      ...(input.traceId ? { traceId: input.traceId } : {})
     });
     const executionResult: ToolExecutionResult = {
       proposal,
@@ -108,7 +112,7 @@ export function createConnectorToolImplementations(): ToolImplementations {
 
       return {
         status: result.ok ? "executed" : "failed",
-        result
+        result: modelReadableConnectorResult(result)
       };
     },
 
@@ -126,7 +130,7 @@ export function createConnectorToolImplementations(): ToolImplementations {
 
       return {
         status: result.ok ? "executed" : "failed",
-        result
+        result: modelReadableConnectorResult(result)
       };
     },
 
@@ -196,25 +200,17 @@ export function createConnectorToolImplementations(): ToolImplementations {
       };
     },
 
-    async send_sticker(proposal, context) {
-      if (proposal.toolName !== "send_sticker") {
-        return {
-          status: "failed",
-          reason: `send_sticker handler received ${proposal.toolName}.`
-        };
-      }
-
-      const result = await context.connector.sendSticker({
-        conversation: proposal.params.conversation,
-        sticker: proposal.params.sticker,
-        ...(proposal.params.replyToMessageId
-          ? { replyToMessageId: proposal.params.replyToMessageId }
-          : {})
-      });
-
+    async search_sticker() {
       return {
-        status: result.ok ? "executed" : "failed",
-        result
+        status: "failed",
+        reason: "search_sticker requires the runtime sticker service."
+      };
+    },
+
+    async send_sticker() {
+      return {
+        status: "failed",
+        reason: "send_sticker requires the runtime sticker service."
       };
     },
 
@@ -278,5 +274,18 @@ export function createConnectorToolImplementations(): ToolImplementations {
         result
       };
     }
+  };
+}
+
+/** Fetch/read results are deliberately model-readable protocol data. */
+function modelReadableConnectorResult(
+  result: ConnectorCallResult
+): ConnectorCallResult {
+  return {
+    ok: result.ok,
+    ...(result.externalId ? { externalId: result.externalId } : {}),
+    ...(result.error ? { error: redactSensitiveString(result.error) } : {}),
+    ...(result.data !== undefined ? { data: result.data } : {}),
+    ...(result.media ? { media: result.media } : {})
   };
 }

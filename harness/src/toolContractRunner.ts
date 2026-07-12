@@ -154,15 +154,24 @@ function createToolContractProposals(): ActionProposal[] {
     {
       id: randomUUID(),
       proposedAt,
+      toolName: "search_sticker",
+      reason: "Find a collected sticker by meaning.",
+      params: {
+        query: "认真提醒一下",
+        limit: 5
+      }
+    },
+    {
+      id: randomUUID(),
+      proposedAt,
       toolName: "send_sticker",
-      reason: "Repeat the exact received platform sticker.",
+      reason: "Send the selected collected sticker.",
       params: {
         conversation: {
           kind: "group",
           id: "123456"
         },
-        sticker:
-          "[CQ:mface,emoji_package_id=232743,emoji_id=e236bd3faf64e579678ec218df99fdba,key=c643d011575a7054,summary=&#91;敲黑板&#93;]",
+        stickerId: "stk_contract",
         replyToMessageId: "321"
       }
     },
@@ -211,14 +220,64 @@ function createToolContractProposals(): ActionProposal[] {
 function createRecordingOneBotCaller(
   calls: OneBotApiCall[]
 ): OneBotActionCaller {
-  const caller = createOneBotMockActionCaller((call) => {
-    calls.push({
-      action: call.action,
-      ...(call.params ? { params: call.params } : {}),
-      echo: call.echo
-    });
-  });
-  return caller;
+  const fallback = createOneBotMockActionCaller();
+  return {
+    async callAction(action, params) {
+      calls.push({
+        action,
+        ...(params ? { params } : {}),
+        echo: `tool-contract-${calls.length + 1}`
+      });
+      if (action === "get_msg") {
+        return {
+          ok: true,
+          data: {
+            time: Math.floor(Date.parse(FIXED_TIME) / 1000),
+            message_type: "group",
+            message_id: params?.message_id ?? 111,
+            sender: {
+              user_id: 424242,
+              nickname: "Fetched User"
+            },
+            message: [
+              { type: "text", data: { text: "引用内容 " } },
+              {
+                type: "mface",
+                data: {
+                  emoji_id: "FETCH_EMOJI_SECRET",
+                  emoji_package_id: "FETCH_PACKAGE_SECRET",
+                  key: "FETCH_MFACE_KEY_SECRET",
+                  url: "https://stickers.example.test/fetch.gif?signature=FETCH_URL_SECRET",
+                  file: "marketface"
+                }
+              },
+              {
+                type: "image",
+                data: {
+                  file: "FETCH_CUSTOM_FILE_SECRET.gif",
+                  path: "C:\\private\\FETCH_PATH_SECRET.gif",
+                  url: "https://stickers.example.test/custom.gif?signature=FETCH_CUSTOM_URL_SECRET",
+                  sub_type: 1
+                }
+              }
+            ],
+            raw_message:
+              "引用内容 [CQ:mface,emoji_id=FETCH_EMOJI_SECRET,emoji_package_id=FETCH_PACKAGE_SECRET,key=FETCH_MFACE_KEY_SECRET,url=https://stickers.example.test/fetch.gif?signature=FETCH_URL_SECRET,file=marketface] [CQ:image,file=FETCH_CUSTOM_FILE_SECRET.gif,path=C:\\private\\FETCH_PATH_SECRET.gif,url=https://stickers.example.test/custom.gif?signature=FETCH_CUSTOM_URL_SECRET,sub_type=1]"
+          }
+        };
+      }
+      if (action === "get_image") {
+        return {
+          ok: true,
+          data: {
+            file: "/mock/onebot/image/cat.png",
+            url: "https://images.example.test/cat.png"
+          }
+        };
+      }
+      return fallback.callAction(action, params);
+    }
+  };
 }
 
 async function writeArtifacts(input: {

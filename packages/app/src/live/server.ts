@@ -3,11 +3,16 @@ import { readFile, stat } from "node:fs/promises";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { sanitizeUntrustedValue } from "../privacy/stickerRedaction";
 import type { Runtime } from "../runtime/createRuntime";
+import {
+  normalizeStickerCatalogQuery,
+  type StickerCatalogQuery
+} from "../stickers/service";
 import type { LiveEventBus } from "./eventBus";
 import { loadLiveTraceDetail, loadLiveWorkspace } from "./snapshot";
 import type { LiveRunStore } from "./runStore";
-import type { RuntimeLiveEventEnvelope } from "./viewTypes";
+import type { RuntimeLiveEventEnvelope, TraceWorkspace } from "./viewTypes";
 
 export interface StartLiveDebugServerOptions {
   runtime: Runtime;
@@ -32,6 +37,13 @@ interface ResolvedLiveDebugServerOptions {
   port: number;
   uiDir?: string;
   now: () => Date;
+  workspaceCache: LiveWorkspaceCache;
+  sseResponses: Set<ServerResponse>;
+}
+
+interface LiveWorkspaceCache {
+  get(): Promise<TraceWorkspace>;
+  invalidate(): void;
 }
 
 const DEFAULT_HOST = "127.0.0.1";
@@ -44,6 +56,22 @@ export async function startLiveDebugServer(
   const port = options.port ?? DEFAULT_PORT;
   const now = options.now ?? (() => new Date());
   const uiDir = options.uiDir ? path.resolve(options.uiDir) : undefined;
+  const workspaceCache = createLiveWorkspaceCache(async () =>
+    loadLiveWorkspace({
+      home: options.runtime.home,
+      sessionSnapshot: options.runtime.exportSession({
+        exportedAt: now().toISOString()
+      }),
+      activeRuns: options.runStore.getActiveRuns(now),
+      now
+    })
+  );
+  const stopInvalidatingWorkspace = options.bus.subscribe({
+    onEvent() {
+      workspaceCache.invalidate();
+    }
+  });
+  const sseResponses = new Set<ServerResponse>();
 
   const server = http.createServer((request, response) => {
     void handleRequest(request, response, {
@@ -51,6 +79,8 @@ export async function startLiveDebugServer(
       host,
       port,
       now,
+      workspaceCache,
+      sseResponses,
       ...(uiDir ? { uiDir } : {})
     }).catch((error) => {
       if (!response.headersSent) {
@@ -80,6 +110,10 @@ export async function startLiveDebugServer(
   return {
     url: `http://${host}:${port}`,
     close() {
+      stopInvalidatingWorkspace();
+      for (const response of sseResponses) {
+        response.end();
+      }
       return new Promise((resolve, reject) => {
         server.close((error) => {
           if (error) {
@@ -102,6 +136,10 @@ async function handleRequest(
     sendJson(response, 405, { error: "Method not allowed" });
     return;
   }
+  if (!isAllowedRequest(request)) {
+    sendJson(response, 403, { error: "Live debug server rejected the request origin" });
+    return;
+  }
 
   const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
   const pathname = url.pathname;
@@ -116,15 +154,50 @@ async function handleRequest(
   }
 
   if (pathname === "/api/live/snapshot") {
-    const snapshot = await loadLiveWorkspace({
-      home: options.runtime.home,
-      sessionSnapshot: options.runtime.exportSession({
-        exportedAt: options.now().toISOString()
-      }),
-      activeRuns: options.runStore.getActiveRuns(options.now),
-      now: options.now
-    });
+    const snapshot = await options.workspaceCache.get();
     sendJson(response, 200, snapshot);
+    return;
+  }
+
+  if (pathname === "/api/live/stickers/snapshot") {
+    const catalogQuery = parseStickerCatalogQuery(url);
+    if (!options.runtime.stickers) {
+      sendJson(
+        response,
+        200,
+        emptyStickerSnapshot(options.now().toISOString(), catalogQuery)
+      );
+      return;
+    }
+    sendJson(
+      response,
+      200,
+      await options.runtime.stickers.snapshot(catalogQuery)
+    );
+    return;
+  }
+
+  const stickerAssetMatch = pathname.match(
+    /^\/api\/live\/stickers\/assets\/([^/]+)\/(original|contact-sheet)$/
+  );
+  if (stickerAssetMatch?.[1] && stickerAssetMatch[2]) {
+    if (!options.runtime.stickers) {
+      sendJson(response, 404, { error: "Sticker subsystem is not configured" });
+      return;
+    }
+    const filePath = await options.runtime.stickers.resolveAssetPath(
+      decodeURIComponent(stickerAssetMatch[1]),
+      stickerAssetMatch[2] === "contact-sheet" ? "contact-sheet" : "original"
+    );
+    if (!filePath || !(await fileIfExists(filePath))) {
+      sendJson(response, 404, { error: "Sticker asset not found" });
+      return;
+    }
+    if (!isSupportedStickerAsset(filePath)) {
+      sendJson(response, 415, { error: "Unsupported sticker asset type" });
+      return;
+    }
+    await serveFile(response, filePath, { untrustedImage: true });
     return;
   }
 
@@ -148,7 +221,7 @@ async function handleRequest(
   }
 
   if (pathname === "/api/live/events") {
-    serveSse(request, response, options.bus, options.now);
+    serveSse(request, response, options.bus, options.now, options.sseResponses);
     return;
   }
 
@@ -163,11 +236,47 @@ async function handleRequest(
   });
 }
 
+function createLiveWorkspaceCache(
+  load: () => Promise<TraceWorkspace>
+): LiveWorkspaceCache {
+  let cached: TraceWorkspace | undefined;
+  let inFlight: Promise<TraceWorkspace> | undefined;
+  let version = 0;
+
+  return {
+    get() {
+      if (cached) {
+        return Promise.resolve(cached);
+      }
+      if (inFlight) {
+        return inFlight;
+      }
+      const loadVersion = version;
+      inFlight = load()
+        .then((workspace) => {
+          if (version === loadVersion) {
+            cached = workspace;
+          }
+          return workspace;
+        })
+        .finally(() => {
+          inFlight = undefined;
+        });
+      return inFlight;
+    },
+    invalidate() {
+      version += 1;
+      cached = undefined;
+    }
+  };
+}
+
 function serveSse(
   request: IncomingMessage,
   response: ServerResponse,
   bus: LiveEventBus,
-  now: () => Date
+  now: () => Date,
+  responses: Set<ServerResponse>
 ): void {
   response.writeHead(200, {
     "Cache-Control": "no-cache, no-transform",
@@ -203,10 +312,14 @@ function serveSse(
     });
   }, 15_000);
 
-  request.on("close", () => {
+  responses.add(response);
+  const cleanup = (): void => {
     clearInterval(heartbeat);
     unsubscribe();
-  });
+    responses.delete(response);
+  };
+  request.once("close", cleanup);
+  response.once("close", cleanup);
 }
 
 async function serveStatic(
@@ -226,8 +339,24 @@ async function serveStatic(
     return;
   }
 
+  await serveFile(response, candidate);
+}
+
+async function serveFile(
+  response: ServerResponse,
+  candidate: string,
+  options: { untrustedImage?: boolean } = {}
+): Promise<void> {
   response.writeHead(200, {
-    "Content-Type": contentType(candidate)
+    "Content-Type": contentType(candidate),
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
+    ...(options.untrustedImage
+      ? {
+          "Content-Security-Policy": "default-src 'none'; sandbox",
+          "Cross-Origin-Resource-Policy": "same-origin"
+        }
+      : {})
   });
   await new Promise<void>((resolve, reject) => {
     const stream = createReadStream(candidate);
@@ -235,6 +364,12 @@ async function serveStatic(
     stream.on("end", resolve);
     stream.pipe(response);
   });
+}
+
+function isSupportedStickerAsset(filePath: string): boolean {
+  return [".png", ".jpg", ".jpeg", ".gif", ".webp"].includes(
+    path.extname(filePath).toLowerCase()
+  );
 }
 
 function resolveStaticPath(uiDir: string, pathname: string): string | undefined {
@@ -280,7 +415,7 @@ function sendJson(response: ServerResponse, status: number, value: unknown): voi
     "Content-Type": "application/json; charset=utf-8",
     "Cache-Control": "no-store"
   });
-  response.end(JSON.stringify(value));
+  response.end(JSON.stringify(sanitizeUntrustedValue(value)));
 }
 
 function writeSse(
@@ -291,7 +426,7 @@ function writeSse(
     response.write(`id: ${event.id}\n`);
   }
   response.write("event: live\n");
-  response.write(`data: ${JSON.stringify(event)}\n\n`);
+  response.write(`data: ${JSON.stringify(sanitizeUntrustedValue(event))}\n\n`);
 }
 
 function parseLastEventId(value: string | string[] | undefined): number | undefined {
@@ -324,6 +459,10 @@ function contentType(filePath: string): string {
       return "image/jpeg";
     case ".webp":
       return "image/webp";
+    case ".gif":
+      return "image/gif";
+    case ".avif":
+      return "image/avif";
     case ".woff":
       return "font/woff";
     case ".woff2":
@@ -333,11 +472,95 @@ function contentType(filePath: string): string {
   }
 }
 
+function emptyStickerSnapshot(
+  generatedAt: string,
+  catalogInput: StickerCatalogQuery = {}
+): Record<string, unknown> {
+  const catalog = normalizeStickerCatalogQuery(catalogInput);
+  return {
+    available: false,
+    unavailableReason:
+      "Sticker subsystem is not configured. Configure an embedding model to enable it.",
+    generatedAt,
+    scraping: {
+      configuredEnabled: false,
+      effectiveEnabled: false
+    },
+    processing: {
+      queued: 0,
+      running: 0,
+      failed: 0,
+      ready: 0,
+      duplicates: 0
+    },
+    embedding: {
+      rowCount: 0,
+      indexState: "empty"
+    },
+    jobs: [],
+    catalog: {
+      offset: catalog.offset,
+      limit: catalog.limit,
+      total: 0
+    },
+    stickers: []
+  };
+}
+
+function parseStickerCatalogQuery(url: URL): StickerCatalogQuery {
+  const status = url.searchParams.get("status");
+  const source = url.searchParams.get("source");
+  const offset = parseFiniteNumber(url.searchParams.get("offset"));
+  const limit = parseFiniteNumber(url.searchParams.get("limit"));
+  return {
+    ...(offset !== undefined ? { offset } : {}),
+    ...(limit !== undefined ? { limit } : {}),
+    ...(url.searchParams.has("query")
+      ? { query: url.searchParams.get("query") ?? "" }
+      : {}),
+    ...(status === "ready" || status === "processing" || status === "failed"
+      ? { status }
+      : {}),
+    ...(source === "mface" || source === "image-sticker" ? { source } : {})
+  };
+}
+
+function parseFiniteNumber(value: string | null): number | undefined {
+  if (value === null || value.trim() === "") {
+    return undefined;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function isAllowedRequest(request: IncomingMessage): boolean {
+  const hostHeader = Array.isArray(request.headers.host)
+    ? request.headers.host[0]
+    : request.headers.host;
+  if (!hostHeader) {
+    return false;
+  }
+  const origin = request.headers.origin;
+  if (!origin) {
+    return true;
+  }
+  try {
+    const parsed = new URL(origin);
+    return (
+      (parsed.protocol === "http:" || parsed.protocol === "https:") &&
+      parsed.host.toLowerCase() === hostHeader.toLowerCase()
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function resolveDefaultTraceUiDir(fromUrl: string): string {
   const moduleDir = path.dirname(fileURLToPath(fromUrl));
   const candidates = [
     path.join(moduleDir, "live-ui"),
-    path.resolve(moduleDir, "../dist/live-ui")
+    path.resolve(moduleDir, "../dist/live-ui"),
+    path.resolve(moduleDir, "../../trace/dist")
   ];
   return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0]!;
 }

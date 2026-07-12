@@ -3,6 +3,7 @@ import type {
   RuntimeLiveEventEnvelope,
   RuntimeLiveEventType
 } from "./viewTypes";
+import { sanitizeUntrustedValue } from "../privacy/stickerRedaction";
 
 export interface LiveEventBus extends LiveEventSink {
   subscribe(input: {
@@ -28,11 +29,12 @@ export function createLiveEventBus(
 
   return {
     publish(type, data, at = now().toISOString()) {
+      const sanitizedData = sanitizeUntrustedValue(data);
       const event: RuntimeLiveEventEnvelope = {
         id: nextId,
         type: type as RuntimeLiveEventType,
         at,
-        data
+        data: sanitizedData
       };
       nextId += 1;
       recentEvents.push(event);

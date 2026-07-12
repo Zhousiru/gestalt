@@ -185,6 +185,7 @@ export async function runAgentTurn(
           ...(input.signal ? { signal: input.signal } : {}),
           connector: dependencies.connector,
           now: dependencies.now,
+          traceId,
           ...(dependencies.toolImplementations
             ? { toolImplementations: dependencies.toolImplementations }
             : {}),
@@ -247,6 +248,7 @@ export async function runAgentTurn(
         connector: dependencies.connector,
         proposals: proposedActions,
         now: dependencies.now,
+        traceId,
         ...(dependencies.toolImplementations
           ? { toolImplementations: dependencies.toolImplementations }
           : {})

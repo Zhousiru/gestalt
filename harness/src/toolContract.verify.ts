@@ -13,6 +13,7 @@ assert.deepEqual(
     "send_group_message",
     "send_dm",
     "send_image",
+    "search_sticker",
     "send_sticker",
     "react_to_message",
     "poke_user",
@@ -37,6 +38,7 @@ assert.deepEqual(
     "executed",
     "executed",
     "executed",
+    "executed",
     "skipped"
   ]
 );
@@ -45,10 +47,50 @@ const fetchMessage = findCall("get_msg");
 assert.deepEqual(fetchMessage.params, {
   message_id: 111
 });
+const fetchToolResult = result.connectorResults.find(
+  (item) => item.proposal.toolName === "fetch_message"
+);
+assert.ok(fetchToolResult?.result?.data);
+const fetchToolJson = JSON.stringify(fetchToolResult.result) ?? "";
+assert.notEqual(fetchToolJson, "");
+assert.match(fetchToolJson, /\[CQ:mface,/);
+assert.match(fetchToolJson, /\[CQ:image,[^\]]*sub_type=1/);
+assert.doesNotMatch(fetchToolJson, /"segments"/);
+for (const secret of [
+  "FETCH_EMOJI_SECRET",
+  "FETCH_PACKAGE_SECRET",
+  "FETCH_MFACE_KEY_SECRET",
+  "FETCH_URL_SECRET",
+  "FETCH_CUSTOM_FILE_SECRET",
+  "FETCH_PATH_SECRET",
+  "FETCH_CUSTOM_URL_SECRET"
+]) {
+  assert.match(
+    fetchToolJson,
+    new RegExp(secret),
+    `fetch_message must preserve complete sticker CQ data: ${secret}`
+  );
+}
 
 const readImage = findCall("get_image");
 assert.deepEqual(readImage.params, {
   file: "cat.png"
+});
+const readImageToolResult = result.connectorResults.find(
+  (item) => item.proposal.toolName === "read_image"
+);
+assert.deepEqual(readImageToolResult?.result?.data, {
+  file: "/mock/onebot/image/cat.png",
+  url: "https://images.example.test/cat.png",
+  raw: {
+    file: "/mock/onebot/image/cat.png",
+    url: "https://images.example.test/cat.png"
+  }
+});
+assert.deepEqual(readImageToolResult?.result?.media, {
+  source: "connector-action",
+  kind: "https-url",
+  value: "https://images.example.test/cat.png"
 });
 
 const sendGroup = findCall("send_group_msg");
@@ -67,7 +109,7 @@ assert.equal(sendPrivate.params?.message, "私聊收到 [CQ:face,id=14,name=微�
 const sendMsgCalls = result.onebotApiCalls.filter(
   (call) => call.action === "send_msg"
 );
-assert.equal(sendMsgCalls.length, 2);
+assert.equal(sendMsgCalls.length, 1);
 
 const imageCall = sendMsgCalls.find((call) =>
   String(call.params?.message ?? "").includes("[CQ:image")
@@ -81,16 +123,15 @@ assert.equal(
   "[CQ:reply,id=321]图片来了[CQ:image,file=https://example.test/cat.png,summary=示例图片]"
 );
 
-const stickerCall = sendMsgCalls.find((call) =>
-  String(call.params?.message ?? "").includes("[CQ:mface")
+const stickerConnectorResults = result.connectorResults.filter(
+  (item) =>
+    item.proposal.toolName === "search_sticker" ||
+    item.proposal.toolName === "send_sticker"
 );
-assert.ok(stickerCall, "expected send_sticker to use send_msg");
-assert.equal(stickerCall.params?.message_type, "group");
-assert.equal(stickerCall.params?.group_id, 123456);
-assert.equal(stickerCall.params?.auto_escape, false);
-assert.equal(
-  stickerCall.params?.message,
-  "[CQ:reply,id=321][CQ:mface,emoji_package_id=232743,emoji_id=e236bd3faf64e579678ec218df99fdba,key=c643d011575a7054,summary=&#91;敲黑板&#93;]"
+assert.deepEqual(
+  stickerConnectorResults.map((item) => item.status),
+  ["failed", "failed"],
+  "sticker tools require the runtime sticker service rather than raw connector CQ input"
 );
 
 const reactionCall = findCall("set_msg_emoji_like");

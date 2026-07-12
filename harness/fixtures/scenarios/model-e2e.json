@@ -28,7 +28,7 @@
       "nextSeq": 3,
       "turnStatus": "completed",
       "loopExits": 1,
-      "loopExitReasons": ["leave_tool"],
+      "loopExitReasons": ["idle_timeout"],
       "steerCount": 0,
       "eventSeqs": [1],
       "phases": [
@@ -41,15 +41,12 @@
     },
     "action": {
       "toolName": "send_group_message",
-      "toolNames": ["send_group_message", "leave"],
       "groupId": "harness-group",
       "textMinLength": 1,
       "textMaxLength": 160,
       "textDoesNotMatch": "```"
     },
     "tools": {
-      "calls": 2,
-      "toolNames": ["send_group_message", "leave"],
       "connectorSideEffects": 0
     },
     "modelInput": {
@@ -76,7 +73,8 @@
       "responses": 2,
       "maxToolCallsPerResponse": 1,
       "purposes": ["agent_action", "agent_action"],
-      "responseContains": ["send_group_message", "leave"]
+      "responseContains": ["send_group_message"],
+      "responseDoesNotContain": ["\"toolName\":\"leave\""]
     },
     "trace": {
       "traces": 1,
@@ -86,8 +84,8 @@
         "model.decide",
         "tool.execute"
       ],
-      "toolNames": ["send_group_message", "leave"],
-      "modelResponseContains": ["send_group_message", "leave"]
+      "modelResponseContains": ["send_group_message"],
+      "modelResponseDoesNotContain": ["\"toolName\":\"leave\""]
     }
   }
 }

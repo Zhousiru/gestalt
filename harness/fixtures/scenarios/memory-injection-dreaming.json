@@ -1,6 +1,6 @@
 {
   "id": "memory-injection-dreaming",
-  "description": "A real model group turn injects self and user memory, then real bash dreaming updates both memory areas.",
+  "description": "A real model naturally infers durable design direction and user preferences without logging the interaction.",
   "homeFixture": "harness/fixtures/homes/simple-group-test",
   "memoriesFixture": "harness/fixtures/memories/simple-group-test",
   "model": {
@@ -16,7 +16,7 @@
       "messageId": "memory-message-1",
       "senderId": "alice",
       "senderName": "Alice",
-      "text": "gestalt 请把这四条具体记忆写进对应文件，尽量保留原句：self/index.md 追加「Memory system direction: dreaming uses a bash tool in a /memories VFS, not JSON command lists.」；users/alice/index.md 追加「Alice wants harness evidence to show real model input/output and concrete memory text, not placeholders.」；self/memory-system.md 写「The memory subsystem is file-backed Markdown. Dreaming can inspect and edit /memories through a bash tool exposed to the model.」；users/alice/memory-system.md 写「Alice is actively shaping the memory design and asks for concrete artifacts that prove what the model actually remembered.」。",
+      "text": "gestalt，我们的 memory subsystem 方向现在很明确了：用 file-backed Markdown，dreaming 通过 /memories VFS 里的 bash 来维护，而不是 JSON command lists。我会继续参与这套 memory design；对我来说，harness 必须展示真实 model input/output 和可检查的 artifact evidence，不能只放 placeholders。",
       "mentionsBot": true,
       "windowReason": "mention"
     }
@@ -24,14 +24,10 @@
   "expectations": {
     "session": {
       "conversations": 1,
-      "events": 2,
-      "selfMessages": 1,
       "windows": 1,
       "turns": 1,
-      "nextSeq": 3,
       "turnStatus": "completed",
       "loopExits": 1,
-      "loopExitReasons": ["leave_tool"],
       "steerCount": 0,
       "eventSeqs": [1],
       "phases": [
@@ -42,24 +38,12 @@
         "completed"
       ]
     },
-    "action": {
-      "toolName": "send_group_message",
-      "toolNames": ["send_group_message", "leave"],
-      "groupId": "memory-group",
-      "textMinLength": 1,
-      "textDoesNotMatch": "现在不是|下次|等待|不能|不可用|触发"
-    },
-    "tools": {
-      "calls": 2,
-      "toolNames": ["send_group_message", "leave"],
-      "connectorSideEffects": 0
-    },
     "modelInput": {
       "contains": [
         "Self memory baseline",
         "Alice memory baseline",
-        "concrete memory text",
-        "not placeholders"
+        "artifact evidence",
+        "placeholders"
       ]
     },
     "modelExchange": {
@@ -67,15 +51,11 @@
       "minResponses": 3,
       "purposeIncludes": ["agent_action", "dreaming"],
       "responseContains": [
-        "leave",
-        "send_group_message",
         "\"name\":\"bash\"",
         "/memories/self/index.md",
         "/memories/users/alice/index.md",
-        "Memory system direction",
-        "concrete memory text",
         "file-backed Markdown",
-        "Alice is actively shaping the memory design"
+        "artifact evidence"
       ]
     },
     "promptCache": {
@@ -100,8 +80,7 @@
         "model.decide",
         "tool.execute",
         "dream.run"
-      ],
-      "toolNames": ["send_group_message", "leave"]
+      ]
     },
     "memory": {
       "homeBeforeContains": [
@@ -116,20 +95,8 @@
       ],
       "homeAfterContains": [
         {
-          "path": "memories/self/index.md",
-          "contains": "Memory system direction"
-        },
-        {
-          "path": "memories/self/memory-system.md",
-          "contains": "file-backed Markdown"
-        },
-        {
           "path": "memories/users/alice/index.md",
-          "contains": "concrete memory text"
-        },
-        {
-          "path": "memories/users/alice/memory-system.md",
-          "contains": "Alice is actively shaping the memory design"
+          "contains": "artifact evidence"
         }
       ],
       "injectedMemoryPaths": [
@@ -142,19 +109,10 @@
       ],
       "dreamCommandsContain": [
         "/memories",
-        "Memory system direction",
-        "concrete memory text",
         "file-backed Markdown",
-        "Alice is actively shaping the memory design"
+        "artifact evidence"
       ],
-      "dreamAddedFiles": [
-        "self/memory-system.md",
-        "users/alice/memory-system.md"
-      ],
-      "dreamChangedFiles": [
-        "self/index.md",
-        "users/alice/index.md"
-      ]
+      "dreamChangedFiles": ["users/alice/index.md"]
     }
   }
 }

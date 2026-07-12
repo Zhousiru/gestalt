@@ -8,6 +8,7 @@ This file is the short entry point for coding agents working on Gestalt. Keep it
 - Use [docs/GROUP_CHAT_AGENT_LOOP.md](docs/GROUP_CHAT_AGENT_LOOP.md) for group-session lifecycle, triggering, timed steering, and exit behavior.
 - Use [docs/MEMORY_MODEL.md](docs/MEMORY_MODEL.md) for file-based memory and dreaming.
 - Use [docs/ONEBOT_CONNECTOR.md](docs/ONEBOT_CONNECTOR.md) for canonical events and OneBot protocol boundaries.
+- Use [docs/STICKER_SYSTEM.md](docs/STICKER_SYSTEM.md) for sticker collection, analysis, retrieval, sending, and observability.
 - Follow [docs/HARNESS_WORKFLOW.md](docs/HARNESS_WORKFLOW.md) whenever runtime behavior changes.
 
 ## Verification

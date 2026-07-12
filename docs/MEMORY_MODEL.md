@@ -148,6 +148,15 @@ Dreaming is responsible for maintaining useful long-term continuity:
 - Remove or rewrite stale memory.
 - Keep recent context fresh without hoarding every message.
 
+Memory has a high admission threshold: keep only information likely to change a
+future judgment or interaction. Typical candidates are stable identity,
+preferences or boundaries; relationship changes or shared milestones; recurring
+patterns or group norms; durable commitments or open threads; and corrections.
+Dreaming infers these naturally from conversation. It should retain enduring
+meaning rather than quotes, detailed retellings, routine interaction behavior,
+per-interaction records, or facts that matter only to the current exchange.
+Most ordinary conversations should produce no memory write.
+
 Dreaming may run asynchronously. The main chat response should not wait on a long memory-maintenance pass unless a future product decision requires it.
 
 ## Bash-Based Memory Editing

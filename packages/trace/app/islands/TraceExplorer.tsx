@@ -20,6 +20,7 @@ import {
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { allExpanded, collapseAllNested, darkStyles, JsonView } from "react-json-view-lite";
 import "react-json-view-lite/dist/index.css";
+import { AppHeader } from "../components/AppHeader";
 import {
   Dialog,
   IconButton,
@@ -78,8 +79,20 @@ export default function TraceExplorer() {
   const [traceDetail, setTraceDetail] = useState<TraceDetail | undefined>();
   const [traceLoading, setTraceLoading] = useState(false);
   const [mounted, setMounted] = useState(false);
+  const snapshotLoadingRef = useRef(false);
+  const snapshotRefreshPendingRef = useRef(false);
+  const traceDetailLoadingRef = useRef(false);
+  const pendingTraceDetailRef = useRef<
+    { traceId: string; quiet: boolean } | undefined
+  >(undefined);
+  const latestTraceDetailIdRef = useRef<string | undefined>(undefined);
 
   const loadSnapshot = async () => {
+    if (snapshotLoadingRef.current) {
+      snapshotRefreshPendingRef.current = true;
+      return;
+    }
+    snapshotLoadingRef.current = true;
     setLoadState((state) => (state === "ready" ? state : "loading"));
     try {
       const response = await fetch("/api/live/snapshot", { cache: "no-store" });
@@ -93,10 +106,22 @@ export default function TraceExplorer() {
     } catch (snapshotError) {
       setLoadState("error");
       setError(snapshotError instanceof Error ? snapshotError.message : String(snapshotError));
+    } finally {
+      snapshotLoadingRef.current = false;
+      if (snapshotRefreshPendingRef.current) {
+        snapshotRefreshPendingRef.current = false;
+        void loadSnapshot();
+      }
     }
   };
 
   const loadTraceDetail = async (traceId: string, quiet = false) => {
+    latestTraceDetailIdRef.current = traceId;
+    if (traceDetailLoadingRef.current) {
+      pendingTraceDetailRef.current = { traceId, quiet };
+      return;
+    }
+    traceDetailLoadingRef.current = true;
     if (!quiet) {
       setTraceLoading(true);
     }
@@ -107,15 +132,24 @@ export default function TraceExplorer() {
       if (!response.ok) {
         throw new Error(`Trace request failed with ${response.status}`);
       }
-      setTraceDetail((await response.json()) as TraceDetail);
+      const detail = (await response.json()) as TraceDetail;
+      if (latestTraceDetailIdRef.current === traceId) {
+        setTraceDetail(detail);
+      }
     } catch (detailError) {
       if (!quiet) {
         setTraceDetail(undefined);
       }
       setError(detailError instanceof Error ? detailError.message : String(detailError));
     } finally {
+      traceDetailLoadingRef.current = false;
       if (!quiet) {
         setTraceLoading(false);
+      }
+      const pending = pendingTraceDetailRef.current;
+      if (pending) {
+        pendingTraceDetailRef.current = undefined;
+        void loadTraceDetail(pending.traceId, pending.quiet);
       }
     }
   };
@@ -206,6 +240,7 @@ export default function TraceExplorer() {
   return (
     <TooltipProvider>
       <main className="grid h-screen grid-rows-[auto_minmax(0,1fr)] bg-[var(--trace-bg)] text-neutral-950">
+        <h1 className="sr-only">Traces</h1>
         <Header
           workspace={workspace}
           liveState={liveState}
@@ -245,15 +280,11 @@ export default function TraceExplorer() {
 function BootShell() {
   return (
     <main className="grid h-screen grid-rows-[auto_minmax(0,1fr)] bg-[var(--trace-bg)] text-neutral-950">
-      <header className="flex min-h-16 flex-wrap items-center justify-between gap-4 border-b border-neutral-200 bg-white px-4 py-3">
-        <div className="flex items-center gap-3">
-          <div className="grid h-9 w-9 place-items-center rounded-md bg-[var(--trace-accent)] text-white">
-            <Activity size={18} />
-          </div>
-          <h1 className="text-base font-semibold">Gestalt Trace</h1>
-        </div>
-        <StatusPill tone="info">connecting</StatusPill>
-      </header>
+      <h1 className="sr-only">Traces</h1>
+      <AppHeader
+        current="traces"
+        actions={<StatusPill tone="info">connecting</StatusPill>}
+      />
       <section className="grid place-items-center p-6">
         <div className="rounded-md bg-white p-6 text-sm text-neutral-500 ring-1 ring-neutral-200">
           Loading trace workspace
@@ -275,40 +306,39 @@ function Header({
   onRefresh: () => void;
 }) {
   return (
-    <header className="flex min-h-16 flex-wrap items-center justify-between gap-4 border-b border-neutral-200 bg-white px-4 py-3">
-      <div className="min-w-0">
-        <div className="flex items-center gap-3">
-          <div className="grid h-9 w-9 place-items-center rounded-md bg-[var(--trace-accent)] text-white">
-            <Activity size={18} />
-          </div>
-          <h1 className="text-base font-semibold">Gestalt Trace</h1>
-        </div>
-      </div>
-      <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
-        <StatusPill tone={liveState === "live" ? "ok" : liveState === "offline" ? "error" : "info"}>
-          <Radio size={12} className="mr-1" />
-          {liveState}
-        </StatusPill>
-        <StatusPill tone={loadState === "error" ? "error" : "neutral"}>
-          {workspace ? `${workspace.traceCount} traces` : "no traces"}
-        </StatusPill>
-        <StatusPill tone={workspace?.activeRunCount ? "info" : "neutral"}>
-          {workspace ? `${workspace.activeRunCount} active` : "no active"}
-        </StatusPill>
-        <StatusPill tone="neutral">
-          {workspace ? `${workspace.sessionExportCount} sessions` : "no sessions"}
-        </StatusPill>
-        <Tooltip label="Refresh snapshot">
-          <IconButton onClick={onRefresh} disabled={loadState === "loading"}>
-            {loadState === "loading" ? (
-              <Loader2 size={16} />
-            ) : (
-              <RefreshCw size={16} />
-            )}
-          </IconButton>
-        </Tooltip>
-      </div>
-    </header>
+    <AppHeader
+      current="traces"
+      actions={
+        <>
+          <StatusPill tone={liveState === "live" ? "ok" : liveState === "offline" ? "error" : "info"}>
+            <Radio size={12} className="mr-1" />
+            {liveState}
+          </StatusPill>
+          <StatusPill tone={loadState === "error" ? "error" : "neutral"}>
+            {workspace ? `${workspace.traceCount} traces` : "no traces"}
+          </StatusPill>
+          <StatusPill tone={workspace?.activeRunCount ? "info" : "neutral"}>
+            {workspace ? `${workspace.activeRunCount} active` : "no active"}
+          </StatusPill>
+          <StatusPill tone="neutral">
+            {workspace ? `${workspace.sessionExportCount} sessions` : "no sessions"}
+          </StatusPill>
+          <Tooltip label="Refresh snapshot">
+            <IconButton
+              aria-label="Refresh trace snapshot"
+              onClick={onRefresh}
+              disabled={loadState === "loading"}
+            >
+              {loadState === "loading" ? (
+                <Loader2 size={16} />
+              ) : (
+                <RefreshCw size={16} />
+              )}
+            </IconButton>
+          </Tooltip>
+        </>
+      }
+    />
   );
 }
 

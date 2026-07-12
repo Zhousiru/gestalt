@@ -475,11 +475,16 @@ function recordSelfMessagesFromToolResults(
 ): void {
   for (const toolResult of result.toolResults) {
     const proposal = toolResult.proposal;
+    const isGroupMessage =
+      proposal.toolName === "send_group_message" &&
+      proposal.params.groupId === result.window.conversation.id;
+    const isConversationSticker =
+      proposal.toolName === "send_sticker" &&
+      proposal.params.conversation.kind === result.window.conversation.kind &&
+      proposal.params.conversation.id === result.window.conversation.id;
     if (
       toolResult.status !== "executed" ||
-      proposal.toolName !== "send_group_message" ||
-      result.window.conversation.kind !== "group" ||
-      proposal.params.groupId !== result.window.conversation.id
+      (!isGroupMessage && !isConversationSticker)
     ) {
       continue;
     }
@@ -491,8 +496,15 @@ function recordSelfMessagesFromToolResults(
     const selfName =
       readOptionalString(dependencies.config.flatValues, "bot_display_name") ??
       "Gestalt";
-    const text = proposal.params.text;
-    const replyToMessageId = parseLeadingReplyMessageId(text);
+    const text = isGroupMessage
+      ? proposal.toolName === "send_group_message"
+        ? proposal.params.text
+        : ""
+      : stickerTranscriptText(toolResult);
+    const replyToMessageId =
+      proposal.toolName === "send_sticker"
+        ? proposal.params.replyToMessageId
+        : parseLeadingReplyMessageId(text);
     const occurredAt = toolResult.executedAt;
 
     dependencies.sessionStore.appendEvent(
@@ -520,8 +532,11 @@ function recordSelfMessagesFromToolResults(
           ...(replyToMessageId ? { replyToMessageId } : {})
         },
         raw: {
-          generatedBy: "send_group_message",
-          proposalId: proposal.id
+          generatedBy: proposal.toolName,
+          proposalId: proposal.id,
+          ...(proposal.toolName === "send_sticker"
+            ? { stickerId: proposal.params.stickerId }
+            : {})
         }
       },
       {
@@ -529,6 +544,25 @@ function recordSelfMessagesFromToolResults(
       }
     );
   }
+}
+
+function stickerTranscriptText(
+  toolResult: AgentTurnResult["toolResults"][number]
+): string {
+  const proposal = toolResult.proposal;
+  if (proposal.toolName !== "send_sticker") {
+    return "[表情包]";
+  }
+  const data =
+    toolResult.result?.data &&
+    typeof toolResult.result.data === "object" &&
+    !Array.isArray(toolResult.result.data)
+      ? (toolResult.result.data as Record<string, unknown>)
+      : undefined;
+  const desc = typeof data?.desc === "string" ? data.desc : undefined;
+  return desc
+    ? `[表情包 ${proposal.params.stickerId}：${desc}]`
+    : `[表情包 ${proposal.params.stickerId}]`;
 }
 
 async function waitForNextInputOrExit(

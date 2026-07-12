@@ -7,6 +7,7 @@ export const ToolNameSchema = z.enum([
   "send_group_message",
   "send_dm",
   "send_image",
+  "search_sticker",
   "send_sticker",
   "react_to_message",
   "poke_user",
@@ -68,12 +69,22 @@ export const SendImageActionProposalSchema = ActionProposalBaseSchema.extend({
     .strict()
 });
 
+export const SearchStickerActionProposalSchema = ActionProposalBaseSchema.extend({
+  toolName: z.literal("search_sticker"),
+  params: z
+    .object({
+      query: z.string().min(1).max(1000),
+      limit: z.number().int().min(1).max(20).optional()
+    })
+    .strict()
+});
+
 export const SendStickerActionProposalSchema = ActionProposalBaseSchema.extend({
   toolName: z.literal("send_sticker"),
   params: z
     .object({
       conversation: ConversationTargetSchema,
-      sticker: z.string().min(1).max(2000),
+      stickerId: z.string().min(1).max(200),
       replyToMessageId: z.string().min(1).optional()
     })
     .strict()
@@ -142,6 +153,7 @@ export const ActionProposalSchema = z.discriminatedUnion("toolName", [
   SendGroupMessageActionProposalSchema,
   SendDmActionProposalSchema,
   SendImageActionProposalSchema,
+  SearchStickerActionProposalSchema,
   SendStickerActionProposalSchema,
   ReactToMessageActionProposalSchema,
   PokeUserActionProposalSchema,

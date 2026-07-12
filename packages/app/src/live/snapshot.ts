@@ -12,6 +12,7 @@ import {
 } from "./format";
 import { listJsonlFileNames, readJsonlDirectory } from "./jsonl";
 import type { GestaltHome } from "../home/resolveGestaltHome";
+import { visibleMessageText } from "../privacy/stickerRedaction";
 import type {
   ActiveRunView,
   AgentTurnTrace,
@@ -276,7 +277,10 @@ function buildConversationView(
     .filter((run) => conversationKey(run.conversation) === key)
     .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))[0];
   const lastAt = lastActiveRun?.updatedAt ?? lastEvent?.receivedAt;
-  const lastText = lastEvent?.event.message.text;
+  const lastText =
+    lastEvent?.event.type === "MessageReceived"
+      ? visibleMessageText(lastEvent.event)
+      : undefined;
 
   return {
     key,
@@ -357,7 +361,12 @@ function toEventItem(record: ConversationSessionSnapshot["events"][number]): Eve
       : {}),
     isSelf: Boolean(record.event.sender.isSelf),
     mentionsBot: Boolean(record.event.message.mentionsBot),
-    text: truncate(record.event.message.text ?? record.event.type, 360),
+    text: truncate(
+      record.event.type === "MessageReceived"
+        ? visibleMessageText(record.event)
+        : record.event.type,
+      360
+    ),
     ...(sourceLabel ? { source: sourceLabel } : {})
   };
 }

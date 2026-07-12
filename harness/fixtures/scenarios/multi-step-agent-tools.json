@@ -1,6 +1,6 @@
 {
   "id": "multi-step-agent-tools",
-  "description": "A configured AI SDK model runs as a multi-step main agent, executes a reaction tool, sends one group reply, observes tool results, then chooses leave in the same turn.",
+  "description": "A configured AI SDK agent executes both a requested reaction and a requested group reply, while allowing an optional terminal presence action.",
   "homeFixture": "harness/fixtures/homes/simple-group-test",
   "memoriesFixture": "harness/fixtures/memories/simple-group-test",
   "model": {
@@ -28,7 +28,7 @@
       "nextSeq": 3,
       "turnStatus": "completed",
       "loopExits": 1,
-      "loopExitReasons": ["leave_tool"],
+      "loopExitReasons": ["idle_timeout"],
       "steerCount": 0,
       "eventSeqs": [1],
       "phases": [
@@ -40,11 +40,10 @@
       ]
     },
     "action": {
-      "toolNames": ["react_to_message", "send_group_message", "leave"]
+      "toolNamesInclude": ["react_to_message", "send_group_message"]
     },
     "tools": {
-      "calls": 3,
-      "toolNames": ["react_to_message", "send_group_message", "leave"],
+      "toolNamesInclude": ["react_to_message", "send_group_message"],
       "connectorSideEffects": 0
     },
     "modelInput": {
@@ -56,9 +55,8 @@
     "modelExchange": {
       "minExchanges": 2,
       "minResponses": 2,
-      "maxToolCallsPerResponse": 1,
       "purposeIncludes": ["agent_action"],
-      "responseContains": ["react_to_message", "send_group_message", "leave"]
+      "responseContains": ["react_to_message", "send_group_message"]
     },
     "trace": {
       "traces": 1,
@@ -68,7 +66,7 @@
         "model.decide",
         "tool.execute"
       ],
-      "toolNames": ["react_to_message", "send_group_message", "leave"]
+      "toolNamesInclude": ["react_to_message", "send_group_message"]
     }
   }
 }

@@ -74,6 +74,34 @@ try {
   assert.ok(assetPath, "Built Live UI index must reference an asset.");
   const asset = await fetch(`${origin}${assetPath}`);
   assert.equal(asset.status, 200);
+  const assetText = await asset.text();
+  assert.match(assetText, /Stickers/);
+  assert.match(assetText, /Sticker subsystem unavailable/);
+  assert.match(assetText, /Previous sticker page/);
+  assert.match(assetText, /Close sticker details/);
+
+  const stickerSnapshotResponse = await fetch(
+    `${origin}/api/live/stickers/snapshot`
+  );
+  assert.equal(stickerSnapshotResponse.status, 200);
+  const stickerSnapshot = (await stickerSnapshotResponse.json()) as {
+    available?: unknown;
+    unavailableReason?: unknown;
+    processing?: { ready?: unknown };
+    catalog?: { offset?: unknown; limit?: unknown; total?: unknown };
+    jobs?: unknown[];
+    stickers?: unknown[];
+  };
+  assert.equal(stickerSnapshot.available, false);
+  assert.equal(typeof stickerSnapshot.unavailableReason, "string");
+  assert.equal(stickerSnapshot.processing?.ready, 0);
+  assert.deepEqual(stickerSnapshot.catalog, {
+    offset: 0,
+    limit: 48,
+    total: 0
+  });
+  assert.deepEqual(stickerSnapshot.jobs, []);
+  assert.deepEqual(stickerSnapshot.stickers, []);
 
   const artifact = {
     ok: true,
@@ -84,7 +112,9 @@ try {
     healthStatus: health.status,
     pageStatus: page.status,
     uiAsset: assetPath,
-    assetStatus: asset.status
+    assetStatus: asset.status,
+    stickerPageBundled: true,
+    stickerSnapshotStatus: stickerSnapshotResponse.status
   };
   await rm(artifactDir, { recursive: true, force: true });
   await mkdir(artifactDir, { recursive: true });

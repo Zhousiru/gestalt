@@ -227,7 +227,13 @@ export type RuntimeLiveEventType =
   | "agent.observation.created"
   | "agent.run.completed"
   | "agent.run.failed"
-  | "trace.recorded";
+  | "trace.recorded"
+  | "sticker.scraping.state_changed"
+  | "sticker.job.updated"
+  | "sticker.catalog.updated"
+  | "sticker.index.updated"
+  | "sticker.search.completed"
+  | "sticker.send.completed";
 
 export interface RuntimeLiveEventEnvelope<T = unknown> {
   id: number;

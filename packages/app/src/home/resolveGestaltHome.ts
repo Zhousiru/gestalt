@@ -10,6 +10,12 @@ export interface GestaltHome {
   tracesDir: string;
   logsDir: string;
   toolCacheDir: string;
+  stickersDir: string;
+  stickerRecordsDir: string;
+  stickerBlobsDir: string;
+  stickerJobsDir: string;
+  stickerLanceDbDir: string;
+  stickerLogsDir: string;
 }
 
 export interface ResolveGestaltHomeOptions {
@@ -24,6 +30,7 @@ export async function resolveGestaltHome(
   const cwd = options.cwd ?? process.env.INIT_CWD ?? process.cwd();
   const requestedHome = options.homePath ?? process.env.GESTALT_HOME ?? ".gestalt";
   const root = path.resolve(cwd, requestedHome);
+  const stickersDir = path.join(root, "stickers");
   const home: GestaltHome = {
     root,
     configPath: path.join(root, "config.toml"),
@@ -32,7 +39,13 @@ export async function resolveGestaltHome(
     sessionsDir: path.join(root, "sessions"),
     tracesDir: path.join(root, "traces"),
     logsDir: path.join(root, "logs"),
-    toolCacheDir: path.join(root, "tool-cache")
+    toolCacheDir: path.join(root, "tool-cache"),
+    stickersDir,
+    stickerRecordsDir: path.join(stickersDir, "records"),
+    stickerBlobsDir: path.join(stickersDir, "blobs"),
+    stickerJobsDir: path.join(stickersDir, "jobs"),
+    stickerLanceDbDir: path.join(stickersDir, "lancedb"),
+    stickerLogsDir: path.join(root, "sticker-logs")
   };
 
   if (options.create !== false) {
@@ -43,7 +56,13 @@ export async function resolveGestaltHome(
       mkdir(home.sessionsDir, { recursive: true }),
       mkdir(home.tracesDir, { recursive: true }),
       mkdir(home.logsDir, { recursive: true }),
-      mkdir(home.toolCacheDir, { recursive: true })
+      mkdir(home.toolCacheDir, { recursive: true }),
+      mkdir(home.stickersDir, { recursive: true }),
+      mkdir(home.stickerRecordsDir, { recursive: true }),
+      mkdir(home.stickerBlobsDir, { recursive: true }),
+      mkdir(home.stickerJobsDir, { recursive: true }),
+      mkdir(home.stickerLanceDbDir, { recursive: true }),
+      mkdir(home.stickerLogsDir, { recursive: true })
     ]);
   }
 

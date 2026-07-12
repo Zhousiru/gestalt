@@ -472,7 +472,7 @@ For GestaltHome behavior, verify:
 
 - The configured model runs from a fixture GestaltHome with test persona and memory snapshot.
 - The model request receives the test persona and group message.
-- The model proposes `send_group_message -> leave`.
+- The model proposes `send_group_message` and does not routinely call `leave` after replying; it may use `say_nothing` to remain available for follow-up.
 - The action is executed by mock tools.
 - No connector side effect occurs.
 - Eval rubric: `direct_reply_quality`, judging whether a direct mention produces an appropriate visible action and compact reply.
@@ -549,8 +549,8 @@ For GestaltHome behavior, verify:
 
 - A fake OneBot v11 WebSocket server can push a raw group message event into the app.
 - The OneBot connector normalizes reply, mention, text, image, and platform emoji information into CQ-like canonical message text.
-- The rendered transcript exposes image and platform emoji context to the configured model as readable, copyable CQ markup.
-- The configured model may call read-only helpers such as `read_image`, which map to OneBot APIs and return inspectable tool results before visible side effects.
+- The rendered transcript preserves complete CQ markup for ordinary images, platform emoji, mface, and custom image stickers so the model can call `read_image` with the original file value.
+- The main model may call `read_image`, which maps to OneBot `get_image`; the following provider request must contain actual image input before visible side effects.
 - The runtime uses the normal trigger and agent-loop path.
 - `send_group_message` executes as a OneBot `send_group_msg` API call with CQ string message text and `auto_escape=false`.
 - WebSocket API responses are correlated through OneBot `echo`.
@@ -558,13 +558,52 @@ For GestaltHome behavior, verify:
 
 `tool-contract-e2e` verifies:
 
-- The runtime tool layer supports `say_nothing`, `fetch_message`, `read_image`, `send_group_message`, `send_dm`, `send_image`, `send_sticker`, `react_to_message`, `poke_user`, `recall_own_message`, and `leave`.
+- The runtime tool layer supports `say_nothing`, `fetch_message`, `read_image`, `send_group_message`, `send_dm`, `send_image`, `search_sticker`, `send_sticker`, `react_to_message`, `poke_user`, `recall_own_message`, and `leave`.
 - Mock tools record every tool call without live connector side effects.
 - OneBot connector mappings use `get_msg`, `get_image`, `send_group_msg`, `send_private_msg`, `send_msg`, `set_msg_emoji_like`, NapCat `send_poke`, and `delete_msg`.
 - Read-only helper tools expose fetched message or image data in tool results without visible chat side effects.
-- Image and sticker sends preserve CQ string messages with `auto_escape=false`.
-- QQ marketplace sticker data can be preserved as `[CQ:mface,...]` markup.
+- General image sends preserve CQ string messages with `auto_escape=false`.
+- Sticker search/send requires the runtime sticker service; raw CQ sticker input is not a model tool contract.
 - Eval rubric: `tool_contract_quality`, judging the exported proposal, mock tool, connector result, and OneBot API call artifacts.
+
+`verify:stickers` verifies:
+
+- Only direct/compatibility mface and `image.sub_type=1` are collected.
+- Turning scraping off rejects new observations while existing jobs finish.
+- Animated media produces an inspectable, time-sampled 16-frame 4x4 artifact.
+- Exact duplicates reuse description, media, and the single global vector row while merging source provenance and delivery metadata.
+- Worker wakeups, three-attempt failure isolation, and embedding-version rebuilds preserve ready catalog records.
+- Startup audit prunes LanceDB ids outside the exact ready catalog set.
+- Generated descriptions are embedded once per sticker and searched bot-wide through local LanceDB; large sets of closer orphan/failed rows cannot crowd out a valid result.
+- Stable sticker ids resolve to native mface, image `sub_type=1`, and native-failure fallback sends.
+- `/scrape-sticker` authorization and on/off/toggle execute without a model request, window, turn, or steer.
+- `sticker-logs`, snapshots, connector calls, records, jobs, and vector search results provide durable evidence.
+
+`verify:sticker-media` is the focused media-boundary regression fixture. It
+verifies persisted segment indices, identity-checked selection in multi-sticker
+messages, rejection of untrusted inbound paths/URLs, connector-action media
+marking, direct trusted URL fetching, the streamed 16 MiB cap, pre-decode
+dimension/frame/total-pixel budgets, and the valid 16-sample 4x4 path. Read
+`harness/artifacts/sticker-media-security/summary.json` after running it.
+
+`verify:stickers-ui` starts the real Live HTTP server over a populated sticker
+fixture. It verifies ready/queued/failed overview state, paginated and filtered
+catalog responses, the 100-item service limit, retry-stage semantics, protected
+media assets, original CQ preservation in Live/SSE session messages, structured
+transport redaction, SSE catalog updates, and the
+all-interface binding plus same-origin browser guards. Responsive browser QA artifacts live under
+`harness/artifacts/live-stickers-ui/`.
+
+The Live trace workspace invalidates its cached snapshot on runtime events but
+coalesces concurrent snapshot loads into one JSONL scan. The Trace UI likewise
+collapses event bursts into at most one active refresh plus one trailing refresh,
+including selected trace detail reloads. This prevents large trace histories from
+turning an SSE event burst into overlapping full-history parses.
+
+`eval:stickers` exercises the configured real model with a frequency/persona
+fragment and judges celebration use, immediate-repeat restraint, serious-context
+restraint, stable-id use, and avoidance of manually echoing raw transport CQ. Inspect
+`harness/artifacts/stickers-social-eval/` rather than relying on the score alone.
 
 ## Development Rule
 
