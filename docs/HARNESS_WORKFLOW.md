@@ -69,7 +69,8 @@ Important files:
 - `fixtures/scenarios/*.json`: durable behavior fixtures.
 - `fixtures/homes/*`: complete or partial GestaltHome fixtures.
 - `fixtures/memories/*`: memory snapshots copied into temporary GestaltHome runs.
-- `fixtures/sessions/*`: exported session snapshots used as initial replay state.
+- `fixtures/sessions/*.jsonl`: append-only session journal input installed into
+  the fixture home; these are message facts, not runtime-state snapshots.
 - `artifacts/<scenario-id>/`: generated run evidence. This directory is ignored by git.
 
 ## Scenario Fixture Format
@@ -82,7 +83,8 @@ A scenario fixture describes:
 - `configFixture`: optional config file copied to `config.toml`.
 - `personaFixture`: optional persona directory under the repo.
 - `memoriesFixture`: optional memory snapshot directory copied to `memories/`.
-- `sessionSnapshotFixture`: optional exported session snapshot imported before events run.
+- `sessionJournalFixture`: optional session journal JSONL installed at its
+  recorded UTC day before startup.
 - `eventHandling`: `manual_windows` for direct post-trigger windows, or `runtime_triggers` for pre-trigger verification.
 - `model`: configured AI SDK model for durable harness verification.
 - `events`: ordered mock message events, each with optional `delayMs`.
@@ -115,6 +117,8 @@ The current real-model baseline uses an AI SDK OpenAI-compatible model. Provider
 - `model_prompt_cache_enabled`: enables provider prompt caching for the active model session.
 - `model_prompt_cache_ttl`: OpenRouter cache TTL (`5m` or `1h`).
 - `context_recent_message_count`: how many previous messages from the same conversation are carried into compiled group context.
+- `session_recent_history_hours`: journal message-recovery horizon; defaults to 24 hours.
+- `trace_binary_capture_enabled`: production rollout blob capture; defaults to `false` and must never be enabled implicitly by the harness.
 - `bot_user_id` and `bot_display_name`: identity used when recording successful bot group-message tool calls back into session history.
 - `allowedgroups`: optional group id allowlist. When present, runtime-triggered group events outside the array are ignored before session ingestion.
 
@@ -140,15 +144,19 @@ The replay runner does this:
 1. Load `.env` and `.env.local`.
 2. Read and validate the scenario fixture.
 3. Create a temporary GestaltHome.
-4. Copy fixture home/config/persona/memories into that home.
-5. Import an optional session snapshot.
-6. Snapshot GestaltHome before events run.
-7. Create a mock connector and mock tools.
-8. Create a configured AI SDK model and capture every ToolLoopAgent request/response step.
-9. Send fixture events in order, respecting `delayMs`.
-10. Let the runtime handle each message window, or let runtime triggers decide whether to open a window when `eventHandling` is `runtime_triggers`.
-11. Snapshot GestaltHome after the run.
-12. Export session, traces, model requests, model exchanges, summary, home snapshots, and report.
+4. Copy fixture home/config/persona/memories and an optional journal JSONL into
+   that home.
+5. Snapshot GestaltHome before events run.
+6. Create a mock connector and mock tools.
+7. Create a configured model with two independent sinks: compact production
+   rollout records and complete harness-only model exchange capture.
+8. Send fixture events in order, respecting `delayMs`.
+9. Let the runtime handle each message window, or let runtime triggers decide whether to open a window when `eventHandling` is `runtime_triggers`.
+10. Snapshot GestaltHome after the run.
+11. Export the bounded session diagnostic view, journal records, rollout
+    records, model requests/exchanges, summary, home snapshots, and report.
+12. Reconstruct each generation from rollout deltas and compare it with the
+    canonical request captured by the harness sink.
 13. Run fixture expectations through `assertions.ts`.
 
 This keeps live platform connectors out of harness tests.
@@ -160,7 +168,9 @@ Each replay writes:
 ```text
 harness/artifacts/<scenario-id>/
   session.json
-  traces.json
+  session-journal.json
+  rollouts.json
+  reconstructed-inputs.json
   model-requests.json
   model-exchanges.json
   eval-inputs.json
@@ -170,14 +180,19 @@ harness/artifacts/<scenario-id>/
   home-after.json
   summary.json
   report.md
+  blobs/<sha256>
 ```
 
 Use these files when debugging:
 
-- `session.json`: conversation state, events, windows, turns, actions, and tool results.
-- `traces.json`: trace spans for runtime operations.
+- `session.json`: bounded diagnostic conversation state; it is not startup input.
+- `session-journal.json`: append-only journal records exported for fixture assertions.
+- `rollouts.json`: production incremental rollout records and derived summaries.
+- `reconstructed-inputs.json`: generation inputs rebuilt from committed rollout deltas.
 - `model-requests.json`: captured AI SDK model request messages for configured model scenarios.
-- `model-exchanges.json`: captured AI SDK step requests, real responses, and tool calls, grouped by purpose such as `agent_action` or `dreaming`.
+- `model-exchanges.json`: complete harness-captured step requests, real responses,
+  and tool calls, grouped by purpose such as `agent_action` or `dreaming`. These
+  are captured at model-call time, never extracted from production rollouts.
 - `eval-inputs.json`: rubric, criteria, and compact evidence sent to the LLM judge.
 - `eval-results.json`: structured LLM judgment results with label, score, reasoning, concerns, and evidence.
 - `eval-report.md`: human-readable eval report.
@@ -185,6 +200,13 @@ Use these files when debugging:
 - `home-after.json`: temporary GestaltHome file snapshot after the run.
 - `summary.json`: compact run summary.
 - `report.md`: human-readable run report for quick review.
+
+Every harness JSON artifact goes through the shared binary-aware writer. Buffer,
+typed-array, ArrayBuffer, data-URI, provider base64 media, and binary values
+nested inside JSON-encoded strings are replaced with content-addressed
+references; their bytes are deduplicated under the `blobs/` directory beside
+the JSON file. This is independent of `trace_binary_capture_enabled`: production
+capture may remain disabled while harness evidence stays fully inspectable.
 
 Artifacts are evidence, not source. They are ignored by git.
 
@@ -268,6 +290,12 @@ Run the centralized prompt catalog and hash checks:
 pnpm --filter @gestalt/harness run verify:prompts
 ```
 
+Run rollout-first Live API/Trace UI contract and production-build verification:
+
+```bash
+pnpm --filter @gestalt/harness run verify:traces-ui
+```
+
 Run all current LLM-judged evals:
 
 ```bash
@@ -314,14 +342,21 @@ Clean generated build output before finishing work if `packages/app/dist/` was c
 
 When adding a runtime feature, follow this loop:
 
-1. State the behavior in artifact terms before coding: what should appear in `session.json`, `model-requests.json`, `model-exchanges.json`, `traces.json`, tool calls, home snapshots, or eval output?
+1. State the behavior in artifact terms before coding: what should appear in
+   `session.json`, `session-journal.json`, `rollouts.json`,
+   `reconstructed-inputs.json`,
+   `model-requests.json`, `model-exchanges.json`, tool calls, home snapshots, or
+   eval output?
 2. Implement the smallest runtime change that expresses the behavior.
 3. Add or update a scenario fixture under `harness/fixtures/scenarios/`.
-4. Add fixture home, persona, memory, config, or session data only if the behavior requires it.
+4. Add fixture home, persona, memory, config, or journal data only if the behavior requires it.
 5. Extend `fixtureSchema.ts` only when the fixture needs a new kind of input or expectation.
 6. Extend `assertions.ts` so the expected behavior is checked from exported artifacts.
 7. Run the relevant `verify:*` command.
-8. Inspect `session.json`, `traces.json`, `model-requests.json`, `model-exchanges.json`, `home-before.json`, `home-after.json`, `summary.json`, and `report.md`.
+8. Inspect `session.json`, `session-journal.json`, `rollouts.json`,
+   `reconstructed-inputs.json`,
+   `model-requests.json`, `model-exchanges.json`, `home-before.json`,
+   `home-after.json`, `summary.json`, and `report.md`.
 9. If the behavior is qualitative, add or select an LLM eval rubric and run the relevant `eval:*` command.
 10. Inspect `eval-inputs.json`, `eval-results.json`, and `eval-report.md`.
 11. Keep the fixture if it captures a product principle, bug fix, or important behavior.
@@ -350,9 +385,9 @@ Useful artifact questions:
 - Did the model actually see the needed context, or did the reply happen by luck?
 - Did the tool call happen inside AI SDK tool calling, not as JSON or prose?
 - Did a multi-step agent call one tool, observe the result, and then continue?
-- Did the session export include the event/window/turn/loop-exit records needed for replay?
+- Did the journal export include stable event/window/turn/loop-exit ids in the correct append order?
 - Did a bot-visible side effect also appear as a self message when future context depends on it?
-- Did trace spans make the same behavior inspectable without reading model prose?
+- Did rollout records make the same behavior inspectable without repeating the full provider request?
 - Did memory changes appear in `home-after.json`, and were stale or wrong claims removed rather than contradicted?
 
 When an eval returns `warn` or `fail`, treat it as a behavioral finding. The fix may be a runtime bug, a prompt issue, missing artifact evidence, weak fixture wording, or a rubric that no longer matches the product decision.
@@ -408,9 +443,9 @@ Eval failures should be treated as behavioral findings. They may point to a prom
 For session behavior, verify:
 
 - Conversation count and ids.
-- Event sequence numbers.
+- Stable event ids and journal append order.
 - Self-message count when bot output should be recorded as group history.
-- Window count, reason, and seq range.
+- Window count, reason, and ordered `eventIds`.
 - Turn count and status.
 - Loop exit count and reason.
 - Turn phases.
@@ -443,13 +478,23 @@ For tool behavior, verify:
 
 For trace behavior, verify:
 
-- At least one trace exists when a turn runs.
-- Expected spans exist, such as `memory.inject`, `context.compile`, `model.decide`, and `tool.execute`.
+- One rollout exists for each active loop that reaches the model.
+- The initial prompt/tool protocol appears once; later steps append only new committed messages.
+- Every generation references the correct input `stateHash`, message count, output message ids, usage/cache data, and status.
+- Reconstructed generation input matches the independent harness-captured canonical request.
+- Cancelled generations commit no assistant message and do not advance state.
+- Expected completed spans/tools exist, such as memory injection, context compilation, model generation, tool execution, and dreaming.
+- Durable outbound start/finish records bracket connector side effects. A start
+  without finish derives an unknown result and is never retried.
+- Trace JSON contains no raw Buffer, typed-array numeric properties, base64
+  media, local paths, or provider bodies.
 
 For GestaltHome behavior, verify:
 
 - The declared fixture home/config/persona/memory files appear in `home-before.json`.
-- Runtime-created files, such as trace JSONL files, appear in `home-after.json`.
+- Runtime-created files, such as rollout JSONL files, appear in `home-after.json`.
+- Rollouts use one file per active loop under `traces/YYYY/MM/DD/`; session facts
+  use `sessions/journal/YYYY-MM-DD/000001.jsonl`.
 - Secret-like files such as `.env.local` are not captured in home snapshots.
 
 ## Current Fixtures
@@ -461,8 +506,9 @@ For GestaltHome behavior, verify:
 - The steer is appended as a new user message while the original system/persona prefix remains byte-for-byte unchanged.
 - All requests use one OpenRouter `session_id` and top-level `cache_control`.
 - At least one completed response reports positive provider `cached_tokens`; structural prefix checks alone are not sufficient.
-- An imported session snapshot is preserved and new events continue from the next seq.
-- The final turn covers event seqs `[2, 3]`.
+- Pre-existing journal messages within the configured recent-history horizon
+  hydrate as messages only; no old loop/timer/model state is revived.
+- The final turn references the two expected stable event ids in arrival order.
 - The configured model receives the steered window and returns a real `send_group_message -> leave` tool sequence.
 - Mock tools record both the visible reply and lifecycle exit.
 - Successful `send_group_message` calls are appended to the exported session as self messages for future context.
@@ -483,7 +529,8 @@ For GestaltHome behavior, verify:
 - Keyword trigger creates a `keyword` window from a configured alias.
 - Activity trigger creates one `activity` window when a configured time range crosses the configured message threshold.
 - Icebreaker trigger creates an `icebreaker` window when imported session history shows the group was quiet long enough.
-- Exported `session.json` records the expected event sequence, window reason, and turn.
+- Exported journal/session evidence records the expected stable event ids,
+  window reason, and turn.
 - `model-requests.json` records that the real configured model saw the trigger-created window transcript.
 - Keyword windows currently verify `send_group_message -> leave` because the message naturally addresses the persona by name.
 - Activity and icebreaker windows currently verify direct `leave` with no visible side effect when the chat itself does not invite the persona to join; the hidden trigger reason is not used to force a visible response.
@@ -517,7 +564,8 @@ For GestaltHome behavior, verify:
 - The model calls `react_to_message`, observes the tool result, then calls `send_group_message`, observes that result, then calls `leave`.
 - Each model response contains at most one action tool call.
 - Session export preserves every proposed action and tool result.
-- Trace export records the same tool sequence under `tool.execute`.
+- Rollout export records the same tool sequence through immutable
+  `tool_completed` and committed tool-message records.
 - Eval rubric: `multi_step_agent_tool_quality`, judging whether the serial tool sequence is coherent and inspectable.
 
 `group-exit-idle-timeout.json`, `group-exit-say-nothing.json`, `group-exit-leave-tool.json`, and `group-exit-slash-leave.json` verify:
@@ -527,7 +575,7 @@ For GestaltHome behavior, verify:
 - Three consecutive `say_nothing` turns release an active loop.
 - The model-visible `leave` tool releases an active loop without connector side effects.
 - The user control command `/leave` force-releases the active loop as `slash_leave` without a model request, model action, tool call, or connector side effect.
-- Multi-turn loop fixtures can assert every turn's event sequence and steer count.
+- Multi-turn loop fixtures can assert every turn's ordered event ids and steer count.
 
 `memory-injection-dreaming.json`, `memory-correction-dreaming.json`, and `memory-pruning-dreaming.json` verify:
 
@@ -594,11 +642,14 @@ transport redaction, SSE catalog updates, and the
 all-interface binding plus same-origin browser guards. Responsive browser QA artifacts live under
 `harness/artifacts/live-stickers-ui/`.
 
-The Live trace workspace invalidates its cached snapshot on runtime events but
-coalesces concurrent snapshot loads into one JSONL scan. The Trace UI likewise
-collapses event bursts into at most one active refresh plus one trailing refresh,
-including selected trace detail reloads. This prevents large trace histories from
-turning an SSE event burst into overlapping full-history parses.
+The rollout-first Live API uses cursor-paged server-side search. Conversation
+timelines initially load only the newest page, rollout detail streams one target
+file, and full prompt reconstruction happens only for a selected generation.
+SSE carries changed entity ids under count and byte budgets, so the client
+invalidates only affected queries instead of rescanning all journal and rollout
+history. Browser verification covers desktop, tablet, and mobile navigation,
+loading/error/offline states, keyboard focus, reduced motion, and both binary
+availability paths.
 
 `eval:stickers` exercises the configured real model with a frequency/persona
 fragment and judges celebration use, immediate-repeat restraint, serious-context

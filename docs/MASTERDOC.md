@@ -155,11 +155,12 @@ Replay requires:
 
 - Canonical event records.
 - Mock connectors.
-- Memory snapshots.
-- Persona versioning.
-- Tool registry versioning.
-- Model and prompt version metadata.
-- Complete traces of proposed and executed actions.
+- Explicit fixture-home and memory state.
+- Persona, prompt, and tool-protocol content hashes.
+- Incremental rollout records for model state, proposed actions, tool results,
+  and external side effects.
+- Independent harness capture of complete provider exchanges when exact request
+  comparison is required.
 
 ### 3.7 Every Persistent Design Choice Should Become a Harness Asset
 
@@ -211,21 +212,30 @@ The initial implementation should use:
 - File-backed configuration, persona, logs, traces, sessions, and memory under an explicit GestaltHome directory for the first implementation.
 - Narrative memory has no vector retrieval dependency. The separate sticker catalog uses local LanceDB over generated sticker descriptions.
 - OneBot v11 as the initial connector protocol.
-- OpenTelemetry-style spans as the internal trace shape.
-- Langfuse-compatible traces and scores for trace inspection, evaluation, and LLM-as-judge workflows.
+- An append-only session journal for recent chat recovery and one incremental
+  rollout JSONL file per active loop.
+- Immutable observation-style records, state-hash reconstruction, and optional
+  content-addressed binary capture.
 
-Local trace files in GestaltHome remain the replay source of truth. Langfuse is an integration and inspection target, not the only storage backend.
+Local session and rollout files in GestaltHome remain the source of truth. The
+observation hierarchy, immutable records, media references, and cursor paging
+borrow useful Langfuse concepts, but the runtime does not export to or depend on
+Langfuse. See [PERSISTENCE_AND_TRACES.md](PERSISTENCE_AND_TRACES.md).
 
 The current workspace shape is intentionally small:
 
 ```text
 packages/
   app/
+  live-contracts/
   trace/
 harness/
 ```
 
-`packages/app` owns the main runtime host and connector-facing application. `packages/trace` owns the trace inspection web UI. `harness` owns replay, simulators, fixtures, evals, trace assertions, and reports.
+`packages/app` owns the main runtime host and connector-facing application.
+`packages/live-contracts` owns the Live API wire schemas shared by server and
+client. `packages/trace` owns the trace inspection web UI. `harness` owns replay,
+simulators, fixtures, evals, trace assertions, and reports.
 
 ### 4.2 GestaltHome Runtime Directory
 
@@ -257,7 +267,7 @@ GestaltHome responsibilities:
 - Store app configuration and connector/runtime options.
 - Store persona files and persona customization.
 - Store narrative memories and memory metadata.
-- Store session state, open threads, and recent runtime state.
+- Store an append-only session journal and a bounded recent runtime working set.
 - Store replayable logs, events, traces, and local run artifacts.
 - Provide a single filesystem root that tests and harness runs can replace.
 
@@ -267,14 +277,20 @@ Runtime rules:
 - The app should not silently depend on the repository working directory for runtime state.
 - Persistent runtime reads and writes should be rooted in GestaltHome unless they are deliberate connector side effects or explicit external integrations.
 - Secrets may come from environment variables or deployment-specific secret stores, but configuration that shapes behavior should be reproducible from GestaltHome plus declared environment.
-- A trace should record enough GestaltHome identity, config version, persona version, and memory snapshot information to make replay meaningful.
+- A rollout should record stable fixture/home identity plus config, persona,
+  prompt, tool-protocol, and memory content hashes needed to attribute a run.
 
 Harness implications:
 
 - Tests can create temporary GestaltHome directories instead of mutating a shared local state.
-- Replay fixtures can include complete or partial GestaltHome snapshots.
+- Replay fixtures can include complete or partial GestaltHome directories.
 - Evals can run the same scenario against different GestaltHome directories to compare persona, memory, or config changes.
 - Production failures can be minimized into fixture homes, making regressions easier to reproduce.
+
+Session startup never imports a saved runtime-state snapshot. It streams only
+recent message records from `sessions/journal/`, using
+`session_recent_history_hours` (default 24), and does not revive old loops,
+timers, steering, or provider sessions.
 
 ## 5. Canonical Event Model
 
@@ -550,8 +566,8 @@ Harness responsibilities:
 - Run with explicit temporary or fixture GestaltHome directories.
 - Mock all external connectors.
 - Snapshot and diff GestaltHome before and after a run.
-- Compare model/runtime versions.
-- Generate traces.
+- Compare declared model identities and runtime content hashes.
+- Generate and reconstruct rollout traces.
 - Run eval suites.
 - Promote production failures into scenario fixtures and minimized GestaltHome fixtures.
 - Provide evidence for debugging and review.
@@ -577,7 +593,7 @@ Good evals should include:
 
 - GestaltHome fixture path, snapshot, or explicit home overrides.
 - Input conversation.
-- Persona version.
+- Persona content hash.
 - Memory snapshot.
 - Available tools.
 - Expected acceptable behaviors.
@@ -586,7 +602,10 @@ Good evals should include:
 - LLM judge rubric and recorded judge result.
 - Optional human review queue.
 
-LLM judge results should be stored as scores attached to the evaluated trace or span. The judge call itself should also appear in the trace, including model, rubric version, inputs, output, latency, token usage, and a concise reasoning summary.
+LLM judge results belong in harness eval artifacts and may later be appended as
+new immutable rollout evaluation records. They must never mutate an existing
+generation or span. Judge evidence includes model identity, rubric content hash,
+inputs, output, latency, token usage, and a concise reasoning summary.
 
 Example fixture:
 
@@ -607,32 +626,35 @@ unacceptable:
 
 ## 13. Observability
 
-Every run should produce a trace.
+Every active loop produces one incremental rollout under
+`traces/YYYY/MM/DD/`. The rollout starts with its initial model messages and tool
+protocol once, then appends only committed message deltas, generation summaries,
+completed tools/spans, durable outbound-action boundaries, and its terminal
+dreaming continuation. Canonical `stateHash` values allow any generation input
+to be reconstructed without repeating the cumulative provider request.
 
-The initial implementation should persist logs and traces as files under GestaltHome.
+Session history is separate. `sessions/journal/YYYY-MM-DD/000001.jsonl` records
+message and lifecycle facts using stable ids and ordered event-id lists. File
+order is authoritative; neither persistence format maintains sequence fields,
+format markers, checkpoints, lookup sidecars, or migrations.
 
-Trace records should be shaped as OpenTelemetry-style span trees and remain compatible with Langfuse concepts:
+Raw binary never enters JSON. Binary capture defaults off; when explicitly
+enabled, blobs are content-addressed by SHA-256 under `traces/blobs/`, capped at
+16 MiB, and loaded by the Trace UI only on demand. A missing rollout finish is
+derived as `process_restarted`. An outbound action with a durable start and no
+finish is `result_unknown_after_restart` and is never retried.
 
-- A trace represents one agent turn, replay run, dreaming run, or eval run.
-- A span represents one operation inside that trace.
-- A score represents a rule, human, or LLM judge result attached to a trace or span.
-- JSONL event logs remain the canonical replay input; span trees may be derived from those events for inspection and export.
-- Traces should include the GestaltHome path or stable fixture identifier used for the run, plus relevant config, persona, and memory snapshot metadata.
+The Live API uses shared runtime-validated contracts, server-side search, cursor
+paging, one-file rollout detail, and on-demand prompt reconstruction. SSE carries
+only small invalidation summaries under explicit item and byte budgets. The
+Trace UI presents chats, rollouts, signals, model deltas, flow, and immutable
+records without loading all history.
 
-Important spans:
-
-| Span | Records |
-| --- | --- |
-| `ingest.event` | Raw platform event and normalized canonical event. |
-| `context.compile` | Persona, recent messages, memories, tools, and platform constraints injected. |
-| `model.decide` | Model version, prompt version, proposed actions, latency, and token usage. |
-| `tool.execute` | Tool name, parameters, connector result, retry behavior, and errors. |
-| `memory.inject` | Memories injected into model context. |
-| `memory.write` | Proposed and accepted memory writes. |
-| `dream.run` | Episode summary, memory updates, rejected memories, and eval candidates. |
-| `eval.judge` | LLM judge model, rubric version, target trace or span, score, label, and reasoning summary. |
-
-Traces are part of the product's engineering surface. They should be readable by humans and coding agents.
+Production rollout storage stays compact. Harness model request/response
+artifacts come from a separate model-exchange capture sink and are compared
+against rollout reconstruction. See
+[PERSISTENCE_AND_TRACES.md](PERSISTENCE_AND_TRACES.md) for the complete storage,
+failure, binary, Live API, and verification contracts.
 
 ## 14. Suggested Repository Structure
 
@@ -647,6 +669,7 @@ repo/
     sessions/
   docs/
     ARCHITECTURE.md
+    PERSISTENCE_AND_TRACES.md
     PERSONA_PACKS.md
     TOOL_REGISTRY.md
     CANONICAL_EVENTS.md
@@ -736,7 +759,7 @@ Coding agents working on this project must follow these rules:
 - Multi-day replay.
 - Group simulators.
 - Sticker behavior eval.
-- Production trace sampling.
+- Production rollout sampling.
 - Human review workflow.
 
 ## 17. Explicit Non-Goals

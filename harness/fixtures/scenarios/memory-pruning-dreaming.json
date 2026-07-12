@@ -29,7 +29,7 @@
       "turnStatus": "completed",
       "loopExits": 1,
       "steerCount": 0,
-      "eventSeqs": [1]
+      "eventIds": ["memory-pruning-message-1"]
     },
     "modelInput": {
       "contains": [
@@ -47,8 +47,8 @@
         "/memories/users/alice/index.md"
       ]
     },
-    "trace": {
-      "traces": 1,
+    "rollout": {
+      "rollouts": 1,
       "spans": [
         "memory.inject",
         "context.compile",

@@ -35,15 +35,52 @@ export async function createOneBotRuntime(
     model: createAiSdkModelFromConfig(config),
     ...(options.liveEvents ? { liveEvents: options.liveEvents } : {})
   });
+  const observedOutcomes = new Set<Promise<unknown>>();
 
-  options.transport.onEvent((rawEvent) => {
+  options.transport.onEventError((failure) => {
+    reportFailure(failure.code, failure.error);
+  });
+  options.transport.onEvent(async (rawEvent) => {
     const event = connector.normalizeEvent(rawEvent);
     if (event) {
-      void runtime.handleEvent(event);
+      const dispatch = await runtime.dispatchEvent(event);
+      observeOutcome(dispatch.outcome);
     }
   });
   await options.transport.connect();
   return runtime;
+
+  function observeOutcome(outcome: Promise<unknown>): void {
+    if (observedOutcomes.has(outcome)) {
+      return;
+    }
+    observedOutcomes.add(outcome);
+    void outcome
+      .then(
+        () => undefined,
+        (error: unknown) => {
+          reportFailure("runtime_outcome_failed", error);
+        }
+      )
+      .finally(() => {
+        observedOutcomes.delete(outcome);
+      });
+  }
+
+  function reportFailure(code: string, error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+    const summary = `${code}: ${message}`;
+    console.error(`[onebot ingress] ${summary}`);
+    try {
+      options.liveEvents?.publish("agent.run.failed", {
+        entity: { kind: "signal", id: `onebot-ingress:${code}` },
+        status: "failed",
+        summary
+      });
+    } catch {
+      // Live diagnostics must not create another ingress failure.
+    }
+  }
 }
 
 export function createOneBotTransportFromConfig(input: {

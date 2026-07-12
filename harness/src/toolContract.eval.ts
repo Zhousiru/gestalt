@@ -12,6 +12,7 @@ import {
   TOOL_CONTRACT_JUDGE_TOOL_DESCRIPTION,
   TOOL_CONTRACT_RUBRIC
 } from "./prompts";
+import { writeArtifactJson } from "./artifactBinary";
 
 interface JudgeResult {
   label: "pass" | "warn" | "fail";
@@ -129,8 +130,8 @@ async function writeEvalArtifacts(
     evalReport: path.join(artifactDir, "eval-report.md")
   };
   await Promise.all([
-    writeJson(paths.evalInputs, input),
-    writeJson(paths.evalResults, {
+    writeArtifactJson(paths.evalInputs, input),
+    writeArtifactJson(paths.evalResults, {
       judge: summarizeJudgeConfig(config),
       result
     }),
@@ -171,8 +172,4 @@ function summarizeJudgeConfig(config: EvalModelConfig): Record<string, unknown> 
     timeoutMs: config.timeoutMs,
     ...(config.thinking ? { thinking: config.thinking } : {})
   };
-}
-
-async function writeJson(filePath: string, value: unknown): Promise<void> {
-  await writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }

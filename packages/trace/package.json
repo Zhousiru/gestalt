@@ -12,6 +12,7 @@
     "preview": "vite preview --host 127.0.0.1 --port 5174"
   },
   "dependencies": {
+    "@gestalt/live-contracts": "workspace:*",
     "@radix-ui/react-dialog": "^1.1.19",
     "@radix-ui/react-scroll-area": "^1.2.14",
     "@radix-ui/react-tabs": "^1.1.17",

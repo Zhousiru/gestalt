@@ -28,21 +28,22 @@ export function selectContextEvents(
     0
   );
   const events = input.sessionStore.getEvents(input.window.conversation);
-  const bySeq = new Map<number, ContextEventRecord>();
+  const byRecordId = new Map<string, ContextEventRecord>();
+  const firstWindowRecord = input.windowEvents[0];
 
   if (input.includeRecentHistory ?? true) {
     for (const record of selectRecentHistory({
       events,
-      beforeSeq: input.window.fromSeq,
+      ...(firstWindowRecord ? { beforeRecordId: firstWindowRecord.id } : {}),
       count: recentCount,
       includeSelfHistory: input.includeSelfHistory
     })) {
-      addRecord(bySeq, record, "history");
+      addRecord(byRecordId, record, "history");
     }
   }
 
   for (const record of input.windowEvents) {
-    addRecord(bySeq, record, "current_window");
+    addRecord(byRecordId, record, "current_window");
   }
 
   const byMessageId = new Map<string, SessionEventRecord>();
@@ -52,7 +53,9 @@ export function selectContextEvents(
     }
   }
 
-  for (const record of Array.from(bySeq.values()).map((entry) => entry.record)) {
+  for (const record of Array.from(byRecordId.values()).map(
+    (entry) => entry.record
+  )) {
     if (record.event.type !== "MessageReceived") {
       continue;
     }
@@ -62,18 +65,26 @@ export function selectContextEvents(
     }
     const target = byMessageId.get(replyToMessageId);
     if (target) {
-      addRecord(bySeq, target, "reply_target");
+      addRecord(byRecordId, target, "reply_target");
     }
   }
 
-  return Array.from(bySeq.values()).sort(
-    (left, right) => left.record.seq - right.record.seq
+  const positionByRecordId = new Map(
+    events.map((record, index) => [record.id, index])
   );
+  return Array.from(byRecordId.values()).sort((left, right) => {
+    const leftPosition = positionByRecordId.get(left.record.id);
+    const rightPosition = positionByRecordId.get(right.record.id);
+    return (
+      (leftPosition ?? Number.MAX_SAFE_INTEGER) -
+      (rightPosition ?? Number.MAX_SAFE_INTEGER)
+    );
+  });
 }
 
 function selectRecentHistory(input: {
   events: SessionEventRecord[];
-  beforeSeq: number;
+  beforeRecordId?: string;
   count: number;
   includeSelfHistory: boolean;
 }): SessionEventRecord[] {
@@ -81,8 +92,12 @@ function selectRecentHistory(input: {
     return [];
   }
 
+  const beforeIndex = input.beforeRecordId
+    ? input.events.findIndex((record) => record.id === input.beforeRecordId)
+    : input.events.length;
+  const historyEnd = beforeIndex >= 0 ? beforeIndex : input.events.length;
   return input.events
-    .filter((record) => record.seq < input.beforeSeq)
+    .slice(0, historyEnd)
     .filter(
       (record) =>
         input.includeSelfHistory || !isSelfMessageEvent(record.event)
@@ -91,18 +106,18 @@ function selectRecentHistory(input: {
 }
 
 function addRecord(
-  records: Map<number, ContextEventRecord>,
+  records: Map<string, ContextEventRecord>,
   record: SessionEventRecord,
   label: ContextEventLabel
 ): void {
-  const existing = records.get(record.seq);
+  const existing = records.get(record.id);
   if (existing) {
     if (!existing.labels.includes(label)) {
       existing.labels.push(label);
     }
     return;
   }
-  records.set(record.seq, {
+  records.set(record.id, {
     record,
     labels: [label]
   });
@@ -126,6 +141,9 @@ function readNonNegativeInteger(
   }
   if (!Number.isInteger(numericValue) || numericValue < 0) {
     throw new Error(`Config value ${key} must be a non-negative integer.`);
+  }
+  if (numericValue > 500) {
+    throw new Error(`Config value ${key} must not exceed 500.`);
   }
   return numericValue;
 }

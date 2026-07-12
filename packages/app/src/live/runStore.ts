@@ -1,23 +1,6 @@
+import type { Conversation } from "../events/schemas";
 import type { LiveEventBus } from "./eventBus";
-import { shortId } from "./format";
-import type {
-  ActionProposal,
-  ActiveRunView,
-  AgentObservationCreatedData,
-  AgentPhaseChangedData,
-  AgentRunCompletedData,
-  AgentRunFailedData,
-  AgentRunStartedData,
-  AgentSpanEndedData,
-  AgentSpanStartedData,
-  AgentTurnTrace,
-  MessageWindow,
-  ObservationRecord,
-  RuntimeLiveEventEnvelope,
-  SessionEventRecord,
-  SpanRecord,
-  TurnPhaseRecord
-} from "./viewTypes";
+import type { ActiveRunView, RuntimeLiveEventEnvelope } from "./viewTypes";
 
 export interface LiveRunStore {
   getActiveRuns(now?: () => Date): ActiveRunView[];
@@ -25,28 +8,15 @@ export interface LiveRunStore {
   dispose(): void;
 }
 
-interface MutableRun {
-  traceId: string;
-  eventId: string;
-  conversation: ActiveRunView["conversation"];
-  window: MessageWindow;
-  eventRecords: SessionEventRecord[];
-  startedAt: string;
-  endedAt?: string;
-  updatedAt: string;
-  phase: string;
-  status: ActiveRunView["status"];
-  phases: TurnPhaseRecord[];
-  gestaltHome: string;
-  personaVersion: string;
-  spanOrder: string[];
-  spans: Map<string, SpanRecord>;
-  observations: ObservationRecord[];
-  proposedActions: ActionProposal[];
-  toolResults: unknown[];
-  error?: string;
-}
+interface MutableRun extends ActiveRunView {}
 
+const MAX_TRACKED_RUNS = 500;
+const RUN_SUMMARY_TTL_MS = 24 * 60 * 60 * 1_000;
+
+/**
+ * Tracks only small active-rollout summaries. The event bus has already
+ * discarded prompts, messages, spans, tool payloads, and binary content.
+ */
 export function createLiveRunStore(bus: LiveEventBus): LiveRunStore {
   const runs = new Map<string, MutableRun>();
   const unsubscribe = bus.subscribe({
@@ -57,19 +27,20 @@ export function createLiveRunStore(bus: LiveEventBus): LiveRunStore {
 
   return {
     getActiveRuns(now = () => new Date()) {
-      const at = now().toISOString();
+      pruneRuns(runs, now());
       return Array.from(runs.values())
-        .sort((left, right) => Date.parse(right.startedAt) - Date.parse(left.startedAt))
-        .map((run) => toActiveRunView(run, at));
+        .sort((left, right) => right.startedAt.localeCompare(left.startedAt))
+        .map(copyRun);
     },
 
     getActiveRun(traceId, now = () => new Date()) {
+      pruneRuns(runs, now());
       const run =
         runs.get(traceId) ??
         Array.from(runs.values()).find((candidate) =>
           candidate.traceId.startsWith(traceId)
         );
-      return run ? toActiveRunView(run, now().toISOString()) : undefined;
+      return run ? copyRun(run) : undefined;
     },
 
     dispose() {
@@ -83,192 +54,182 @@ function applyEvent(
   runs: Map<string, MutableRun>,
   event: RuntimeLiveEventEnvelope
 ): void {
+  pruneRuns(runs, event.at);
+  const data = readRecord(event.data);
+  const rolloutId = readRolloutId(data);
+  if (!rolloutId) {
+    return;
+  }
+
   switch (event.type) {
     case "agent.run.started": {
-      const data = event.data as AgentRunStartedData;
-      runs.set(data.traceId, {
-        traceId: data.traceId,
-        eventId: data.eventId,
-        conversation: data.window.conversation,
-        window: data.window,
-        eventRecords: data.eventRecords,
-        startedAt: data.startedAt,
+      const conversation = parseConversationKey(readString(data, "conversationKey"));
+      if (!conversation) {
+        return;
+      }
+      const eventId = readString(data, "eventId");
+      const existing = runs.get(rolloutId);
+      if (existing) {
+        existing.status = "running";
+        existing.phase = "queued";
+        existing.updatedAt = event.at;
+        existing.messageCount += readCount(data, "messageCount");
+        if (eventId) existing.eventId = eventId;
+        break;
+      }
+      runs.set(rolloutId, {
+        traceId: rolloutId,
+        ...(eventId ? { eventId } : {}),
+        conversation,
+        startedAt: readString(data, "startedAt") ?? event.at,
         updatedAt: event.at,
-        phase: "queued",
+        phase: readString(data, "phase") ?? "queued",
         status: "running",
-        phases: [],
-        gestaltHome: data.gestaltHome,
-        personaVersion: data.personaVersion,
-        spanOrder: [],
-        spans: new Map(),
-        observations: [],
-        proposedActions: [],
-        toolResults: []
+        messageCount: readCount(data, "messageCount"),
+        generationCount: 0,
+        toolCount: 0,
+        actionCount: 0
       });
+      enforceRunLimit(runs);
       break;
     }
 
     case "agent.phase.changed": {
-      const data = event.data as AgentPhaseChangedData;
-      const run = runs.get(data.traceId);
-      if (!run) {
-        break;
-      }
-      run.phase = data.phase;
-      run.updatedAt = event.at;
-      run.phases.push({
-        phase: data.phase as TurnPhaseRecord["phase"],
-        at: data.at
-      });
-      break;
-    }
-
-    case "agent.span.started": {
-      const data = event.data as AgentSpanStartedData;
-      const run = runs.get(data.traceId);
-      if (!run) {
-        break;
-      }
-      if (!run.spans.has(data.spanId)) {
-        run.spanOrder.push(data.spanId);
-      }
-      run.spans.set(data.spanId, {
-        id: data.spanId,
-        traceId: data.traceId,
-        name: data.name,
-        startedAt: data.startedAt,
-        endedAt: data.startedAt,
-        attributes: {
-          ...data.attributes,
-          status: "running"
-        }
-      });
-      run.updatedAt = event.at;
-      break;
-    }
-
-    case "agent.span.ended": {
-      const data = event.data as AgentSpanEndedData;
-      const run = runs.get(data.traceId);
-      if (!run) {
-        break;
-      }
-      if (!run.spans.has(data.span.id)) {
-        run.spanOrder.push(data.span.id);
-      }
-      run.spans.set(data.span.id, data.span);
+      const run = runs.get(rolloutId);
+      if (!run) return;
+      run.phase = readString(data, "phase") ?? readString(data, "status") ?? run.phase;
       run.updatedAt = event.at;
       break;
     }
 
     case "agent.observation.created": {
-      const data = event.data as AgentObservationCreatedData;
-      const run = runs.get(data.traceId);
-      if (!run) {
-        break;
-      }
-      if (!run.observations.some((observation) => observation.id === data.observation.id)) {
-        run.observations.push(data.observation);
-      }
+      const run = runs.get(rolloutId);
+      if (!run) return;
+      const observationType = readString(data, "observationType");
+      if (observationType === "generation") run.generationCount += 1;
+      if (observationType === "tool") run.toolCount += 1;
       run.updatedAt = event.at;
       break;
     }
 
     case "agent.run.completed": {
-      const data = event.data as AgentRunCompletedData;
-      const run = runs.get(data.traceId);
-      if (!run) {
-        break;
-      }
-      run.status = "completed";
+      const run = runs.get(rolloutId);
+      if (!run) return;
+      // A model turn completed, but the active loop/rollout may continue with
+      // steering, waiting, or dreaming. rollout.recorded is terminal.
+      run.status = "running";
       run.phase = "completed";
-      run.endedAt = data.endedAt;
       run.updatedAt = event.at;
-      run.proposedActions = data.proposedActions;
-      run.toolResults = data.toolResults;
-      run.spanOrder = data.trace.spans.map((span) => span.id);
-      run.spans = new Map(data.trace.spans.map((span) => [span.id, span]));
-      run.observations = [...data.trace.observations];
+      run.actionCount += readCount(data, "actionCount");
+      run.toolCount = Math.max(
+        run.toolCount,
+        readCount(data, "toolCount", run.toolCount)
+      );
       break;
     }
 
     case "agent.run.failed": {
-      const data = event.data as AgentRunFailedData;
-      const run = runs.get(data.traceId);
-      if (!run) {
-        break;
-      }
+      const run = runs.get(rolloutId);
+      if (!run) return;
       run.status = "failed";
       run.phase = "failed";
-      run.endedAt = data.endedAt;
       run.updatedAt = event.at;
-      run.error = data.error;
-      run.spanOrder = data.trace.spans.map((span) => span.id);
-      run.spans = new Map(data.trace.spans.map((span) => [span.id, span]));
-      run.observations = [...data.trace.observations];
-      run.proposedActions = data.trace.proposedActions;
-      run.toolResults = data.trace.toolResults;
+      const error = readString(data, "summary");
+      if (error) run.error = error;
       break;
     }
 
-    case "trace.recorded": {
-      const data = event.data as { traceId?: string };
-      if (data.traceId) {
-        runs.delete(data.traceId);
-      }
+    case "trace.recorded":
+    case "rollout.recorded":
+      runs.delete(rolloutId);
+      break;
+
+    case "agent.span.started":
+    case "agent.span.ended": {
+      const run = runs.get(rolloutId);
+      if (run) run.updatedAt = event.at;
       break;
     }
   }
 }
 
-function toActiveRunView(run: MutableRun, nowIso: string): ActiveRunView {
-  return {
-    traceId: run.traceId,
-    shortTraceId: shortId(run.traceId),
-    eventId: run.eventId,
-    conversation: run.conversation,
-    window: run.window,
-    eventRecords: run.eventRecords,
-    startedAt: run.startedAt,
-    updatedAt: run.updatedAt,
-    phase: run.phase,
-    status: run.status,
-    phases: run.phases,
-    trace: toTrace(run, nowIso),
-    ...(run.error ? { error: run.error } : {})
-  };
+function pruneRuns(
+  runs: Map<string, MutableRun>,
+  now: Date | string
+): void {
+  const timestamp = now instanceof Date ? now.valueOf() : Date.parse(now);
+  if (Number.isFinite(timestamp)) {
+    for (const [id, run] of runs) {
+      const updatedAt = Date.parse(run.updatedAt);
+      if (
+        Number.isFinite(updatedAt) &&
+        timestamp - updatedAt > RUN_SUMMARY_TTL_MS
+      ) {
+        runs.delete(id);
+      }
+    }
+  }
+  enforceRunLimit(runs);
 }
 
-function toTrace(run: MutableRun, nowIso: string): AgentTurnTrace {
-  const endedAt =
-    run.status === "running" ? nowIso : run.endedAt ?? run.updatedAt ?? nowIso;
-  const spans = run.spanOrder
-    .map((spanId) => run.spans.get(spanId))
-    .filter((span): span is SpanRecord => Boolean(span))
-    .map((span) =>
-      span.attributes.status === "running"
-        ? {
-            ...span,
-            endedAt,
-            attributes: {
-              ...span.attributes,
-              status: "running"
-            }
-          }
-        : span
-    );
+function enforceRunLimit(runs: Map<string, MutableRun>): void {
+  if (runs.size <= MAX_TRACKED_RUNS) {
+    return;
+  }
+  const oldest = [...runs.values()].sort(
+    (left, right) =>
+      left.updatedAt.localeCompare(right.updatedAt) ||
+      left.traceId.localeCompare(right.traceId)
+  );
+  for (const run of oldest.slice(0, runs.size - MAX_TRACKED_RUNS)) {
+    runs.delete(run.traceId);
+  }
+}
 
-  return {
-    id: run.traceId,
-    name: "agent.turn",
-    startedAt: run.startedAt,
-    endedAt,
-    gestaltHome: run.gestaltHome,
-    eventId: run.eventId,
-    personaVersion: run.personaVersion,
-    spans,
-    observations: [...run.observations],
-    proposedActions: run.proposedActions,
-    toolResults: run.toolResults
-  };
+function copyRun(run: MutableRun): ActiveRunView {
+  return { ...run, conversation: { ...run.conversation } };
+}
+
+function readRolloutId(data: Record<string, unknown>): string | undefined {
+  const entity = readRecord(data.entity);
+  return (
+    readString(data, "rolloutId") ??
+    readString(data, "traceId") ??
+    (entity?.kind === "rollout" ? readString(entity, "id") : undefined)
+  );
+}
+
+function parseConversationKey(value: string | undefined): Conversation | undefined {
+  if (!value) return undefined;
+  const separator = value.indexOf(":");
+  const kind = value.slice(0, separator);
+  const id = value.slice(separator + 1);
+  return (kind === "group" || kind === "private") && id
+    ? { kind, id }
+    : undefined;
+}
+
+function readRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function readString(
+  record: Record<string, unknown>,
+  key: string
+): string | undefined {
+  const value = record[key];
+  return typeof value === "string" && value ? value : undefined;
+}
+
+function readCount(
+  record: Record<string, unknown>,
+  key: string,
+  fallback = 0
+): number {
+  const value = record[key];
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : fallback;
 }

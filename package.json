@@ -7,6 +7,7 @@
     "build": "pnpm -r --if-present run build",
     "docker:build": "docker build --tag gestalt:local .",
     "verify:build": "pnpm run build && pnpm --filter @gestalt/harness run verify:build",
+    "verify:traces-ui": "pnpm --filter @gestalt/harness run verify:traces-ui",
     "dev:trace": "pnpm --filter @gestalt/trace dev",
     "test": "pnpm -r --if-present run test",
     "lint": "pnpm -r --if-present run lint",

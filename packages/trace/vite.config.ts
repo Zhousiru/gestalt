@@ -1,4 +1,5 @@
 import tailwindcss from "@tailwindcss/vite";
+import { fileURLToPath, URL } from "node:url";
 import { defineConfig, loadEnv } from "vite";
 
 export default defineConfig(({ mode }) => {
@@ -8,6 +9,13 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [tailwindcss()],
+    resolve: {
+      alias: {
+        "@gestalt/live-contracts": fileURLToPath(
+          new URL("../live-contracts/src/index.ts", import.meta.url)
+        )
+      }
+    },
     server: {
       host: "127.0.0.1",
       port: 5174,

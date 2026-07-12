@@ -29,13 +29,12 @@
       "triggerAttemptReasons": ["keyword"],
       "triggerAttemptProbabilities": [1],
       "triggerAttemptAdmissions": [true],
-      "nextSeq": 3,
       "turnStatus": "completed",
       "loopExits": 1,
       "loopExitReasons": ["leave_tool"],
-      "eventSeqs": [1],
+      "eventIds": ["keyword-message-1"],
       "windowReasons": ["keyword"],
-      "windowEventSeqs": [[1]]
+      "windowEventIds": [["keyword-message-1"]]
     },
     "action": {
       "toolNames": ["send_group_message", "leave"]
@@ -59,8 +58,8 @@
       "purposes": ["agent_action", "agent_action"],
       "responseContains": ["send_group_message", "leave"]
     },
-    "trace": {
-      "traces": 1,
+    "rollout": {
+      "rollouts": 1,
       "spans": [
         "memory.inject",
         "context.compile",

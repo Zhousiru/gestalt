@@ -14,7 +14,6 @@ import os from "node:os";
 import path from "node:path";
 import { config as loadDotenvFile } from "dotenv";
 import {
-  AgentTurnTraceSchema,
   createBashDreamingRunner,
   createAiSdkDreamingRunner,
   createAiSdkModelFromConfig,
@@ -26,24 +25,36 @@ import {
   getMemoryUserPathSegment,
   loadConfig,
   resolveGestaltHome,
-  SessionSnapshotSchema,
+  SessionJournalRecordSchema,
   type AgentTurnResult,
   type AgentTurnTrace,
   type DreamingRunner,
   type ModelRequestSnapshot,
   type ModelResponseSnapshot,
-  type ObservationRecord,
   type MockConnector,
   type MockToolKit,
-  type SessionSnapshot
+  type ReconstructedInput,
+  type RolloutDetail,
+  type SessionJournalRecord,
+  type SessionDiagnostics
 } from "@gestalt/app";
 import { ScenarioFixtureSchema, type ScenarioFixture } from "./fixtureSchema";
+import {
+  createModelExchangeCapture,
+  type ModelExchangeSnapshot
+} from "./modelExchangeCapture";
+import { writeArtifactJson } from "./artifactBinary";
+import { readAndValidateRolloutCapture } from "./rolloutCaptureValidation";
+
+export type { ModelExchangeSnapshot } from "./modelExchangeCapture";
 
 export interface ReplayRunResult {
   fixture: ScenarioFixture;
-  session: SessionSnapshot;
-  sessionExports: SessionSnapshot[];
-  traces: AgentTurnTrace[];
+  session: SessionDiagnostics;
+  sessionJournal: SessionJournalRecord[];
+  turnTraces: AgentTurnTrace[];
+  rollouts: RolloutDetail[];
+  reconstructedInputs: ReconstructedInput[];
   modelRequests: ModelRequestSnapshot[];
   modelExchanges: ModelExchangeSnapshot[];
   turnResults: AgentTurnResult[];
@@ -54,8 +65,10 @@ export interface ReplayRunResult {
   artifactDir: string;
   artifactPaths: {
     session: string;
-    sessionExports: string;
-    traces: string;
+    sessionJournal: string;
+    turnTraces: string;
+    rollouts: string;
+    reconstructedInputs: string;
     modelRequests: string;
     modelExchanges: string;
     homeBefore: string;
@@ -63,12 +76,6 @@ export interface ReplayRunResult {
     summary: string;
     report: string;
   };
-}
-
-export interface ModelExchangeSnapshot {
-  purpose: "agent_action" | "dreaming";
-  request: ModelRequestSnapshot;
-  response?: ModelResponseSnapshot;
 }
 
 export interface HomeSnapshot {
@@ -108,24 +115,23 @@ export async function runScenarioFixture(
     const config = await loadConfig(home);
     const connector = createMockConnector({ now });
     const mockTools = createMockToolKit();
-    const model =
+    const modelCapture = createModelExchangeCapture();
+    const baseModel =
       fixture.model.kind === "mock"
         ? createMockModel({ now, delayMs: fixture.model.delayMs ?? 0 })
-        : createAiSdkModelFromConfig(config);
+        : createAiSdkModelFromConfig(config, {
+            now,
+            onRequest: () => modelCapture.notifyRequestStarted()
+          });
+    const model = modelCapture.wrap(baseModel);
     const dreamingRunner = createFixtureDreamingRunner(fixture, config);
-    const sessionSnapshot = fixture.sessionSnapshotFixture
-      ? await readJsonFile(
-          path.join(paths.repoRoot, fixture.sessionSnapshotFixture)
-        )
-      : undefined;
     const runtime = await createRuntime({
       gestaltHome: tempHome,
       connector,
       model,
       toolImplementations: mockTools.implementations,
       dreamingRunner,
-      now,
-      ...(sessionSnapshot !== undefined ? { sessionSnapshot } : {})
+      now
     });
     const homeBefore = await snapshotHome(tempHome);
 
@@ -133,6 +139,11 @@ export async function runScenarioFixture(
 
     for (const eventInput of fixture.events) {
       await delay(eventInput.delayMs);
+      if (eventInput.waitForModelRequestCount !== undefined) {
+        await modelCapture.waitForRequestCount(
+          eventInput.waitForModelRequestCount
+        );
+      }
       const event = connector.createMessageEvent({
         conversationId: eventInput.conversationId,
         ...(eventInput.conversationName
@@ -147,17 +158,21 @@ export async function runScenarioFixture(
           : {}),
         mentionsBot: eventInput.mentionsBot
       });
+      // Harness fixtures use their explicit message identity as the stable
+      // canonical event identity so eventIds assertions are deterministic.
+      if (eventInput.messageId) {
+        event.id = eventInput.messageId;
+      }
       if (fixture.eventHandling === "runtime_triggers") {
         turnPromises.push(runtime.handleEvent(event));
         continue;
       }
 
-      const record = runtime.ingestEvent(event);
+      const record = await runtime.ingestEvent(event);
       turnPromises.push(
         runtime.handleMessageWindow({
           conversation: event.conversation,
-          fromSeq: record.seq,
-          toSeq: record.seq,
+          eventIds: [record.event.id],
           reason: eventInput.windowReason
         })
       );
@@ -166,21 +181,25 @@ export async function runScenarioFixture(
     const turnResults = dedupeTurnResults(await Promise.all(turnPromises));
     await runtime.whenIdle();
 
-    const session = runtime.exportSession({
+    const session = runtime.exportDiagnostics({
       exportedAt: new Date().toISOString()
     });
-    const sessionExports = await readSessionExports(home.sessionsDir);
-    const traces = await readTraces(home.tracesDir);
-    const modelExchanges = extractModelExchangesFromTraces(traces);
+    const sessionJournal = await readSessionJournal(home.sessionsDir);
+    const turnTraces = turnResults.map((result) => result.trace);
+    const modelExchanges = modelCapture.exchanges;
     const modelRequests = modelExchanges.map((exchange) => exchange.request);
+    const { rollouts, reconstructedInputs } =
+      await readAndValidateRolloutCapture(home.tracesDir, modelExchanges);
     const homeAfter = await snapshotHome(tempHome);
     const artifactDir = path.join(paths.artifactRoot, fixture.id);
     const artifactPaths = await writeArtifacts({
       artifactDir,
       fixture,
       session,
-      sessionExports,
-      traces,
+      sessionJournal,
+      turnTraces,
+      rollouts,
+      reconstructedInputs,
       modelRequests,
       modelExchanges,
       turnResults,
@@ -193,8 +212,10 @@ export async function runScenarioFixture(
     return {
       fixture,
       session,
-      sessionExports,
-      traces,
+      sessionJournal,
+      turnTraces,
+      rollouts,
+      reconstructedInputs,
       modelRequests,
       modelExchanges,
       turnResults,
@@ -267,69 +288,6 @@ function getFirstMessageSenderId(input: {
   return "unknown";
 }
 
-function extractModelExchangesFromTraces(
-  traces: AgentTurnTrace[]
-): ModelExchangeSnapshot[] {
-  const exchanges: ModelExchangeSnapshot[] = [];
-  for (const trace of traces) {
-    for (const observation of trace.observations ?? []) {
-      if (observation.type !== "generation") {
-        continue;
-      }
-      const request = readModelRequestFromObservation(observation);
-      if (!request) {
-        continue;
-      }
-      const response = readModelResponseFromObservation(observation);
-      exchanges.push({
-        purpose: readModelPurpose(observation),
-        request,
-        ...(response ? { response } : {})
-      });
-    }
-  }
-  return exchanges;
-}
-
-function readModelPurpose(
-  observation: ObservationRecord
-): ModelExchangeSnapshot["purpose"] {
-  return observation.metadata.purpose === "dreaming"
-    ? "dreaming"
-    : "agent_action";
-}
-
-function readModelRequestFromObservation(
-  observation: ObservationRecord
-): ModelRequestSnapshot | undefined {
-  const value = observation.input;
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return undefined;
-  }
-  const candidate = value as Partial<ModelRequestSnapshot>;
-  if (
-    typeof candidate.provider !== "string" ||
-    typeof candidate.model !== "string" ||
-    typeof candidate.temperature !== "number" ||
-    typeof candidate.stepNumber !== "number" ||
-    !Array.isArray(candidate.messages) ||
-    !Array.isArray(candidate.tools)
-  ) {
-    return undefined;
-  }
-  return candidate as ModelRequestSnapshot;
-}
-
-function readModelResponseFromObservation(
-  observation: ObservationRecord
-): ModelResponseSnapshot | undefined {
-  const value = observation.output;
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return undefined;
-  }
-  return value as ModelResponseSnapshot;
-}
-
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
@@ -337,10 +295,6 @@ function shellQuote(value: string): string {
 async function readScenarioFixture(fixturePath: string): Promise<ScenarioFixture> {
   const raw = await readFile(fixturePath, "utf8");
   return ScenarioFixtureSchema.parse(JSON.parse(raw));
-}
-
-async function readJsonFile(filePath: string): Promise<unknown> {
-  return JSON.parse(await readFile(filePath, "utf8"));
 }
 
 function getReplayPaths(fixturePath: string): ReplayPaths {
@@ -392,47 +346,81 @@ async function createScenarioHome(
     );
   }
 
+  if (fixture.sessionJournalFixture) {
+    await installSessionJournalFixture(
+      path.join(repoRoot, fixture.sessionJournalFixture),
+      tempHome
+    );
+  }
+
   return tempHome;
 }
 
-async function readTraces(tracesDir: string): Promise<AgentTurnTrace[]> {
-  let fileNames: string[];
-  try {
-    fileNames = await readdir(tracesDir);
-  } catch {
-    return [];
+async function installSessionJournalFixture(
+  fixturePath: string,
+  homeRoot: string
+): Promise<void> {
+  const raw = await readFile(fixturePath, "utf8");
+  const firstLine = raw.split(/\r?\n/).find((line) => line.trim());
+  if (!firstLine) {
+    throw new Error(`Session journal fixture is empty: ${fixturePath}`);
   }
-
-  const traces: AgentTurnTrace[] = [];
-  for (const fileName of fileNames.filter((name) => name.endsWith(".jsonl"))) {
-    const raw = await readFile(path.join(tracesDir, fileName), "utf8");
-    for (const line of raw.split(/\r?\n/)) {
-      if (line.trim()) {
-        traces.push(AgentTurnTraceSchema.parse(JSON.parse(line)));
-      }
-    }
+  const firstRecord = JSON.parse(firstLine) as { recordedAt?: unknown };
+  if (typeof firstRecord.recordedAt !== "string") {
+    throw new Error(
+      `Session journal fixture has no recordedAt timestamp: ${fixturePath}`
+    );
   }
-  return traces;
+  const timestamp = new Date(firstRecord.recordedAt);
+  if (Number.isNaN(timestamp.valueOf())) {
+    throw new Error(
+      `Session journal fixture has an invalid recordedAt timestamp: ${fixturePath}`
+    );
+  }
+  const targetDir = path.join(
+    homeRoot,
+    "sessions",
+    "journal",
+    timestamp.toISOString().slice(0, 10)
+  );
+  await mkdir(targetDir, { recursive: true });
+  await cp(fixturePath, path.join(targetDir, "000001.jsonl"));
 }
 
-async function readSessionExports(sessionsDir: string): Promise<SessionSnapshot[]> {
-  let fileNames: string[];
-  try {
-    fileNames = await readdir(sessionsDir);
-  } catch {
-    return [];
-  }
-
-  const sessions: SessionSnapshot[] = [];
-  for (const fileName of fileNames.filter((name) => name.endsWith(".jsonl"))) {
-    const raw = await readFile(path.join(sessionsDir, fileName), "utf8");
+async function readSessionJournal(
+  sessionsDir: string
+): Promise<SessionJournalRecord[]> {
+  const journalDir = path.join(sessionsDir, "journal");
+  const files = await collectJsonlFiles(journalDir);
+  const records: SessionJournalRecord[] = [];
+  for (const filePath of files) {
+    const raw = await readFile(filePath, "utf8");
     for (const line of raw.split(/\r?\n/)) {
       if (line.trim()) {
-        sessions.push(SessionSnapshotSchema.parse(JSON.parse(line)));
+        records.push(SessionJournalRecordSchema.parse(JSON.parse(line)));
       }
     }
   }
-  return sessions;
+  return records;
+}
+
+async function collectJsonlFiles(directory: string): Promise<string[]> {
+  let entries: Dirent[];
+  try {
+    entries = await readdir(directory, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const files: string[] = [];
+  for (const entry of entries) {
+    const absolutePath = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...(await collectJsonlFiles(absolutePath)));
+    } else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
+      files.push(absolutePath);
+    }
+  }
+  return files.sort();
 }
 
 async function snapshotHome(homeRoot: string): Promise<HomeSnapshot> {
@@ -493,9 +481,11 @@ async function collectHomeFiles(
 async function writeArtifacts(input: {
   artifactDir: string;
   fixture: ScenarioFixture;
-  session: SessionSnapshot;
-  sessionExports: SessionSnapshot[];
-  traces: AgentTurnTrace[];
+  session: SessionDiagnostics;
+  sessionJournal: SessionJournalRecord[];
+  turnTraces: AgentTurnTrace[];
+  rollouts: RolloutDetail[];
+  reconstructedInputs: ReconstructedInput[];
   modelRequests: ModelRequestSnapshot[];
   modelExchanges: ModelExchangeSnapshot[];
   turnResults: AgentTurnResult[];
@@ -509,8 +499,13 @@ async function writeArtifacts(input: {
 
   const artifactPaths = {
     session: path.join(input.artifactDir, "session.json"),
-    sessionExports: path.join(input.artifactDir, "session-exports.json"),
-    traces: path.join(input.artifactDir, "traces.json"),
+    sessionJournal: path.join(input.artifactDir, "session-journal.json"),
+    turnTraces: path.join(input.artifactDir, "turn-traces.json"),
+    rollouts: path.join(input.artifactDir, "rollouts.json"),
+    reconstructedInputs: path.join(
+      input.artifactDir,
+      "reconstructed-inputs.json"
+    ),
     modelRequests: path.join(input.artifactDir, "model-requests.json"),
     modelExchanges: path.join(input.artifactDir, "model-exchanges.json"),
     homeBefore: path.join(input.artifactDir, "home-before.json"),
@@ -524,8 +519,10 @@ async function writeArtifacts(input: {
     description: input.fixture.description,
     modelKind: input.fixture.model.kind,
     conversations: input.session.conversations.length,
-    sessionExports: input.sessionExports.length,
-    traces: input.traces.length,
+    sessionJournalRecords: input.sessionJournal.length,
+    turnTraces: input.turnTraces.length,
+    rollouts: input.rollouts.length,
+    reconstructedInputs: input.reconstructedInputs.length,
     modelRequests: input.modelRequests.length,
     modelExchanges: input.modelExchanges.length,
     modelResponses: input.modelExchanges.filter((exchange) => exchange.response)
@@ -567,14 +564,16 @@ async function writeArtifacts(input: {
   };
 
   await Promise.all([
-    writeJson(artifactPaths.session, input.session),
-    writeJson(artifactPaths.sessionExports, input.sessionExports),
-    writeJson(artifactPaths.traces, input.traces),
-    writeJson(artifactPaths.modelRequests, input.modelRequests),
-    writeJson(artifactPaths.modelExchanges, input.modelExchanges),
-    writeJson(artifactPaths.homeBefore, input.homeBefore),
-    writeJson(artifactPaths.homeAfter, input.homeAfter),
-    writeJson(artifactPaths.summary, summary),
+    writeArtifactJson(artifactPaths.session, input.session),
+    writeArtifactJson(artifactPaths.sessionJournal, input.sessionJournal),
+    writeArtifactJson(artifactPaths.turnTraces, input.turnTraces),
+    writeArtifactJson(artifactPaths.rollouts, input.rollouts),
+    writeArtifactJson(artifactPaths.reconstructedInputs, input.reconstructedInputs),
+    writeArtifactJson(artifactPaths.modelRequests, input.modelRequests),
+    writeArtifactJson(artifactPaths.modelExchanges, input.modelExchanges),
+    writeArtifactJson(artifactPaths.homeBefore, input.homeBefore),
+    writeArtifactJson(artifactPaths.homeAfter, input.homeAfter),
+    writeArtifactJson(artifactPaths.summary, summary),
     writeFile(artifactPaths.report, renderReport(input, summary), "utf8")
   ]);
 
@@ -584,9 +583,11 @@ async function writeArtifacts(input: {
 function renderReport(
   input: {
     fixture: ScenarioFixture;
-    session: SessionSnapshot;
-    sessionExports: SessionSnapshot[];
-    traces: AgentTurnTrace[];
+    session: SessionDiagnostics;
+    sessionJournal: SessionJournalRecord[];
+    turnTraces: AgentTurnTrace[];
+    rollouts: RolloutDetail[];
+    reconstructedInputs: ReconstructedInput[];
     modelRequests: ModelRequestSnapshot[];
     modelExchanges: ModelExchangeSnapshot[];
     turnResults: AgentTurnResult[];
@@ -610,12 +611,13 @@ function renderReport(
     "",
     `- Model: ${input.fixture.model.kind}`,
     `- Conversations: ${summary.conversations}`,
-    `- Realtime session exports: ${input.sessionExports.length}`,
+    `- Session journal records: ${input.sessionJournal.length}`,
     `- Events: ${conversation?.events.length ?? 0}`,
     `- Trigger attempts: ${conversation?.triggerAttempts.length ?? 0}`,
     `- Windows: ${conversation?.windows.length ?? 0}`,
     `- Turns: ${conversation?.turns.length ?? 0}`,
-    `- Traces: ${input.traces.length}`,
+    `- Rollouts: ${input.rollouts.length}`,
+    `- Reconstructed model inputs: ${input.reconstructedInputs.length}`,
     `- Model requests: ${input.modelRequests.length}`,
     `- Model exchanges: ${input.modelExchanges.length}`,
     `- Model responses: ${
@@ -634,7 +636,7 @@ function renderReport(
     "## First Turn",
     "",
     `- Status: ${turn?.status ?? "none"}`,
-    `- Seq range: ${turn ? `${turn.fromSeq}-${turn.toSeq}` : "none"}`,
+    `- Event IDs: ${turn?.eventIds.join(", ") || "none"}`,
     `- Steer count: ${turn?.steerCount ?? 0}`,
     `- Actions: ${
       turn?.proposedActions.map((action) => action.toolName).join(", ") ??
@@ -731,8 +733,4 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
-}
-
-async function writeJson(filePath: string, value: unknown): Promise<void> {
-  await writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }

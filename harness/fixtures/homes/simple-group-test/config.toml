@@ -13,6 +13,8 @@ model_prompt_cache_ttl = "5m"
 dreaming_enabled = true
 
 timezone = "Asia/Shanghai"
+session_recent_history_hours = 24
+trace_binary_capture_enabled = false
 
 trigger_keyword_names = "小格"
 trigger_activity_window_ms = 600000

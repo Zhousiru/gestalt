@@ -16,7 +16,7 @@ import {
   readModelTemperature,
   type CreateAiSdkModelFromConfigOptions
 } from "../model/aiSdkModel";
-import type { SessionEventRecord, SessionSnapshot } from "../session/schemas";
+import type { SessionEventRecord, SessionDiagnostics } from "../session/schemas";
 import {
   INSPECT_TOOL_PROMPTS,
   renderInspectSystemPrompt,
@@ -45,7 +45,7 @@ export interface InspectRunInput {
   config: GestaltConfig;
   eventRecord: SessionEventRecord;
   command: InspectCommand;
-  sessionSnapshot: SessionSnapshot;
+  sessionDiagnostics: SessionDiagnostics;
   now: () => Date;
 }
 
@@ -275,7 +275,7 @@ async function runAiSdkInspectAgent(
 function buildInspectPrompt(input: InspectRunInput): InspectPrompt {
   const event = input.eventRecord.event;
   const conversation = event.conversation;
-  const latestConversation = input.sessionSnapshot.conversations.find(
+  const latestConversation = input.sessionDiagnostics.conversations.find(
     (candidate) =>
       candidate.conversation.kind === conversation.kind &&
       candidate.conversation.id === conversation.id
@@ -288,20 +288,19 @@ function buildInspectPrompt(input: InspectRunInput): InspectPrompt {
       query: input.command.query,
       conversation: `${conversation.kind}:${conversation.id}`,
       eventId: event.id,
-      sessionSeq: input.eventRecord.seq,
+      sessionRecordId: input.eventRecord.id,
       messageId: event.message.id,
       sender: `${event.sender.displayName ?? event.sender.id} (${event.sender.id})`,
       receivedAt: input.eventRecord.receivedAt,
       text: event.message.text,
       conversationSummary: latestConversation
         ? [
-            `- nextSeq: ${latestConversation.nextSeq}`,
             `- events: ${latestConversation.events.length}`,
             `- windows: ${latestConversation.windows.length}`,
             `- turns: ${latestConversation.turns.length}`,
             `- loopExits: ${latestConversation.loopExits.length}`
           ].join("\n")
-        : "(conversation not found in current snapshot)"
+        : "(conversation not found in current diagnostics)"
     })
   };
 }
@@ -362,7 +361,7 @@ function buildFallbackInspectReport(
     "inspect 没能生成完整诊断，但这不是正常聊天动作失败。",
     `原因：${reason}`,
     `请求：${input.command.query || event.message.text}`,
-    `会话：${event.conversation.kind}:${event.conversation.id}，session seq=${input.eventRecord.seq}，message_id=${event.message.id}。`,
+    `会话：${event.conversation.kind}:${event.conversation.id}，session_record_id=${input.eventRecord.id}，message_id=${event.message.id}。`,
     `已执行查询数：${commands.length}。${lastCommandSummary}`,
     "建议缩小问题范围，直接指定要解释的消息文本、message_id、turn id 或 trace id。"
   ].join(" ");

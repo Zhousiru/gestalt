@@ -41,6 +41,7 @@ import {
   type StickerStore,
   type StickerVectorIndex
 } from "@gestalt/app";
+import { writeArtifactJson } from "./artifactBinary";
 import sharp from "sharp";
 
 const DESCRIPTION_STATIC =
@@ -1497,15 +1498,20 @@ async function verifyRuntimeStickerTranscript(input: {
   event.message.text = "@Sticker Bot 发一个表情";
   event.message.rawText = event.message.text;
   event.message.mentionsBot = true;
-  await runtime.handleEvent(event);
+  const turnResult = await runtime.handleEvent(event);
   await runtime.whenIdle();
-  const session = runtime.exportSession({
+  const session = runtime.exportDiagnostics({
     exportedAt: "2026-07-11T10:01:00.000Z"
   });
   const conversation = session.conversations[0];
   assert.ok(conversation);
-  const traceId = conversation.turns[0]?.traceId;
-  assert.ok(traceId, "Sticker tool execution must belong to an agent trace.");
+  const rolloutId = conversation.turns[0]?.rolloutId;
+  const agentTraceId = turnResult?.traceId;
+  assert.ok(rolloutId, "Sticker tool execution must belong to a rollout.");
+  assert.ok(
+    agentTraceId,
+    "Sticker tool execution must retain its in-memory agent trace correlation."
+  );
   const toolResults = conversation.turns[0]?.toolResults as Array<{
     proposal: { toolName: string };
     status: string;
@@ -1565,7 +1571,7 @@ async function verifyRuntimeStickerTranscript(input: {
       (entry) =>
         entry.type === "sticker.send_completed" &&
         entry.stickerId === input.stickerId &&
-        entry.agentTraceId === traceId
+        entry.agentTraceId === agentTraceId
     );
   assert.ok(
     correlatedSend,
@@ -1584,7 +1590,7 @@ async function verifyRuntimeStickerTranscript(input: {
     .find(
       (entry) =>
         entry.type === "sticker.search_completed" &&
-        entry.agentTraceId === traceId
+        entry.agentTraceId === agentTraceId
     );
   assert.ok(
     correlatedSearch,
@@ -1593,7 +1599,8 @@ async function verifyRuntimeStickerTranscript(input: {
   return {
     eventCount: conversation.events.length,
     turnCount: conversation.turns.length,
-    traceId,
+    rolloutId,
+    agentTraceId,
     stickerLogCorrelated: true,
     searchToolOutput: searchToolResult.result?.data,
     sendToolOutput: sendToolResult?.result?.data,
@@ -1753,7 +1760,7 @@ async function verifyRuntimeCommands(root: string): Promise<Record<string, unkno
     "无权执行该命令",
     "用法：/scrape-sticker [on|off]"
   ]);
-  const session = runtime.exportSession({
+  const session = runtime.exportDiagnostics({
     exportedAt: commandClock().toISOString()
   });
   assert.equal(session.conversations.length, 1);
@@ -2235,9 +2242,5 @@ function restoreEnvironmentVariable(
 }
 
 async function writeJson(fileName: string, value: unknown): Promise<void> {
-  await writeFile(
-    path.join(artifactDir, fileName),
-    `${JSON.stringify(value, null, 2)}\n`,
-    "utf8"
-  );
+  await writeArtifactJson(path.join(artifactDir, fileName), value);
 }

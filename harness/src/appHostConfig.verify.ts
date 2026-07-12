@@ -7,6 +7,7 @@ import {
   resolveGestaltHome,
   type GestaltConfig
 } from "@gestalt/app";
+import { writeArtifactJson } from "./artifactBinary";
 
 const repoRoot = path.resolve(import.meta.dirname, "../..");
 const fixtureHome = await resolveGestaltHome({
@@ -96,10 +97,9 @@ const artifact = {
     live: defaultLiveConfig
   }
 };
-await writeFile(
+await writeArtifactJson(
   path.join(artifactDir, "resolved-host-config.json"),
-  `${JSON.stringify(artifact, null, 2)}\n`,
-  "utf8"
+  artifact
 );
 await writeFile(
   path.join(artifactDir, "report.md"),

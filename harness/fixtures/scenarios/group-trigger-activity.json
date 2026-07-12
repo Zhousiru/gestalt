@@ -73,13 +73,12 @@
       "triggerAttemptReasons": ["activity"],
       "triggerAttemptProbabilities": [1],
       "triggerAttemptAdmissions": [true],
-      "nextSeq": 7,
       "turnStatus": "completed",
       "loopExits": 1,
       "loopExitReasons": ["leave_tool"],
-      "eventSeqs": [1, 2, 3, 4, 5, 6],
+      "eventIds": ["activity-message-1", "activity-message-2", "activity-message-3", "activity-message-4", "activity-message-5", "activity-message-6"],
       "windowReasons": ["activity"],
-      "windowEventSeqs": [[1, 2, 3, 4, 5, 6]]
+      "windowEventIds": [["activity-message-1", "activity-message-2", "activity-message-3", "activity-message-4", "activity-message-5", "activity-message-6"]]
     },
     "action": {
       "toolNames": ["leave"]
@@ -103,8 +102,8 @@
       "purposes": ["agent_action"],
       "responseContains": ["leave"]
     },
-    "trace": {
-      "traces": 1,
+    "rollout": {
+      "rollouts": 1,
       "spans": [
         "memory.inject",
         "context.compile",

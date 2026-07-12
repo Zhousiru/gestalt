@@ -26,6 +26,7 @@ export const ScenarioDreamingSchema = z
 export const ScenarioMessageSchema = z
   .object({
     delayMs: z.number().int().nonnegative().default(0),
+    waitForModelRequestCount: z.number().int().positive().optional(),
     conversationId: z.string().min(1),
     conversationName: z.string().min(1).optional(),
     senderId: z.string().min(1),
@@ -57,25 +58,22 @@ export const ScenarioSessionExpectationsSchema = z
     selfMessages: z.number().int().nonnegative().optional(),
     windows: z.number().int().nonnegative().optional(),
     turns: z.number().int().nonnegative().optional(),
-    nextSeq: z.number().int().positive().optional(),
     turnStatus: z.enum(["completed", "cancelled", "failed"]).optional(),
     steerCount: z.number().int().nonnegative().optional(),
     steerCounts: z.array(z.number().int().nonnegative()).optional(),
-    eventSeqs: z.array(z.number().int().positive()).optional(),
-    turnEventSeqs: z.array(z.array(z.number().int().positive())).optional(),
+    eventIds: z.array(z.string().min(1)).optional(),
+    turnEventIds: z.array(z.array(z.string().min(1))).optional(),
     windowReasons: z.array(z.string().min(1)).optional(),
-    windowEventSeqs: z.array(z.array(z.number().int().positive())).optional(),
+    windowEventIds: z.array(z.array(z.string().min(1))).optional(),
     triggerAttempts: z.number().int().nonnegative().optional(),
     triggerAttemptReasons: z.array(z.string().min(1)).optional(),
     triggerAttemptProbabilities: z.array(z.number().min(0).max(1)).optional(),
     triggerAttemptAdmissions: z.array(z.boolean()).optional(),
-    triggerAttemptSamplerVersions: z.array(z.string().min(1)).optional(),
     loopExits: z.number().int().nonnegative().optional(),
     loopExitReasons: z.array(z.string().min(1)).optional(),
     phases: z.array(z.string().min(1)).optional(),
-    realtimeExports: z.number().int().nonnegative().optional(),
-    minRealtimeExports: z.number().int().nonnegative().optional(),
-    finalRealtimeExportMatches: z.boolean().optional()
+    journalRecords: z.number().int().nonnegative().optional(),
+    minJournalRecords: z.number().int().nonnegative().optional()
   })
   .strict();
 
@@ -151,9 +149,10 @@ export const ScenarioPromptCacheExpectationsSchema = z
   })
   .strict();
 
-export const ScenarioTraceExpectationsSchema = z
+export const ScenarioRolloutExpectationsSchema = z
   .object({
-    traces: z.number().int().nonnegative().optional(),
+    rollouts: z.number().int().nonnegative().optional(),
+    recordTypes: z.array(z.string().min(1)).optional(),
     spans: z.array(z.string().min(1)).optional(),
     toolNames: z.array(z.string().min(1)).optional(),
     toolNamesInclude: z.array(z.string().min(1)).optional(),
@@ -196,7 +195,7 @@ export const ScenarioExpectationsSchema = z
     modelInput: ScenarioModelInputExpectationsSchema.optional(),
     modelExchange: ScenarioModelExchangeExpectationsSchema.optional(),
     promptCache: ScenarioPromptCacheExpectationsSchema.optional(),
-    trace: ScenarioTraceExpectationsSchema.optional(),
+    rollout: ScenarioRolloutExpectationsSchema.optional(),
     memory: ScenarioMemoryExpectationsSchema.optional()
   })
   .strict();
@@ -210,7 +209,7 @@ export const ScenarioFixtureSchema = z
     configFixture: z.string().min(1).optional(),
     personaFixture: z.string().min(1).optional(),
     memoriesFixture: z.string().min(1).optional(),
-    sessionSnapshotFixture: z.string().min(1).optional(),
+    sessionJournalFixture: z.string().min(1).optional(),
     eventHandling: z
       .enum(["manual_windows", "runtime_triggers"])
       .default("manual_windows"),

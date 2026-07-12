@@ -3,7 +3,8 @@
   "description": "The runtime pre-trigger chain opens an icebreaker window when a quiet group receives a new message.",
   "homeFixture": "harness/fixtures/homes/simple-group-test",
   "memoriesFixture": "harness/fixtures/memories/simple-group-test",
-  "sessionSnapshotFixture": "harness/fixtures/sessions/prior-group-history.json",
+  "now": "2026-07-06T02:30:00.000Z",
+  "sessionJournalFixture": "harness/fixtures/sessions/prior-group-history.jsonl",
   "eventHandling": "runtime_triggers",
   "model": {
     "kind": "configured_ai_sdk"
@@ -30,13 +31,12 @@
       "triggerAttemptReasons": ["icebreaker"],
       "triggerAttemptProbabilities": [1],
       "triggerAttemptAdmissions": [true],
-      "nextSeq": 3,
       "turnStatus": "completed",
       "loopExits": 1,
       "loopExitReasons": ["leave_tool"],
-      "eventSeqs": [2],
+      "eventIds": ["icebreaker-message-1"],
       "windowReasons": ["icebreaker"],
-      "windowEventSeqs": [[2]]
+      "windowEventIds": [["icebreaker-message-1"]]
     },
     "action": {
       "toolName": "leave",
@@ -61,8 +61,8 @@
       "purposes": ["agent_action"],
       "responseContains": ["leave"]
     },
-    "trace": {
-      "traces": 1,
+    "rollout": {
+      "rollouts": 1,
       "spans": [
         "memory.inject",
         "context.compile",

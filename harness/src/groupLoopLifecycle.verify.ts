@@ -44,7 +44,7 @@ console.log(
           windows:
             conversation?.windows.map((window) => ({
               reason: window.reason,
-              eventSeqs: window.eventSeqs
+              eventIds: window.eventIds
             })) ?? [],
           turns: conversation?.turns.length ?? 0,
           loopExits:

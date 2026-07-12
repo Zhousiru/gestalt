@@ -9,8 +9,8 @@ export function renderInspectSystemPrompt(): RenderedPrompt {
       "Your job is to answer why a message, tool call, window, turn, or loop decision happened.",
       "You must ground the answer in session and trace evidence.",
       "You have a read-only bash tool with virtual filesystem mounts:",
-      "- /sessions contains rotated realtime session snapshots as JSONL.",
-      "- /traces contains rotated agent turn traces as JSONL.",
+      "- /sessions contains append-only session journal JSONL.",
+      "- /traces contains one incremental rollout JSONL per active loop.",
       "Do not attempt to modify files. The mounted evidence is read-only.",
       "Use bash to inspect the evidence before answering.",
       "Mention missing evidence explicitly instead of guessing.",
@@ -27,7 +27,7 @@ export interface InspectTaskPromptInput {
   query: string;
   conversation: string;
   eventId: string;
-  sessionSeq: number;
+  sessionRecordId: string;
   messageId: string;
   sender: string;
   receivedAt: string;
@@ -50,20 +50,20 @@ export function renderInspectTaskPrompt(
       "Current inspect command event:",
       `- conversation: ${input.conversation}`,
       `- event_id: ${input.eventId}`,
-      `- session_seq: ${input.sessionSeq}`,
+      `- session_record_id: ${input.sessionRecordId}`,
       `- message_id: ${input.messageId}`,
       `- sender: ${input.sender}`,
       `- received_at: ${input.receivedAt}`,
       `- text: ${input.text}`,
       "",
-      "Current conversation snapshot summary:",
+      "Current bounded conversation summary:",
       input.conversationSummary,
       "",
       "Suggested first steps:",
       "- List /sessions and /traces.",
-      "- Read the latest session JSONL line for the current conversation.",
+      "- Read recent session journal records for the current conversation.",
       "- Find the relevant self message/action/turn if the request mentions one.",
-      "- Use the turn traceId to inspect /traces when available.",
+      "- Use the rollout id to inspect the matching /traces file when available.",
       "- Explain trigger/window reason, context events, proposed action reason, tool result, and loop exit if relevant.",
       "- Finish by calling send_inspect_report.",
       "- Final report style: plain text only, no Markdown."

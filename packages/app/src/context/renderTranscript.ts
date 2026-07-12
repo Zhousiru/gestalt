@@ -165,7 +165,7 @@ function formatChatTimestamp(
 
 function eventToRecord(event: CanonicalEvent): SessionEventRecord {
   return {
-    seq: 0,
+    id: event.id,
     receivedAt: event.occurredAt,
     event
   };

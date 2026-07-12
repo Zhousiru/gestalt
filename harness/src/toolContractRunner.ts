@@ -12,6 +12,7 @@ import {
   type OneBotActionCaller,
   type ToolExecutionResult
 } from "@gestalt/app";
+import { writeArtifactJson } from "./artifactBinary";
 
 export interface ToolContractRunResult {
   id: string;
@@ -301,11 +302,11 @@ async function writeArtifacts(input: {
   };
 
   await Promise.all([
-    writeJson(artifactPaths.proposals, input.proposals),
-    writeJson(artifactPaths.mockToolCalls, input.mockToolCalls),
-    writeJson(artifactPaths.mockToolResults, input.mockToolResults),
-    writeJson(artifactPaths.connectorResults, input.connectorResults),
-    writeJson(artifactPaths.onebotApiCalls, input.onebotApiCalls),
+    writeArtifactJson(artifactPaths.proposals, input.proposals),
+    writeArtifactJson(artifactPaths.mockToolCalls, input.mockToolCalls),
+    writeArtifactJson(artifactPaths.mockToolResults, input.mockToolResults),
+    writeArtifactJson(artifactPaths.connectorResults, input.connectorResults),
+    writeArtifactJson(artifactPaths.onebotApiCalls, input.onebotApiCalls),
     writeFile(artifactPaths.report, renderReport(input), "utf8")
   ]);
 
@@ -334,8 +335,4 @@ function renderReport(input: {
       .join(", ")}`,
     ""
   ].join("\n");
-}
-
-async function writeJson(filePath: string, value: unknown): Promise<void> {
-  await writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }

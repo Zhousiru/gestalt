@@ -117,8 +117,8 @@ Before memory injection becomes useful, the group-chat window should be rendered
 The transcript should include:
 
 - Conversation id and display name.
-- Window reason and seq range.
-- Message seq.
+- Window reason and ordered event ids.
+- Stable message id.
 - Timestamp.
 - Sender display name and user id.
 - Mention/reply metadata.
@@ -128,7 +128,9 @@ Memory then attaches to a clear present-tense conversation rather than compensat
 
 ## Dreaming
 
-Dreaming runs after an agent turn.
+Dreaming is the terminal phase of a completed active loop. It continues the
+same append-only model session and rollout rather than creating a separate trace
+or rebuilding the prompt.
 
 It receives:
 
@@ -205,6 +207,11 @@ The runtime should record:
 - Memory snapshot after dreaming.
 - Diff or changed file list.
 
+The before/after memory snapshots above are harness evidence only. They are not
+session startup state. The production rollout stores completed memory spans and
+committed dreaming messages incrementally; see
+[PERSISTENCE_AND_TRACES.md](PERSISTENCE_AND_TRACES.md).
+
 ## Safety Boundary
 
 The bash tool is a memory-maintenance tool, not general system access.
@@ -234,7 +241,7 @@ Harness artifacts should show:
 - Memory files after dreaming.
 - Dreaming model request, real response, `bash` tool calls, and `finish_dreaming` completion call.
 - Bash commands used by dreaming.
-- Trace spans for memory injection and dreaming.
+- Completed rollout span records for memory injection and dreaming.
 - Whether only allowed memory files changed.
 - Whether corrected or stale claims were actually removed from the final memory files.
 

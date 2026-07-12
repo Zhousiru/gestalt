@@ -17,7 +17,12 @@ Runtime callers use explicit renderers such as:
 const prompt = renderActionSystemPrompt({ persona, memories });
 ```
 
-Every renderer returns a `RenderedPrompt` with a stable semantic `id`, normalized `content`, and an automatically derived `contentHash`. There is no manually maintained prompt revision. The request artifacts retain the full model messages, while request and trace metadata record the prompt id, content hash, and tool prompt hash.
+Every renderer returns a `RenderedPrompt` with a stable semantic `id`, normalized
+`content`, and an automatically derived `contentHash`. There is no manually
+maintained prompt revision. Harness request artifacts retain the full provider
+messages through their independent capture sink. Production rollout storage
+records the initial prompt/tool protocol once, then committed message deltas and
+state hashes; it never repeats the complete cumulative request per generation.
 
 Tool descriptions and parameter descriptions live in `packages/app/src/prompts/tools.ts`. Tool schemas and execution remain in their owning runtime modules. The default tool registry is derived from the same catalog so model-visible tool copy has one source.
 
@@ -39,7 +44,8 @@ When runtime prompt or tool copy changes:
 1. Update the owning prompt module.
 2. Update or add a durable scenario fixture if behavior changes.
 3. Run `verify:prompts` and the narrow runtime verification.
-4. Inspect `model-requests.json`, `model-exchanges.json`, `traces.json`, and cache evidence.
+4. Inspect `model-requests.json`, `model-exchanges.json`, reconstructed rollout
+   inputs, and cache evidence.
 5. Run the relevant real-model eval.
 6. Run typecheck and build.
 

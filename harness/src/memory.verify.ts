@@ -15,18 +15,25 @@ for (const fixturePath of fixturePaths) {
 
   const conversation = result.session.conversations[0];
   const turn = conversation?.turns[0];
-  const dreamSpan = result.traces
-    .flatMap((trace) => trace.spans)
-    .find((span) => span.name === "dream.run");
+  const dreamSpan = result.rollouts
+    .flatMap((rollout) => rollout.records)
+    .find(
+      (record) =>
+        record.type === "span_completed" && record.name === "dream.run"
+    );
+  const dreamAttributes =
+    dreamSpan?.type === "span_completed"
+      ? (dreamSpan.attributes as Record<string, unknown>)
+      : {};
 
   scenarios.push({
     id: result.fixture.id,
     events: conversation?.events.length ?? 0,
     turns: conversation?.turns.length ?? 0,
     action: turn?.proposedActions[0]?.toolName ?? "none",
-    dreamStatus: dreamSpan?.attributes.dreamingStatus ?? "missing",
-    dreamCommands: dreamSpan?.attributes.commandCount ?? 0,
-    dreamChangedFiles: dreamSpan?.attributes.changedFiles ?? [],
+    dreamStatus: dreamAttributes.dreamingStatus ?? "missing",
+    dreamCommands: dreamAttributes.commandCount ?? 0,
+    dreamChangedFiles: dreamAttributes.changedFiles ?? [],
     artifacts: result.artifactPaths
   });
 }

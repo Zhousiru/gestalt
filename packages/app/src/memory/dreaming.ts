@@ -213,6 +213,10 @@ async function runDreamingToolLoop(
   const resolved = createLanguageModelFromConfig(config, options);
   const temperature = options.temperature ?? readModelTemperature(config) ?? 1;
   const modelStepRecorder = createModelStepRecorder(input.now);
+  const pendingExchangeRequests: Array<{
+    request: ModelRequestSnapshot;
+    startedAt: string;
+  }> = [];
   const continuation = input.modelContinuation;
   if (!continuation) {
     throw new Error(
@@ -279,26 +283,63 @@ async function runDreamingToolLoop(
         }
       });
       modelStepRecorder.recordRequest(request);
+      pendingExchangeRequests.push({
+        request,
+        startedAt: input.now().toISOString()
+      });
       options.onRequest?.(request);
     },
-    onStepEnd(step) {
-      const response = snapshotStepResponse(step);
+    async onStepEnd(step) {
+      const response = snapshotStepResponse({
+        ...step,
+        responseMessages: step.response.messages
+      });
       modelStepRecorder.recordResponse(response);
+      const exchangeRequest = pendingExchangeRequests.shift();
+      if (exchangeRequest) {
+        await continuation.exchangeSink?.onStep({
+          purpose: "dreaming",
+          request: exchangeRequest.request,
+          response,
+          status: "completed",
+          startedAt: exchangeRequest.startedAt,
+          endedAt: input.now().toISOString()
+        });
+      }
       options.onResponse?.(response);
     }
   });
 
   const timeout = { totalMs: timeoutMs };
-  const result = await agent.generate({
-    messages: [
-      ...continuation.messages,
-      {
-        role: "user",
-        content: dreamingTask.content
-      }
-    ],
-    timeout
-  });
+  let result: Awaited<ReturnType<typeof agent.generate>>;
+  try {
+    result = await agent.generate({
+      messages: [
+        ...continuation.messages,
+        {
+          role: "user",
+          content: dreamingTask.content
+        }
+      ],
+      timeout
+    });
+  } catch (error) {
+    const unfinishedExchanges = pendingExchangeRequests.splice(
+      0,
+      pendingExchangeRequests.length
+    );
+    const endedAt = input.now().toISOString();
+    for (const exchangeRequest of unfinishedExchanges) {
+      await continuation.exchangeSink?.onStep({
+        purpose: "dreaming",
+        request: exchangeRequest.request,
+        status: "failed",
+        startedAt: exchangeRequest.startedAt,
+        endedAt
+      });
+    }
+    throw error;
+  }
 
   if (!result.toolCalls.some((call) => call.toolName === "finish_dreaming")) {
     throw new Error(`Dreaming model exceeded ${maxModelTurns} model turns.`);

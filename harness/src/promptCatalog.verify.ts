@@ -61,12 +61,12 @@ assert.match(
     query: "",
     conversation: "group:test",
     eventId: "event-1",
-    sessionSeq: 1,
+    sessionRecordId: "record-1",
     messageId: "message-1",
     sender: "Alice (alice)",
     receivedAt: "2026-07-11T00:00:00.000Z",
     text: "/inspect",
-    conversationSummary: "(conversation not found in current snapshot)"
+    conversationSummary: "(conversation not found in current diagnostics)"
   }).content,
   /\(no explicit inspect query;/
 );

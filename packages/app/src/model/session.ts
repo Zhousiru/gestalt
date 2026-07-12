@@ -16,7 +16,27 @@ import type { PromptMetadata } from "../prompts/types";
 
 export interface ModelClient {
   name?: string;
-  createSession(): ModelSession;
+  createSession(options?: CreateModelSessionOptions): ModelSession;
+}
+
+export type ModelExchangePurpose = "agent_action" | "dreaming";
+
+export interface ModelExchangeSnapshot {
+  purpose: ModelExchangePurpose;
+  request: ModelRequestTraceSnapshot;
+  response?: ModelResponseTraceSnapshot;
+  status: "completed" | "failed" | "cancelled";
+  startedAt?: string;
+  endedAt?: string;
+}
+
+export interface ModelExchangeSink {
+  onStep(exchange: ModelExchangeSnapshot): void | Promise<void>;
+  flush?(): Promise<void>;
+}
+
+export interface CreateModelSessionOptions {
+  exchangeSink?: ModelExchangeSink;
 }
 
 /**
@@ -53,6 +73,7 @@ export interface ModelSessionContinuation {
   promptCacheEnabled: boolean;
   promptCacheTtl?: "5m" | "1h";
   actionTools: readonly ToolDefinition[];
+  exchangeSink?: ModelExchangeSink;
 }
 
 export interface ModelActionResult {
@@ -74,15 +95,21 @@ export interface ModelRequestTraceSnapshot {
   model: string;
   temperature: number;
   stepNumber: number;
-  messages: unknown[];
+  messages?: unknown[];
+  messageCount?: number;
+  messagesHash?: string;
   tools: string[];
+  toolProtocol?: unknown[];
   toolChoice?: unknown;
   requestBody?: unknown;
   prompt?: PromptMetadata;
+  sessionId?: string;
+  promptCacheEnabled?: boolean;
 }
 
 export interface ModelResponseTraceSnapshot {
   content?: string;
+  messages?: unknown[];
   finishReason?: string;
   stepNumber?: number;
   toolCalls?: unknown[];
@@ -103,11 +130,14 @@ export interface ModelRunOptions {
   traceId?: string;
   toolImplementations?: ToolImplementations;
   onModelAttemptStart?: () => void;
-  onToolExecutionStart?: (proposal: ActionProposal) => void;
+  onModelStepCommitted?: () => void | Promise<void>;
+  onToolExecutionStart?: (
+    proposal: ActionProposal
+  ) => void | Promise<void>;
   onToolExecutionEnd?: (
     proposal: ActionProposal,
     result: ToolExecutionResult
-  ) => void;
+  ) => void | Promise<void>;
 }
 
 const modelStepsErrorKey = "__gestaltModelSteps";
@@ -145,20 +175,26 @@ export function createMockModel(options: CreateMockModelOptions = {}): ModelClie
 
   return {
     name: "mock",
-    createSession() {
-      return createMockModelSession(now, delayMs);
+    createSession(sessionOptions = {}) {
+      return createMockModelSession(
+        now,
+        delayMs,
+        sessionOptions.exchangeSink
+      );
     }
   };
 }
 
 function createMockModelSession(
   now: () => Date,
-  delayMs: number
+  delayMs: number,
+  exchangeSink?: ModelExchangeSink
 ): ModelSession {
   let currentContext: CompiledContext | undefined;
   let attemptController: AbortController | undefined;
   let initialized = false;
   let running = false;
+  const messages: Array<{ role: string; content: string }> = [];
 
   return {
     get initialized() {
@@ -189,7 +225,53 @@ function createMockModelSession(
           try {
             await waitForTurnDelay(delayMs, controller.signal);
             throwIfTurnSteered(controller.signal);
-            return proposeMockActions(currentContext, now);
+            const startedAt = now().toISOString();
+            if (messages.length === 0) {
+              messages.push({
+                role: "system",
+                content: currentContext.persona.fragments
+                  .map((fragment) => fragment.content)
+                  .join("\n\n")
+              });
+            }
+            messages.push({
+              role: "user",
+              content: currentContext.transcript
+            });
+            const result = proposeMockActions(currentContext, now);
+            const responseMessage = {
+              role: "assistant",
+              content: JSON.stringify(result.proposedActions)
+            };
+            await exchangeSink?.onStep({
+              purpose: "agent_action",
+              request: {
+                provider: "mock",
+                model: "mock",
+                temperature: 0,
+                stepNumber: 0,
+                messages: [...messages],
+                tools: currentContext.tools.map((tool) => tool.name),
+                toolProtocol: currentContext.tools
+              },
+              response: {
+                messages: [responseMessage],
+                finishReason: "stop",
+                stepNumber: 0,
+                toolCalls: result.proposedActions.map((proposal) => ({
+                  id: proposal.id,
+                  name: proposal.toolName,
+                  input: proposal.params
+                }))
+              },
+              status: "completed",
+              startedAt,
+              endedAt: now().toISOString()
+            });
+            messages.push(responseMessage);
+            await runOptions.onModelStepCommitted?.();
+            throwIfTurnSteered(controller.signal);
+            return result;
           } catch (error) {
             if (
               error instanceof Error &&

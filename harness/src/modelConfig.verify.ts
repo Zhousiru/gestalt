@@ -9,6 +9,7 @@ import {
   resolveSubModelConfig,
   type GestaltConfig
 } from "@gestalt/app";
+import { writeArtifactJson } from "./artifactBinary";
 
 const roleConfig = createConfig({
   main_model_provider: "openrouter",
@@ -214,10 +215,9 @@ const artifact = {
   embeddingRequest: embeddingRequests[0],
   legacyMain: selectLanguageConfig(legacyMain)
 };
-await writeFile(
+await writeArtifactJson(
   path.join(artifactDir, "resolved-model-config.json"),
-  `${JSON.stringify(artifact, null, 2)}\n`,
-  "utf8"
+  artifact
 );
 await writeFile(
   path.join(artifactDir, "report.md"),

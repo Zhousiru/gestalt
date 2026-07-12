@@ -6,7 +6,8 @@
   "model": {
     "kind": "configured_ai_sdk"
   },
-  "sessionSnapshotFixture": "harness/fixtures/sessions/prior-group-history.json",
+  "now": "2026-07-06T00:30:00.000Z",
+  "sessionJournalFixture": "harness/fixtures/sessions/prior-group-history.jsonl",
   "events": [
     {
       "conversationId": "mock-group",
@@ -19,7 +20,7 @@
       "windowReason": "mention"
     },
     {
-      "delayMs": 15,
+      "waitForModelRequestCount": 1,
       "conversationId": "mock-group",
       "conversationName": "Mock Group",
       "messageId": "steer-message-2",
@@ -38,9 +39,8 @@
       "turnStatus": "completed",
       "loopExits": 1,
       "steerCount": 1,
-      "eventSeqs": [2, 3],
-      "minRealtimeExports": 5,
-      "finalRealtimeExportMatches": true,
+      "eventIds": ["steer-message-1", "steer-message-2"],
+      "minJournalRecords": 5,
       "phases": [
         "memory_injecting",
         "context_compiling",
@@ -72,8 +72,8 @@
       "minHitResponses": 1,
       "minReadTokens": 1
     },
-    "trace": {
-      "traces": 1,
+    "rollout": {
+      "rollouts": 1,
       "spans": [
         "memory.inject",
         "context.compile",

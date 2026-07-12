@@ -12,6 +12,7 @@ import {
   ONEBOT_JUDGE_TOOL_DESCRIPTION,
   ONEBOT_RUBRIC
 } from "./prompts";
+import { writeArtifactJson } from "./artifactBinary";
 
 interface JudgeResult {
   label: "pass" | "warn" | "fail";
@@ -45,13 +46,19 @@ const input = {
       toolChoice: request.toolChoice,
       messages: request.messages.map((message) => ({
         role: message.role,
-        content: truncate(message.content ?? "", 4000)
+        content: truncate(modelContentText(message.content), 4000)
       }))
     })),
     modelResponses: result.modelResponses,
     artifacts: result.artifactPaths
   }
 };
+
+function modelContentText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value === undefined || value === null) return "";
+  return JSON.stringify(value) ?? String(value);
+}
 const judgeConfig = await loadEvalModelConfig();
 const judged = await judge(input, judgeConfig);
 const paths = await writeEvalArtifacts(
@@ -137,8 +144,8 @@ async function writeEvalArtifacts(
     evalReport: path.join(artifactDir, "eval-report.md")
   };
   await Promise.all([
-    writeJson(paths.evalInputs, input),
-    writeJson(paths.evalResults, {
+    writeArtifactJson(paths.evalInputs, input),
+    writeArtifactJson(paths.evalResults, {
       judge: summarizeJudgeConfig(config),
       result
     }),
@@ -183,8 +190,4 @@ function summarizeJudgeConfig(config: EvalModelConfig): Record<string, unknown> 
     timeoutMs: config.timeoutMs,
     ...(config.thinking ? { thinking: config.thinking } : {})
   };
-}
-
-async function writeJson(filePath: string, value: unknown): Promise<void> {
-  await writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }

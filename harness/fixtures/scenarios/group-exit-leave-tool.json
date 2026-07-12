@@ -26,8 +26,8 @@
       "loopExits": 1,
       "loopExitReasons": ["leave_tool"],
       "windowReasons": ["mention"],
-      "windowEventSeqs": [[1]],
-      "turnEventSeqs": [[1]]
+      "windowEventIds": [["leave-exit-message-1"]],
+      "turnEventIds": [["leave-exit-message-1"]]
     },
     "action": {
       "toolName": "leave"
@@ -37,8 +37,8 @@
       "toolNames": ["leave"],
       "connectorSideEffects": 0
     },
-    "trace": {
-      "traces": 1,
+    "rollout": {
+      "rollouts": 1,
       "spans": [
         "memory.inject",
         "context.compile",

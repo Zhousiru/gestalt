@@ -17,6 +17,7 @@ import {
   type AgentTurnResult,
   type ToolImplementations
 } from "@gestalt/app";
+import { writeArtifactJson } from "./artifactBinary";
 import { loadEvalModelConfig } from "./evalModelConfig";
 
 const repoRoot = path.resolve(import.meta.dirname, "../..");
@@ -155,18 +156,17 @@ try {
       text: scenario.text,
       mentionsBot: true
     });
-    const record = runtime.ingestEvent(event);
+    const record = await runtime.ingestEvent(event);
     const result = await runtime.handleMessageWindow({
       conversation: event.conversation,
-      fromSeq: record.seq,
-      toSeq: record.seq,
+      eventIds: [record.event.id],
       reason: "mention"
     });
     await runtime.whenIdle();
     turns.push({ scenarioId: scenario.id, ...(result ? { result } : {}) });
   }
 
-  const session = runtime.exportSession({ exportedAt: new Date().toISOString() });
+  const session = runtime.exportDiagnostics({ exportedAt: new Date().toISOString() });
   const persona = await readFile(personaPath, "utf8");
   const evidence = {
     persona,
@@ -200,13 +200,13 @@ try {
 
   await mkdir(artifactDir, { recursive: true });
   await Promise.all([
-    writeJson(path.join(artifactDir, "evidence.json"), evidence),
-    writeJson(path.join(artifactDir, "session.json"), session),
-    writeJson(
-      path.join(artifactDir, "traces.json"),
+    writeArtifactJson(path.join(artifactDir, "evidence.json"), evidence),
+    writeArtifactJson(path.join(artifactDir, "session.json"), session),
+    writeArtifactJson(
+      path.join(artifactDir, "turn-traces.json"),
       turns.flatMap((turn) => (turn.result ? [turn.result.trace] : []))
     ),
-    writeJson(path.join(artifactDir, "judgment.json"), {
+    writeArtifactJson(path.join(artifactDir, "judgment.json"), {
       judgeModel: judgeConfig.modelName,
       judgeConfigVersion: judgeConfig.configVersion,
       ...judged
@@ -301,8 +301,4 @@ function redactActionParams(action: ActionProposal): unknown {
     return { stickerId: action.params.stickerId };
   }
   return action.params;
-}
-
-async function writeJson(filePath: string, value: unknown): Promise<void> {
-  await writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }

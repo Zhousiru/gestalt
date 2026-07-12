@@ -11,6 +11,10 @@
   "scripts": {
     "dev": "tsx src/main.ts",
     "build": "node scripts/build.mjs",
+    "verify:live-api": "tsx src/live/server.verify.ts",
+    "verify:onebot-ingress": "tsx src/connectors/onebot/ingressQueue.verify.ts && tsx src/connectors/onebot/transport.verify.ts",
+    "verify:session": "tsx src/session/sessionJournal.verify.ts && tsx src/runtime/runtimeSessionPin.verify.ts",
+    "verify:effects": "tsx src/tools/executeActions.verify.ts && tsx src/runtime/outboundMessages.verify.ts && tsx src/runtime/outboundCommitBarrier.verify.ts && tsx src/runtime/activeRollout.verify.ts",
     "typecheck": "tsc --noEmit",
     "start": "node dist/main.js"
   },
@@ -22,6 +26,7 @@
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^3.0.5",
+    "@gestalt/live-contracts": "workspace:*",
     "@lancedb/lancedb": "^0.31.0",
     "ai": "^7.0.16",
     "dotenv": "^17.4.2",

@@ -10,6 +10,7 @@ import {
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { writeArtifactJson } from "./artifactBinary";
 
 const repoRoot = path.resolve(import.meta.dirname, "../..");
 const appRoot = path.join(repoRoot, "packages", "app");
@@ -118,11 +119,7 @@ try {
   };
   await rm(artifactDir, { recursive: true, force: true });
   await mkdir(artifactDir, { recursive: true });
-  await writeFile(
-    path.join(artifactDir, "result.json"),
-    `${JSON.stringify(artifact, null, 2)}\n`,
-    "utf8"
-  );
+  await writeArtifactJson(path.join(artifactDir, "result.json"), artifact);
 
   process.stdout.write(stdout);
   console.log(JSON.stringify({ ...artifact, artifactDir }, null, 2));

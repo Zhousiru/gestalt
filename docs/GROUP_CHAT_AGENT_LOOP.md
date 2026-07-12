@@ -33,7 +33,7 @@ The pre-trigger chain decides whether a group message window should become an ag
 It owns:
 
 - Message ingestion into group session state.
-- Conversation sequence assignment.
+- Stable event identity and append order in the session journal.
 - Attention and scheduling.
 - Deciding whether to start, delay, merge, or suppress an agent turn.
 
@@ -48,7 +48,13 @@ The default group triggers are:
 - Activity trigger: fires when messages in the configured time range cross the configured activity threshold.
 - Icebreaker trigger: fires when a group has been quiet for the configured duration and then receives a new message.
 
-Each default trigger kind has an independent probability in the inclusive range `0.0` to `1.0`, defaulting to `1.0`. Admission uses a versioned SHA-256-derived 53-bit sample over the conversation, stable message identity, and trigger reason. The same canonical message therefore receives the same result during replay. Matched candidates, including probability rejections, are persisted as session trigger attempts; rejected candidates do not create message windows or model turns.
+Each default trigger kind has an independent probability in the inclusive range
+`0.0` to `1.0`, defaulting to `1.0`. Admission uses a deterministic SHA-256-
+derived sample over the conversation, stable message identity, and trigger
+reason. The same canonical message therefore receives the same result during
+replay. Matched candidates, including probability rejections, are persisted as
+session trigger attempts; rejected candidates do not create message windows or
+model turns.
 
 When a conversation is idle, a trigger-created window starts the post-trigger agent loop.
 
@@ -82,6 +88,8 @@ Current flat config keys:
 - `agent_loop_aggregation_max_delay_ms`
 - `agent_loop_aggregation_backoff_multiplier`
 - `context_recent_message_count`
+- `session_recent_history_hours`
+- `trace_binary_capture_enabled`
 - `model_prompt_cache_enabled`
 - `model_prompt_cache_ttl`
 - `bot_user_id`
@@ -137,7 +145,7 @@ A trigger window can close because:
 The model should receive a message window, not just a single last message. The window should preserve:
 
 - Conversation identity.
-- Start and end sequence.
+- Stable window id and ordered event ids.
 - Window reason.
 - Messages in order.
 - Whether the bot was directly addressed.
@@ -162,7 +170,13 @@ The compiled transcript can include:
 - Reply target contents expanded directly beneath the replying message, even when the target is older than the recent-history window.
 - Prior bot messages marked naturally as `you`.
 
-The model-facing transcript is intentionally a compact chat log rather than a runtime event dump. It shows the conversation identity once, date boundaries, minute-level send times, display names, user and message ids, raw CQ-bearing message text, and `mentioned you` only for direct mentions of the bot. Window reasons, sequence numbers, context labels, steering metadata, and duplicated “decision target” summaries remain in traces and session state instead of the prompt.
+The model-facing transcript is intentionally a compact chat log rather than a
+runtime event dump. It shows the conversation identity once, date boundaries,
+minute-level send times, display names, user and message ids, raw CQ-bearing
+message text, and `mentioned you` only for direct mentions of the bot. Window
+reasons, event linkage, context labels, steering metadata, and duplicated
+“decision target” summaries remain in rollout/session records instead of the
+prompt.
 
 `context_recent_message_count` controls how many previous messages seed a newly activated model session. Once the active loop starts, completed assistant tool calls and tool results remain in the model message chain directly; later windows do not reconstruct that history as another transcript.
 
@@ -174,7 +188,11 @@ When the aggregation timer closes the batch, the runtime steers the active turn 
 
 The steer window is rendered as a new user message and appended to the active model session. If a provider request is in flight, the runtime cancels that request, discards only its incomplete assistant output, and restarts from the same committed message prefix plus the appended steer message. Completed assistant/tool steps are retained.
 
-If the turn is already committing a visible side effect, the batch is deferred until that action finishes. A synchronous commit boundary is entered before connector execution so a stale tool proposal cannot be cancelled halfway through dispatch.
+If the turn is already committing a visible side effect, the batch is deferred.
+The non-cancellable boundary begins after durable outbound intent and remains in
+force through connector completion, target-session journaling, and durable model
+step commit. Only then is the pending window appended and steered into the same
+model session; the committed tool call/result remains in its prefix.
 
 The key choice is that steering happens at aggregation boundaries, not on every single message arrival.
 
@@ -196,7 +214,9 @@ Non-cancellable phases include:
 - A reaction or sticker that has already been dispatched.
 - A committed memory write.
 
-After a side effect has been dispatched, new messages belong to a later turn. The runtime should trace the timing, but it should not pretend the already executed action can be unmade.
+After a side effect has been dispatched, the runtime never rewinds that step.
+New messages may start the next model attempt as soon as the completed tool
+call/result is durable, but cannot cancel or repeat the external action.
 
 ## What Should Steer A Turn
 
@@ -246,15 +266,18 @@ Loop exits are exported in session state as `loopExits`, with the exit reason an
 
 ## Execution Boundary
 
-The active-loop aggregation buffer is the mechanism for updating an active turn. Before a visible tool executes, the runtime crosses a non-cancellable commit boundary. Newly arriving messages are buffered until that action completes, then append to the same model session in a later window.
+The active-loop aggregation buffer is the mechanism for updating an active turn.
+Before a visible tool executes, the runtime durably records intent and crosses a
+non-cancellable commit boundary. Newly arriving messages are buffered until the
+connector result and provider step are committed, then steer the next attempt
+from the same model prefix.
 
 This keeps the first implementation simple:
 
 - The model can be steered before side effects.
 - Approved tool actions execute directly once the turn reaches execution.
-- New messages that arrive during or after execution are handled by later windows.
-
-This accepts a small race near execution time in exchange for a clearer and more maintainable runtime loop.
+- New messages that arrive during execution cannot erase the committed action;
+  they are delivered immediately after its durable step boundary.
 
 ## One Active Turn Per Group
 
@@ -264,7 +287,7 @@ This avoids:
 
 - Duplicate replies.
 - Competing model runs.
-- Two actions based on incompatible snapshots.
+- Two actions based on incompatible committed prefixes.
 - Connector-level behavior conflicts.
 
 Timed aggregation batches can steer the active turn or wait behind it, but they should not start independent concurrent turns for the same group.
@@ -276,7 +299,7 @@ The selected group chat flow is:
 1. A connector observes a platform event.
 2. The event is normalized into a canonical event.
 3. If `allowedgroups` is configured and the group id is not listed, the runtime ignores the event before session ingestion.
-4. The event is appended to the group session log and assigned a sequence.
+4. The event is durably appended to the group session journal with stable ids.
 5. If the group is idle, the pre-trigger chain evaluates configured triggers.
 6. If a trigger fires, the runtime creates a trigger window and starts an agent turn.
 7. The active loop initializes one model session from the window, session state, persona, memory, tools, and platform constraints.
@@ -288,7 +311,7 @@ The selected group chat flow is:
 13. Messages that arrive during non-cancellable execution are left for the next window.
 14. Exit triggers run after each turn and during active-loop idle waits.
 15. When an exit trigger fires, the conversation can again be activated through the pre-trigger chain.
-16. The complete path is recorded in trace and session export data.
+16. The complete path is recorded in the active-loop rollout and session journal.
 
 ## Required Runtime Concepts
 
@@ -296,9 +319,18 @@ The current runtime skeleton is directionally correct, but group chat needs seve
 
 ### Group Session Store
 
-Stores recent group messages, sequence numbers, active threads, recent bot actions, and lightweight conversation state.
+Stores a bounded working set of recent group messages, active threads, recent
+bot actions, and lightweight conversation state. Stable ids and ordered
+`eventIds` relate records; journal file order is the receive order.
 
 This is factual session state, not social behavior logic.
+
+Startup streams only recent message records from the configured
+`session_recent_history_hours` (default 24). It does not restore old windows,
+turns, timers, active loops, steering, or model sessions. Active conversations
+are pinned while inactive conversations and lifecycle diagnostics remain
+bounded. The complete persistence contract is in
+[PERSISTENCE_AND_TRACES.md](PERSISTENCE_AND_TRACES.md).
 
 ### Attention Scheduler
 
@@ -312,7 +344,12 @@ Owns active turn lifecycle.
 
 It handles one-active-turn-per-conversation, active-loop aggregation, steering, cancellation, steer limits, and handoff back to the pre-trigger chain after the loop exits.
 
-It also owns one model session per active loop. That session keeps an append-only message journal, a stable provider session id, committed assistant/tool checkpoints, and the current cancellable provider request. After the loop exits, dreaming receives an immutable continuation of that same session and appends a terminal memory-maintenance message instead of rebuilding persona, memory, transcript, and tool history.
+It also owns one model session per active loop. That session keeps an append-only
+committed message chain, a stable provider session id, and the current
+cancellable provider request. After the loop exits, dreaming receives an
+immutable continuation of that same session and appends a terminal memory-
+maintenance message instead of rebuilding persona, memory, transcript, and tool
+history.
 
 The provider-facing tool protocol stays stable for the whole session because tool schemas are part of the cacheable prompt. Action tools and terminal dreaming tools are declared in one deterministic order from the first request. Runtime phase gates make `bash`/`finish_dreaming` unavailable during chat actions and make chat-action tools unavailable during dreaming.
 
@@ -324,14 +361,14 @@ Owns active-loop release decisions.
 
 It evaluates lifecycle conditions such as consecutive `say_nothing`, idle timeout, and the model-selected `leave` tool.
 
-### Trace Extensions
+### Rollout Records
 
-Traces should record:
+The active-loop rollout should record:
 
 - Active-loop aggregation boundaries.
 - Trigger reason.
 - Exit trigger reason.
-- Turn base sequence.
+- Ordered window/event ids and the current canonical state hash.
 - Steer attempts and steer count.
 - Late messages seen during a turn.
 - Execution phase transitions.
@@ -387,7 +424,7 @@ Those decisions belong in the runtime, scheduler, model, and harness layers.
 The harness should be able to replay group chat scenarios with:
 
 - Message timing.
-- Sequence numbers.
+- Stable event ids and journal order.
 - Trigger windows.
 - Active-loop aggregation windows.
 - Batched steer messages.
@@ -414,12 +451,17 @@ For group chat, the project will use:
 - The pre-trigger chain pauses for a conversation while its agent loop is active.
 - New messages during an active loop are batched by a configurable timer and injected as `steer` windows.
 - Each active loop owns one append-only model session; persona and memory appear only in its initial stable prefix.
-- OpenRouter requests use a stable `session_id` plus prompt caching, and traces retain provider cache-read usage.
+- Each active loop owns one incremental rollout file; the initial prompt/tool
+  protocol appears once and later committed messages advance `stateHash`.
+- OpenRouter requests use a stable `session_id` plus prompt caching, and
+  generation records retain provider cache-read usage.
 - Dreaming is the terminal continuation of that session: it appends one user-side dreaming instruction, preserves the exact earlier message prefix, and reuses the same provider session id.
 - Provider tool schemas remain stable across the action/dreaming boundary; execution capability changes through runtime phase gates so the first dreaming request can reuse the action prefix cache.
 - Exit triggers release the conversation back to the pre-trigger chain.
 - A post-trigger shared agent loop.
 - Conservative batched steer behavior before side effects.
 - One active turn per group conversation in the initial design.
+- Outbound side effects durably record intent before connector dispatch; an
+  unknown result after restart is surfaced and never retried.
 
 This gives the bot a practical form of real-time awareness without turning the system into a rigid dialogue state machine.

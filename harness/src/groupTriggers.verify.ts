@@ -45,7 +45,7 @@ console.log(
           events: conversation?.events.length ?? 0,
           windows: conversation?.windows.map((window) => ({
             reason: window.reason,
-            eventSeqs: window.eventSeqs
+            eventIds: window.eventIds
           })) ?? [],
           turns: conversation?.turns.length ?? 0,
           modelRequests: result.modelRequests.length,
@@ -171,7 +171,7 @@ async function verifyAllowedGroups(): Promise<{
       })
     );
     assert.equal(blockedResult, undefined);
-    assert.equal(runtime.exportSession().conversations.length, 0);
+    assert.equal(runtime.exportDiagnostics().conversations.length, 0);
 
     const allowedResult = await runtime.handleEvent(
       connector.createMessageEvent({
@@ -185,7 +185,7 @@ async function verifyAllowedGroups(): Promise<{
     await runtime.whenIdle();
     assert.ok(visibleTools.includes("leave"));
 
-    const session = runtime.exportSession();
+    const session = runtime.exportDiagnostics();
     const conversation = session.conversations[0];
     assert.ok(conversation);
     assert.equal(conversation.conversation.id, "allowed-group");

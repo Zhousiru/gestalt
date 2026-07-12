@@ -39,14 +39,13 @@
       "triggerAttemptReasons": ["mention"],
       "triggerAttemptProbabilities": [1],
       "triggerAttemptAdmissions": [true],
-      "nextSeq": 4,
       "turnStatus": "completed",
       "loopExits": 1,
       "loopExitReasons": ["leave_tool"],
       "steerCount": 1,
-      "eventSeqs": [1, 2],
+      "eventIds": ["active-loop-message-1", "active-loop-message-2"],
       "windowReasons": ["mention", "steer"],
-      "windowEventSeqs": [[1], [2]]
+      "windowEventIds": [["active-loop-message-1"], ["active-loop-message-2"]]
     },
     "action": {
       "toolNames": ["send_group_message", "leave"]
@@ -71,8 +70,8 @@
       "purposes": ["agent_action", "agent_action", "agent_action"],
       "responseContains": ["send_group_message", "leave"]
     },
-    "trace": {
-      "traces": 1,
+    "rollout": {
+      "rollouts": 1,
       "spans": [
         "memory.inject",
         "context.compile",

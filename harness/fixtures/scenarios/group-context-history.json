@@ -5,7 +5,7 @@
   "homeFixture": "harness/fixtures/homes/simple-group-test",
   "configFixture": "harness/fixtures/configs/context-history.toml",
   "memoriesFixture": "harness/fixtures/memories/context-history",
-  "sessionSnapshotFixture": "harness/fixtures/sessions/context-history-prior.json",
+  "sessionJournalFixture": "harness/fixtures/sessions/context-history-prior.jsonl",
   "model": {
     "kind": "configured_ai_sdk"
   },
@@ -29,23 +29,22 @@
       "selfMessages": 2,
       "windows": 1,
       "turns": 1,
-      "nextSeq": 12,
       "turnStatus": "completed",
       "loopExits": 1,
-      "loopExitReasons": ["leave_tool"],
-      "eventSeqs": [10],
+      "loopExitReasons": ["idle_timeout"],
+      "eventIds": ["context-current-1"],
       "windowReasons": ["keyword"],
-      "windowEventSeqs": [[10]]
+      "windowEventIds": [["context-current-1"]]
     },
     "action": {
       "toolName": "send_group_message",
-      "toolNames": ["send_group_message", "leave"],
+      "toolNames": ["send_group_message", "say_nothing"],
       "groupId": "context-group",
       "textMinLength": 1
     },
     "tools": {
       "calls": 2,
-      "toolNames": ["send_group_message", "leave"],
+      "toolNames": ["send_group_message", "say_nothing"],
       "connectorSideEffects": 0
     },
     "modelInput": {
@@ -77,10 +76,10 @@
       "responses": 2,
       "maxToolCallsPerResponse": 1,
       "purposes": ["agent_action", "agent_action"],
-      "responseContains": ["send_group_message", "leave"]
+      "responseContains": ["send_group_message", "say_nothing"]
     },
-    "trace": {
-      "traces": 1,
+    "rollout": {
+      "rollouts": 1,
       "spans": [
         "memory.inject",
         "context.compile",
@@ -88,7 +87,7 @@
         "tool.execute",
         "dream.run"
       ],
-      "toolNames": ["send_group_message", "leave"]
+      "toolNames": ["send_group_message", "say_nothing"]
     },
     "memory": {
       "injectedMemoryPaths": [

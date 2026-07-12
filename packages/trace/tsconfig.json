@@ -5,6 +5,9 @@
     "lib": ["ESNext", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     "moduleResolution": "Bundler",
+    "paths": {
+      "@gestalt/live-contracts": ["../live-contracts/src/index.ts"]
+    },
     "types": ["node", "vite/client"],
     "jsx": "react-jsx",
     "jsxImportSource": "react",

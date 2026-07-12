@@ -76,6 +76,34 @@ export interface ConnectorCallResult {
   media?: ConnectorMediaReference;
 }
 
+export const CONNECTOR_OUTCOME_UNKNOWN_CODE =
+  "connector_action_outcome_unknown" as const;
+
+/**
+ * The connector dispatched an external action but lost the authoritative
+ * response. Callers must treat this as non-retryable: the remote side may
+ * already have applied the action.
+ */
+export class ConnectorOutcomeUnknownError extends Error {
+  readonly code = CONNECTOR_OUTCOME_UNKNOWN_CODE;
+
+  constructor(message: string, options: ErrorOptions = {}) {
+    super(message, options);
+    this.name = "ConnectorOutcomeUnknownError";
+  }
+}
+
+export function isConnectorOutcomeUnknownError(
+  error: unknown
+): error is ConnectorOutcomeUnknownError {
+  return (
+    error instanceof ConnectorOutcomeUnknownError ||
+    (error instanceof Error &&
+      (error as Error & { code?: unknown }).code ===
+        CONNECTOR_OUTCOME_UNKNOWN_CODE)
+  );
+}
+
 export interface FetchMessageResult extends ConnectorCallResult {
   segments?: ConnectorFetchedSegment[];
 }

@@ -14,10 +14,20 @@ assert.match(
   result.modelRequests[0]?.prompt?.toolPromptHash ?? "",
   /^[a-f0-9]{16}$/
 );
-const modelSpan = result.traces[0]?.spans.find(
-  (span) => span.name === "model.decide"
+const modelSpan = result.rollouts
+  .flatMap((rollout) => rollout.records)
+  .find(
+    (record) =>
+      record.type === "span_completed" && record.name === "model.decide"
+  );
+const modelSpanAttributes =
+  modelSpan?.type === "span_completed"
+    ? (modelSpan.attributes as Record<string, unknown>)
+    : undefined;
+assert.equal(
+  modelSpanAttributes?.promptId,
+  "runtime.action.system"
 );
-assert.equal(modelSpan?.attributes.promptId, "runtime.action.system");
 
 const action = result.session.conversations[0]?.turns[0]?.proposedActions[0];
 

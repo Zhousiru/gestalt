@@ -10,9 +10,7 @@ import type { ContextEventRecord } from "./selectContextEvents";
 export interface CompiledMessageWindow {
   id: string;
   reason: MessageWindow["reason"];
-  fromSeq: number;
-  toSeq: number;
-  eventSeqs: number[];
+  eventIds: string[];
   events: SessionEventRecord[];
   contextEvents: ContextEventRecord[];
 }
@@ -60,9 +58,7 @@ export function compileContext(input: CompileContextInput): CompiledContext {
           window: {
             id: input.window.id,
             reason: input.window.reason,
-            fromSeq: input.window.fromSeq,
-            toSeq: input.window.toSeq,
-            eventSeqs: input.window.eventSeqs,
+            eventIds: input.window.eventIds,
             events: input.windowEvents ?? [],
             contextEvents: input.contextEvents ?? []
           }

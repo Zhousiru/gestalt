@@ -1,7 +1,26 @@
 import { randomUUID } from "node:crypto";
 import WebSocket, { WebSocketServer } from "ws";
-import type { ConnectorCallResult } from "../types";
+import {
+  ConnectorOutcomeUnknownError,
+  type ConnectorCallResult
+} from "../types";
 import { OneBotActionResponseSchema } from "./schemas";
+import {
+  createOneBotIngressQueue,
+  type OneBotIngressFailure,
+  type OneBotIngressQueue,
+  type OneBotIngressQueueStats
+} from "./ingressQueue";
+
+export type OneBotEventFailureCode =
+  | OneBotIngressFailure<unknown>["code"]
+  | "invalid_message";
+
+export interface OneBotEventFailure {
+  code: OneBotEventFailureCode;
+  error: Error;
+  event?: unknown;
+}
 
 export interface OneBotTransport extends AsyncDisposable {
   readonly mode: "forward_ws" | "reverse_ws";
@@ -11,15 +30,27 @@ export interface OneBotTransport extends AsyncDisposable {
     params?: Record<string, unknown>
   ): Promise<ConnectorCallResult & { data?: unknown }>;
   onEvent(handler: (event: unknown) => void | Promise<void>): void;
+  onEventError(
+    handler: (failure: OneBotEventFailure) => void | Promise<void>
+  ): void;
+  getIngressStats(): OneBotIngressQueueStats;
+  whenIngressIdle(): Promise<void>;
 }
 
-export interface CreateOneBotForwardWsTransportOptions {
+export interface OneBotIngressOptions {
+  ingressConcurrency?: number;
+  ingressQueueCapacity?: number;
+}
+
+export interface CreateOneBotForwardWsTransportOptions
+  extends OneBotIngressOptions {
   url: string;
   accessToken?: string;
   connectTimeoutMs?: number;
 }
 
-export interface CreateOneBotReverseWsTransportOptions {
+export interface CreateOneBotReverseWsTransportOptions
+  extends OneBotIngressOptions {
   host?: string;
   port: number;
   path?: string;
@@ -40,6 +71,14 @@ export function createOneBotForwardWsTransport(
     }
   >();
   const eventHandlers: EventHandler[] = [];
+  const eventErrorHandlers: Array<
+    (failure: OneBotEventFailure) => void | Promise<void>
+  > = [];
+  const ingress = createTransportIngress(
+    eventHandlers,
+    eventErrorHandlers,
+    options
+  );
 
   return {
     mode: "forward_ws",
@@ -50,15 +89,23 @@ export function createOneBotForwardWsTransport(
       }
       socket = await openClientWebSocket(options);
       socket.on("message", (data) => {
-        handleIncoming(data, pending, eventHandlers);
+        handleIncoming(data, pending, ingress, eventErrorHandlers);
       });
       socket.on("close", () => {
-        rejectPending(pending, new Error("OneBot WebSocket closed."));
+        rejectPending(
+          pending,
+          unknownOutcome(
+            "OneBot WebSocket closed before action results arrived."
+          )
+        );
       });
       socket.on("error", (error) => {
         rejectPending(
           pending,
-          error instanceof Error ? error : new Error(String(error))
+          unknownOutcome(
+            "OneBot WebSocket failed before action results arrived.",
+            error
+          )
         );
       });
     },
@@ -74,8 +121,25 @@ export function createOneBotForwardWsTransport(
       eventHandlers.push(handler);
     },
 
+    onEventError(handler) {
+      eventErrorHandlers.push(handler);
+    },
+
+    getIngressStats() {
+      return ingress.getStats();
+    },
+
+    whenIngressIdle() {
+      return ingress.whenIdle();
+    },
+
     async [Symbol.asyncDispose]() {
-      rejectPending(pending, new Error("OneBot transport disposed."));
+      rejectPending(
+        pending,
+        unknownOutcome(
+          "OneBot transport was disposed before action results arrived."
+        )
+      );
       socket?.close();
     }
   };
@@ -94,6 +158,14 @@ export function createOneBotReverseWsTransport(
     }
   >();
   const eventHandlers: EventHandler[] = [];
+  const eventErrorHandlers: Array<
+    (failure: OneBotEventFailure) => void | Promise<void>
+  > = [];
+  const ingress = createTransportIngress(
+    eventHandlers,
+    eventErrorHandlers,
+    options
+  );
 
   return {
     mode: "reverse_ws",
@@ -112,18 +184,50 @@ export function createOneBotReverseWsTransport(
             done(true);
             return;
           }
-          done(readAccessToken(info.req.url, info.req.headers.authorization) === options.accessToken);
+          done(
+            readAccessToken(info.req.url, info.req.headers.authorization) ===
+              options.accessToken
+          );
         }
       });
 
       server.on("connection", (connectedSocket) => {
+        if (socket && socket !== connectedSocket) {
+          rejectPending(
+            pending,
+            unknownOutcome(
+              "OneBot reverse WebSocket was replaced before action results arrived."
+            )
+          );
+          socket.close();
+        }
         socket = connectedSocket;
         socket.on("message", (data) => {
-          handleIncoming(data, pending, eventHandlers);
+          handleIncoming(data, pending, ingress, eventErrorHandlers);
         });
         socket.on("close", () => {
+          if (socket !== connectedSocket) {
+            return;
+          }
           socket = undefined;
-          rejectPending(pending, new Error("OneBot reverse WebSocket closed."));
+          rejectPending(
+            pending,
+            unknownOutcome(
+              "OneBot reverse WebSocket closed before action results arrived."
+            )
+          );
+        });
+        socket.on("error", (error) => {
+          if (socket !== connectedSocket) {
+            return;
+          }
+          rejectPending(
+            pending,
+            unknownOutcome(
+              "OneBot reverse WebSocket failed before action results arrived.",
+              error
+            )
+          );
         });
       });
 
@@ -143,8 +247,25 @@ export function createOneBotReverseWsTransport(
       eventHandlers.push(handler);
     },
 
+    onEventError(handler) {
+      eventErrorHandlers.push(handler);
+    },
+
+    getIngressStats() {
+      return ingress.getStats();
+    },
+
+    whenIngressIdle() {
+      return ingress.whenIdle();
+    },
+
     async [Symbol.asyncDispose]() {
-      rejectPending(pending, new Error("OneBot transport disposed."));
+      rejectPending(
+        pending,
+        unknownOutcome(
+          "OneBot transport was disposed before action results arrived."
+        )
+      );
       socket?.close();
       await new Promise<void>((resolve) => {
         server?.close(() => resolve());
@@ -206,7 +327,25 @@ function callActionOverSocket(
       pending.set(echo, { resolve, reject });
     }
   );
-  socket.send(JSON.stringify(payload));
+  try {
+    socket.send(JSON.stringify(payload), (error) => {
+      if (!error) {
+        return;
+      }
+      const pendingCall = pending.get(echo);
+      if (!pendingCall) {
+        return;
+      }
+      pending.delete(echo);
+      pendingCall.reject(
+        unknownOutcome("OneBot action dispatch failed after it was queued.", error)
+      );
+    });
+  } catch (error) {
+    const pendingCall = pending.get(echo);
+    pending.delete(echo);
+    pendingCall?.reject(toError(error));
+  }
   return promise;
 }
 
@@ -219,14 +358,36 @@ function handleIncoming(
       reject: (error: Error) => void;
     }
   >,
-  eventHandlers: EventHandler[]
+  ingress: OneBotIngressQueue<unknown>,
+  eventErrorHandlers: Array<
+    (failure: OneBotEventFailure) => void | Promise<void>
+  >
 ): void {
-  const parsed = parseJsonMessage(data);
+  let parsed: unknown;
+  try {
+    parsed = parseJsonMessage(data);
+  } catch (error) {
+    reportEventFailure(eventErrorHandlers, {
+      code: "invalid_message",
+      error: toError(error)
+    });
+    return;
+  }
   const echo = readEcho(parsed);
   if (echo && pending.has(echo)) {
     const pendingCall = pending.get(echo);
     pending.delete(echo);
-    const response = OneBotActionResponseSchema.parse(parsed);
+    const parsedResponse = OneBotActionResponseSchema.safeParse(parsed);
+    if (!parsedResponse.success) {
+      pendingCall?.reject(
+        unknownOutcome(
+          "OneBot returned a malformed action response; remote outcome is unknown.",
+          parsedResponse.error
+        )
+      );
+      return;
+    }
+    const response = parsedResponse.data;
     const error = response.message ?? response.wording;
     const result: ConnectorCallResult & { data?: unknown } = {
       ok: response.status === "ok" || response.status === "async",
@@ -237,8 +398,48 @@ function handleIncoming(
     return;
   }
 
-  for (const handler of eventHandlers) {
-    void handler(parsed);
+  ingress.enqueue(parsed);
+}
+
+function createTransportIngress(
+  eventHandlers: EventHandler[],
+  eventErrorHandlers: Array<
+    (failure: OneBotEventFailure) => void | Promise<void>
+  >,
+  options: OneBotIngressOptions
+): OneBotIngressQueue<unknown> {
+  return createOneBotIngressQueue({
+    ...(options.ingressConcurrency !== undefined
+      ? { concurrency: options.ingressConcurrency }
+      : {}),
+    ...(options.ingressQueueCapacity !== undefined
+      ? { capacity: options.ingressQueueCapacity }
+      : {}),
+    async handle(event) {
+      for (const handler of eventHandlers) {
+        await handler(event);
+      }
+    },
+    onFailure(failure) {
+      reportEventFailure(eventErrorHandlers, failure);
+    }
+  });
+}
+
+function reportEventFailure(
+  handlers: Array<(failure: OneBotEventFailure) => void | Promise<void>>,
+  failure: OneBotEventFailure
+): void {
+  if (handlers.length === 0) {
+    console.error(`[onebot:${failure.code}] ${failure.error.message}`);
+    return;
+  }
+  for (const handler of handlers) {
+    try {
+      void Promise.resolve(handler(failure)).catch(() => undefined);
+    } catch {
+      // An error reporter must never create another unhandled rejection.
+    }
   }
 }
 
@@ -287,4 +488,18 @@ function readAccessToken(
   }
   const url = new URL(requestUrl, "ws://localhost");
   return url.searchParams.get("access_token") ?? undefined;
+}
+
+function toError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
+}
+
+function unknownOutcome(
+  message: string,
+  cause?: unknown
+): ConnectorOutcomeUnknownError {
+  return new ConnectorOutcomeUnknownError(
+    message,
+    cause === undefined ? {} : { cause }
+  );
 }

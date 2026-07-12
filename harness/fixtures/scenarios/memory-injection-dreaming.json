@@ -29,7 +29,7 @@
       "turnStatus": "completed",
       "loopExits": 1,
       "steerCount": 0,
-      "eventSeqs": [1],
+      "eventIds": ["memory-message-1"],
       "phases": [
         "memory_injecting",
         "context_compiling",
@@ -54,7 +54,7 @@
         "\"name\":\"bash\"",
         "/memories/self/index.md",
         "/memories/users/alice/index.md",
-        "file-backed Markdown",
+        "Markdown",
         "artifact evidence"
       ]
     },
@@ -72,8 +72,8 @@
       "minDreamingHitResponses": 1,
       "minDreamingReadTokens": 1
     },
-    "trace": {
-      "traces": 1,
+    "rollout": {
+      "rollouts": 1,
       "spans": [
         "memory.inject",
         "context.compile",
@@ -109,7 +109,7 @@
       ],
       "dreamCommandsContain": [
         "/memories",
-        "file-backed Markdown",
+        "Markdown",
         "artifact evidence"
       ],
       "dreamChangedFiles": ["users/alice/index.md"]

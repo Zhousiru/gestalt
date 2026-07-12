@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { MessageReceivedEvent } from "../events/schemas";
 
 export function visibleMessageText(
@@ -9,13 +10,15 @@ export function visibleMessageText(
     : event.message.text;
 }
 
-/** Redacts generic secrets while leaving complete CQ markup inspectable. */
+/** Redacts secrets while preserving non-binary CQ control markup. */
 export function redactSensitiveString(
   value: string,
   options: { redactUrls?: boolean } = {}
 ): string {
   const cq: string[] = [];
-  const protectedValue = value.replace(
+  // CQ control markup remains inspectable, but binary-bearing attribute values
+  // must be removed before the markup is protected from generic redaction.
+  const protectedValue = redactInlineBinaryMedia(value).replace(
     /\[CQ:[A-Za-z0-9_-]+(?:,[^\]]*)?\]/g,
     (markup) => {
       const index = cq.push(markup) - 1;
@@ -23,9 +26,9 @@ export function redactSensitiveString(
     }
   );
   let redacted = protectedValue
-    .replace(/base64:\/\/[A-Za-z0-9+/=\s]+/gi, "[表情数据]")
+    .replace(/base64:\/\/[A-Za-z0-9+/=]+/gi, "[表情数据]")
     .replace(
-      /data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=\s]+/gi,
+      /data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/gi,
       "[表情数据]"
     )
     .replace(/file:\/\/\/[^\s"'<>\]]+/gi, "[PATH]")
@@ -33,6 +36,14 @@ export function redactSensitiveString(
     .replace(
       /(["'])\/(?:home|Users|tmp|var|opt|root|mnt)\/[^"'\r\n]+\1/g,
       "[PATH]"
+    )
+    // Diagnostic previews are sometimes JSON serialized before they reach the
+    // trace boundary. Redact an absolute POSIX locator by its field name so
+    // connector-specific roots such as /mock or /run cannot bypass the small
+    // well-known-directory patterns below.
+    .replace(
+      /((?:"(?:file|path|filepath|localpath|temppath)"|'(?:file|path|filepath|localpath|temppath)')\s*:\s*["'])\/[^"'\r\n]+(["'])/gi,
+      "$1[PATH]$2"
     )
     .replace(/\\\\[^\s"'<>\]]+/g, "[PATH]")
     .replace(/\b[A-Za-z]:\\[^\s"'<>\]]+/g, "[PATH]")
@@ -53,10 +64,20 @@ export function redactSensitiveString(
   );
 }
 
+function redactInlineBinaryMedia(value: string): string {
+  return value
+    .replace(/base64:\/\/[A-Za-z0-9+/=]+/gi, "[表情数据]")
+    .replace(
+      /data:[a-z0-9][a-z0-9.+-]*\/[a-z0-9][a-z0-9.+-]*(?:;[^,\]\s;]+)*;base64,[A-Za-z0-9+/=]+/gi,
+      "[表情数据]"
+    );
+}
+
 /**
  * Converts internal/runtime values into a diagnostic-output-safe JSON value.
- * Canonical replay, model-readable CQ, and Live CQ text remain untouched. This
- * still removes binary payloads, structured transport data, paths, and API keys.
+ * Canonical replay remains outside this diagnostic boundary. Live CQ structure
+ * stays inspectable, while binary payloads, transport data, paths, and API keys
+ * are removed.
  */
 export function sanitizeUntrustedValue(
   value: unknown,
@@ -90,6 +111,16 @@ function sanitizeValue(
   if (typeof value !== "object") {
     return String(value);
   }
+  const binary = readBinaryBytes(value);
+  if (binary) {
+    return {
+      type: "binary",
+      mediaType: "application/octet-stream",
+      byteLength: binary.byteLength,
+      sha256: createHash("sha256").update(binary).digest("hex"),
+      availability: "not_captured"
+    };
+  }
   if (seen.has(value)) {
     return "[Circular]";
   }
@@ -112,12 +143,13 @@ function sanitizeValue(
     inheritedStickerTransport || isStickerTransportObject(input);
   const output: Record<string, unknown> = {};
   for (const [key, item] of Object.entries(input)) {
+    const safeBinaryMedia = key === "media" && containsBinaryDescriptor(item);
     if (
       key === "raw" ||
       key === "sourceContent" ||
       key === "segment" ||
       key === "segments" ||
-      key === "media" ||
+      (key === "media" && !safeBinaryMedia) ||
       key === "vector" ||
       key === "api_key" ||
       key === "apiKey" ||
@@ -149,12 +181,64 @@ function sanitizeValue(
     output[key] = sanitizeValue(
       item,
       seen,
-      redactUrls || stickerTransportObject || isDiagnosticStringKey(key),
+      redactUrls ||
+        stickerTransportObject ||
+        safeBinaryMedia ||
+        isDiagnosticStringKey(key),
       stickerTransportObject
     );
   }
   seen.delete(value);
   return output;
+}
+
+function readBinaryBytes(value: object): Uint8Array | undefined {
+  if (value instanceof ArrayBuffer) {
+    return new Uint8Array(value);
+  }
+  if (ArrayBuffer.isView(value)) {
+    return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  }
+  return undefined;
+}
+
+function containsBinaryDescriptor(
+  value: unknown,
+  seen = new WeakSet<object>(),
+  depth = 0
+): boolean {
+  if (!value || typeof value !== "object" || depth > 20) {
+    return false;
+  }
+  if (seen.has(value)) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    record.type === "binary" &&
+    typeof record.mediaType === "string" &&
+    typeof record.byteLength === "number" &&
+    Number.isSafeInteger(record.byteLength) &&
+    record.byteLength >= 0 &&
+    typeof record.sha256 === "string" &&
+    /^[a-f0-9]{64}$/i.test(record.sha256) &&
+    [
+      "stored",
+      "not_captured",
+      "size_limit_exceeded",
+      "write_failed"
+    ].includes(String(record.availability))
+  ) {
+    return true;
+  }
+  seen.add(value);
+  try {
+    return (Array.isArray(value) ? value : Object.values(record)).some((item) =>
+      containsBinaryDescriptor(item, seen, depth + 1)
+    );
+  } finally {
+    seen.delete(value);
+  }
 }
 
 function isDiagnosticStringKey(key: string): boolean {

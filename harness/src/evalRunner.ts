@@ -25,6 +25,7 @@ import {
   renderJudgePrompt,
   type EvalRubric
 } from "./prompts";
+import { writeArtifactJson } from "./artifactBinary";
 
 const EvalLabelSchema = z.enum(["pass", "warn", "fail"]);
 
@@ -91,8 +92,8 @@ interface EvalEvidence {
   };
   session: Record<string, unknown>;
   modelExchanges: unknown[];
-  traceSpans: unknown[];
-  traceObservations: unknown[];
+  rolloutSpans: unknown[];
+  rolloutRecords: unknown[];
   homeChanges: {
     added: HomeFileSnapshot[];
     removed: HomeFileSnapshot[];
@@ -156,7 +157,7 @@ function buildJudgeInput(
 function buildEvidence(replay: ReplayRunResult): EvalEvidence {
   const conversation = replay.session.conversations[0];
   const turn = conversation?.turns[0];
-  const trace = replay.traces[0];
+  const rollout = replay.rollouts[0];
   const changes = diffHomeSnapshots(replay.homeBefore, replay.homeAfter);
 
   return {
@@ -167,7 +168,7 @@ function buildEvidence(replay: ReplayRunResult): EvalEvidence {
     session: {
       conversation: conversation?.conversation,
       events: conversation?.events.map((event) => ({
-        seq: event.seq,
+        id: event.event.id,
         type: event.event.type,
         text:
           event.event.type === "MessageReceived"
@@ -182,9 +183,7 @@ function buildEvidence(replay: ReplayRunResult): EvalEvidence {
       turn: turn
         ? {
             status: turn.status,
-            fromSeq: turn.fromSeq,
-            toSeq: turn.toSeq,
-            eventSeqs: turn.eventSeqs,
+            eventIds: turn.eventIds,
             steerCount: turn.steerCount,
             phases: turn.phases.map((phase) => phase.phase),
             proposedActions: turn.proposedActions,
@@ -197,19 +196,16 @@ function buildEvidence(replay: ReplayRunResult): EvalEvidence {
       request: summarizeModelRequest(exchange.request),
       response: summarizeModelResponse(exchange.response)
     })),
-    traceSpans:
-      trace?.spans.map((span) => ({
-        name: span.name,
-        attributes: truncateJson(span.attributes, 3000)
-      })) ?? [],
-    traceObservations:
-      trace?.observations.map((observation) => ({
-        type: observation.type,
-        name: observation.name,
-        input: truncateJson(observation.input, 1000),
-        output: truncateJson(observation.output, 1000),
-        metadata: truncateJson(observation.metadata, 1000)
-      })) ?? [],
+    rolloutSpans:
+      rollout?.records
+        .filter((record) => record.type === "span_completed")
+        .map((span) => ({
+          name: span.name,
+          status: span.status,
+          attributes: truncateJson(span.attributes, 3000)
+        })) ?? [],
+    rolloutRecords:
+      rollout?.records.map((record) => truncateJson(record, 1500)) ?? [],
     homeChanges: {
       added: changes.added,
       removed: changes.removed,
@@ -284,8 +280,8 @@ async function writeEvalArtifacts(
   };
 
   await Promise.all([
-    writeJson(paths.inputs, inputs),
-    writeJson(paths.results, results),
+    writeArtifactJson(paths.inputs, inputs),
+    writeArtifactJson(paths.results, results),
     writeFile(paths.report, renderEvalReport(replay, results), "utf8")
   ]);
 
@@ -351,9 +347,15 @@ function summarizeModelRequest(
     toolChoice: request.toolChoice,
     messages: request.messages.map((message) => ({
       role: message.role,
-      content: truncate(message.content, 3000)
+      content: truncate(modelContentText(message.content), 3000)
     }))
   };
+}
+
+function modelContentText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value === undefined || value === null) return "";
+  return JSON.stringify(value) ?? String(value);
 }
 
 function summarizeModelResponse(
@@ -425,8 +427,4 @@ function truncateJson(value: unknown, maxLength: number): unknown {
 
 function truncate(value: string, maxLength: number): string {
   return value.length <= maxLength ? value : `${value.slice(0, maxLength)}...`;
-}
-
-async function writeJson(filePath: string, value: unknown): Promise<void> {
-  await writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }

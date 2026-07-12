@@ -14,13 +14,13 @@ const readImageCall = result.onebotApiCalls.find(
 );
 const transcriptText = result.modelRequests
   .flatMap((request) =>
-    request.messages.map((message) => message.content ?? "")
+    request.messages.map((message) => modelContentText(message.content))
   )
   .join("\n");
 const modelFacingWindows = result.modelRequests
   .flatMap((request) => request.messages)
   .filter((message) => message.role === "user")
-  .map((message) => message.content ?? "")
+  .map((message) => modelContentText(message.content))
   .filter((content) => content.includes("小格看看这张图"));
 
 assert.ok(conversation, "expected exported OneBot session conversation");
@@ -97,6 +97,11 @@ assert.deepEqual(readImageCall.params, {
 });
 assert.match(transcriptText, /"type":"file"/);
 assert.match(transcriptText, /"mediaType":"image\/png"/);
+const rolloutText = JSON.stringify(result.rollouts);
+assert.doesNotMatch(rolloutText, /\/mock\/onebot\/image\/cat\.png/);
+assert.doesNotMatch(rolloutText, /C:\\\\private\\custom-sticker-secret\.gif/);
+assert.doesNotMatch(rolloutText, /SIGNED_(?:DIRECT|CUSTOM|COMPAT)_TOKEN/);
+assert.doesNotMatch(rolloutText, /base64:\/\/[A-Za-z0-9+/=]{16,}/);
 const sentMessage = apiCall.params.message;
 assert.equal(typeof sentMessage, "string", "expected CQ string message");
 assert.match(String(sentMessage), /^\[CQ:reply,id=(?:111|321)\]/);
@@ -106,6 +111,12 @@ if (action.params.text.includes("[CQ:face")) {
 assert.equal(createOneBotSendMessage({
   text: "[CQ:reply,id=321]复读 [CQ:face,id=14,name=微笑]"
 }), "[CQ:reply,id=321]复读 [CQ:face,id=14,name=微笑]");
+
+function modelContentText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value === undefined || value === null) return "";
+  return JSON.stringify(value) ?? String(value);
+}
 
 console.log(
   JSON.stringify(

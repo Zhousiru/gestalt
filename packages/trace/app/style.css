@@ -54,12 +54,37 @@ button {
   color: var(--trace-ink);
 }
 
-*,
-*::before,
-*::after {
-  animation: none !important;
-  scroll-behavior: auto !important;
-  transition: none !important;
+[data-trace-explorer] button,
+[data-trace-explorer] a,
+[data-trace-explorer] input,
+[data-trace-explorer] select,
+[data-trace-explorer] .trace-list-row {
+  transition:
+    color 175ms cubic-bezier(0.22, 1, 0.36, 1),
+    background-color 175ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 175ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 175ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.trace-skeleton {
+  animation: trace-skeleton-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes trace-skeleton-pulse {
+  50% {
+    opacity: 0.45;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-trace-explorer] *,
+  [data-trace-explorer] *::before,
+  [data-trace-explorer] *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 [data-radix-scroll-area-viewport] > div {

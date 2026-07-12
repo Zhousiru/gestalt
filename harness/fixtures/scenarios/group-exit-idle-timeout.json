@@ -27,16 +27,16 @@
       "loopExits": 1,
       "loopExitReasons": ["idle_timeout"],
       "windowReasons": ["mention"],
-      "windowEventSeqs": [[1]],
-      "turnEventSeqs": [[1]]
+      "windowEventIds": [["idle-exit-message-1"]],
+      "turnEventIds": [["idle-exit-message-1"]]
     },
     "tools": {
       "calls": 1,
       "toolNames": ["send_group_message"],
       "connectorSideEffects": 0
     },
-    "trace": {
-      "traces": 1,
+    "rollout": {
+      "rollouts": 1,
       "spans": [
         "memory.inject",
         "context.compile",

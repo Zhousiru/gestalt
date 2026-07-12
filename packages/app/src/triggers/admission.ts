@@ -3,7 +3,7 @@ import type { GestaltConfig } from "../home/loadConfig";
 import type { SessionEventRecord } from "../session/schemas";
 import type { TriggerDecision } from "./types";
 
-export const TRIGGER_ADMISSION_SAMPLER_VERSION = "sha256-53-v1";
+const TRIGGER_ADMISSION_DOMAIN = "gestalt.trigger-admission.sha256-53";
 
 const DEFAULT_TRIGGER_PROBABILITY = 1;
 const SAMPLE_DENOMINATOR = 2 ** 53;
@@ -18,7 +18,6 @@ export interface TriggerAdmissionDecision {
   probability: number;
   sample: number;
   admitted: boolean;
-  samplerVersion: string;
 }
 
 export function evaluateTriggerAdmission(
@@ -31,8 +30,7 @@ export function evaluateTriggerAdmission(
   return {
     probability,
     sample,
-    admitted: sample < probability,
-    samplerVersion: TRIGGER_ADMISSION_SAMPLER_VERSION
+    admitted: sample < probability
   };
 }
 
@@ -69,7 +67,7 @@ export function sampleTriggerCandidate(
   const digest = createHash("sha256")
     .update(
       [
-        TRIGGER_ADMISSION_SAMPLER_VERSION,
+        TRIGGER_ADMISSION_DOMAIN,
         `${decision.conversation.kind}:${decision.conversation.id}`,
         getStableEventIdentity(record),
         decision.reason

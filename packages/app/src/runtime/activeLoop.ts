@@ -17,8 +17,6 @@ import {
   type AgentLoopDependencies as BaseAgentLoopDependencies,
   type AgentTurnResult,
   readAgentTurnTraceFromError,
-  recordAgentTrace,
-  recordAgentTurnTrace,
   runDreamingForAgentTurn,
   runAgentTurn,
   compileIncrementalAgentContext
@@ -37,6 +35,10 @@ import {
   isTurnSteeredError,
   TurnSteeredError
 } from "./turnSignals";
+import {
+  createActiveRollout,
+  type ActiveRollout
+} from "./activeRollout";
 
 export interface ActiveLoopDependencies extends BaseAgentLoopDependencies {
   sessionStore: SessionStore;
@@ -44,6 +46,7 @@ export interface ActiveLoopDependencies extends BaseAgentLoopDependencies {
 }
 
 type ActiveLoopPhase = TurnPhase | "waiting_for_input";
+const MAX_ACTIVE_LOOP_HISTORY = 128;
 
 interface WindowPart {
   window: MessageWindow;
@@ -65,6 +68,7 @@ export interface ActiveLoop {
   currentTurnId: string;
   currentTurnStartedAt: string;
   modelSession: ModelSession;
+  rollout: ActiveRollout;
   parts: WindowPart[];
   pendingParts: WindowPart[];
   restartCount: number;
@@ -73,7 +77,7 @@ export interface ActiveLoop {
   consecutiveSayNothing: number;
   lastResult?: AgentTurnResult;
   forceExit?: AgentLoopExitDecision;
-  forceExitLastSeq?: number;
+  forceExitLastEventId?: string;
   abortController?: AbortController;
   idleExitTimer?: ReturnType<typeof setTimeout>;
   wakeForInput?: () => void;
@@ -123,15 +127,31 @@ export function startActiveLoopWindow(
   }
 
   const startedAt = dependencies.now().toISOString();
+  const loopId = randomUUID();
+  const currentEventId = part.eventRecords.at(-1)?.event.id;
+  const rollout = createActiveRollout({
+    home: dependencies.home,
+    config: dependencies.config,
+    rolloutId: loopId,
+    activeLoopId: loopId,
+    conversationKey,
+    ...(currentEventId ? { eventId: currentEventId } : {}),
+    tools: dependencies.tools,
+    startedAt,
+    now: dependencies.now
+  });
   const active: ActiveLoop = {
-    id: randomUUID(),
+    id: loopId,
     conversation: part.window.conversation,
     conversationKey,
     phase: "queued",
     loopStartedAt: startedAt,
     currentTurnId: randomUUID(),
     currentTurnStartedAt: startedAt,
-    modelSession: dependencies.model.createSession(),
+    modelSession: dependencies.model.createSession({
+      exchangeSink: rollout.exchangeSink
+    }),
+    rollout,
     parts: [part],
     pendingParts: [],
     restartCount: 0,
@@ -141,14 +161,42 @@ export function startActiveLoopWindow(
     promise: Promise.resolve(undefined)
   };
 
+  dependencies.sessionStore.pinConversation(active.conversation);
   activeLoops.set(conversationKey, active);
-  active.promise = runActiveLoop(dependencies, exitTriggers, active).finally(
-    () => {
+  active.promise = runActiveLoop(dependencies, exitTriggers, active)
+    .then(
+      async (result) => {
+        await active.rollout.close("completed");
+        dependencies.liveEvents?.publish("rollout.recorded", {
+          rolloutId: active.rollout.id,
+          conversationKey: active.conversationKey,
+          status: "completed"
+        });
+        return result;
+      },
+      async (error: unknown) => {
+        const trace = readAgentTurnTraceFromError(error);
+        if (trace) {
+          await active.rollout.recordSpans(trace.spans);
+        }
+        await active.rollout.close(
+          "failed",
+          error instanceof Error ? error.message : String(error)
+        );
+        dependencies.liveEvents?.publish("rollout.recorded", {
+          rolloutId: active.rollout.id,
+          conversationKey: active.conversationKey,
+          status: "failed"
+        });
+        throw error;
+      }
+    )
+    .finally(() => {
       activeLoops.delete(conversationKey);
       clearActiveLoopIdleExit(active);
+      dependencies.sessionStore.unpinConversation(active.conversation);
       onSettled?.(conversationKey);
-    }
-  );
+    });
 
   return active.promise;
 }
@@ -157,12 +205,12 @@ export function forceActiveLoopExit(
   activeLoop: ActiveLoop,
   input: {
     decision: AgentLoopExitDecision;
-    lastSeq?: number;
+    lastEventId?: string;
   }
 ): void {
   activeLoop.forceExit = input.decision;
-  if (input.lastSeq !== undefined) {
-    activeLoop.forceExitLastSeq = input.lastSeq;
+  if (input.lastEventId !== undefined) {
+    activeLoop.forceExitLastEventId = input.lastEventId;
   }
 
   clearActiveLoopIdleExit(activeLoop);
@@ -182,7 +230,11 @@ export function canInjectIntoActiveLoop(
   activeLoop: ActiveLoop,
   maxSteersPerTurn: number
 ): boolean {
-  if (activeLoop.phase === "waiting_for_input") {
+  if (
+    activeLoop.phase === "waiting_for_input" ||
+    activeLoop.phase === "executing" ||
+    activeLoop.phase === "completed"
+  ) {
     return true;
   }
   return (
@@ -205,7 +257,7 @@ async function runActiveLoop(
 ): Promise<AgentTurnResult | undefined> {
   while (true) {
     if (active.forceExit) {
-      recordLoopExit(dependencies, active, active.forceExit);
+      await recordLoopExit(dependencies, active, active.forceExit);
       return active.lastResult;
     }
 
@@ -217,16 +269,16 @@ async function runActiveLoop(
       if (isAgentLoopForceLeaveError(error) && active.forceExit) {
         const forceExitTrace = readAgentTurnTraceFromError(error);
         if (forceExitTrace) {
-          await recordAgentTrace(dependencies, forceExitTrace);
+          await active.rollout.recordSpans(forceExitTrace.spans);
         }
-        recordLoopExit(dependencies, active, active.forceExit);
+        await recordLoopExit(dependencies, active, active.forceExit);
         return active.lastResult;
       }
       throw error;
     }
-    active.results.push(result);
+    appendBounded(active.results, result, MAX_ACTIVE_LOOP_HISTORY);
+    await active.rollout.recordSpans(result.trace.spans);
     updateActiveLoopAfterTurn(active, result);
-    recordSelfMessagesFromToolResults(dependencies, result);
 
     const afterTurnDecision = evaluateExitTriggers(
       dependencies,
@@ -238,9 +290,9 @@ async function runActiveLoop(
       }
     );
     if (afterTurnDecision) {
-      recordLoopExit(dependencies, active, afterTurnDecision);
+      await recordLoopExit(dependencies, active, afterTurnDecision);
       await runLoopDreaming(dependencies, active, result);
-      await recordAgentTurnTrace(dependencies, result);
+      await active.rollout.recordSpans(result.trace.spans);
       return result;
     }
 
@@ -250,13 +302,12 @@ async function runActiveLoop(
       active
     );
     if (idleDecision) {
-      recordLoopExit(dependencies, active, idleDecision);
+      await recordLoopExit(dependencies, active, idleDecision);
       await runLoopDreaming(dependencies, active, result);
-      await recordAgentTurnTrace(dependencies, result);
+      await active.rollout.recordSpans(result.trace.spans);
       return result;
     }
 
-    await recordAgentTurnTrace(dependencies, result);
     active.parts = active.pendingParts;
     active.pendingParts = [];
     active.restartCount = 0;
@@ -297,12 +348,18 @@ function createLoopDreamingInput(
     return undefined;
   }
 
-  const fromSeq = Math.min(
-    ...active.results.map((candidate) => candidate.window.fromSeq)
+  const firstEventId = firstResult.window.eventIds[0];
+  if (!firstEventId) {
+    return undefined;
+  }
+  const conversationEvents = dependencies.sessionStore.getEvents(
+    active.conversation
   );
-  const sessionEvents = dependencies.sessionStore
-    .getEvents(active.conversation)
-    .filter((record) => record.seq >= fromSeq);
+  const firstEventIndex = conversationEvents.findIndex(
+    (record) => record.event.id === firstEventId
+  );
+  const sessionEvents =
+    firstEventIndex >= 0 ? conversationEvents.slice(firstEventIndex) : [];
   const firstRecord = sessionEvents[0];
   const lastRecord = sessionEvents.at(-1);
   if (!firstRecord || !lastRecord) {
@@ -310,12 +367,10 @@ function createLoopDreamingInput(
   }
 
   const window = MessageWindowSchema.parse({
-    id: `dream-${active.id}-${firstRecord.seq}-${lastRecord.seq}`,
+    id: `dream-${active.id}-${firstRecord.event.id}-${lastRecord.event.id}`,
     conversation: active.conversation,
     reason: "replay",
-    fromSeq: firstRecord.seq,
-    toSeq: lastRecord.seq,
-    eventSeqs: sessionEvents.map((record) => record.seq),
+    eventIds: sessionEvents.map((record) => record.event.id),
     closedAt: dependencies.now().toISOString()
   });
 
@@ -344,10 +399,15 @@ async function runSteerableTurn(
         eventRecords: merged.eventRecords,
         steerCount: active.restartCount,
         modelSession: active.modelSession,
+        rollout: active.rollout,
         includeSelfHistory: true,
         signal: abortController.signal,
         onPhaseChange(phase) {
+          const previousPhase = active.phase;
           active.phase = phase;
+          if (previousPhase === "executing" && phase === "model_running") {
+            steerPendingPartsAfterCommittedStep(dependencies, active);
+          }
         }
       });
 
@@ -357,10 +417,14 @@ async function runSteerableTurn(
       result.event = completed.eventRecords.at(-1)?.event ?? result.event;
       result.steerCount = active.restartCount;
 
-      dependencies.sessionStore.recordTurn(
+      await dependencies.sessionStore.recordTurn(
         createSessionTurnRecord(active, result, completed, dependencies.now)
       );
-      active.turnIds.push(active.currentTurnId);
+      appendBounded(
+        active.turnIds,
+        active.currentTurnId,
+        MAX_ACTIVE_LOOP_HISTORY
+      );
       return result;
     } catch (error) {
       if (
@@ -370,7 +434,7 @@ async function runSteerableTurn(
       ) {
         const steeredTrace = readAgentTurnTraceFromError(error);
         if (steeredTrace) {
-          await recordAgentTrace(dependencies, steeredTrace);
+          await active.rollout.recordSpans(steeredTrace.spans);
         }
         active.phase = "steering";
         active.parts.push(...active.pendingParts);
@@ -383,25 +447,60 @@ async function runSteerableTurn(
   }
 }
 
+function steerPendingPartsAfterCommittedStep(
+  dependencies: ActiveLoopDependencies,
+  active: ActiveLoop
+): void {
+  if (
+    active.pendingParts.length === 0 ||
+    active.restartCount >= dependencies.maxSteersPerTurn
+  ) {
+    return;
+  }
+
+  const pending = mergeParts(active, active.pendingParts, dependencies.now);
+  const context = compileIncrementalAgentContext(
+    dependencies,
+    pending.window,
+    pending.eventRecords
+  );
+  if (!active.modelSession.steer(context)) {
+    return;
+  }
+
+  active.parts.push(...active.pendingParts);
+  active.pendingParts = [];
+  active.restartCount += 1;
+  active.phase = "steering";
+}
+
 function mergeWindowParts(
   active: ActiveLoop,
   now: () => Date
 ): MergedWindowParts {
-  const firstPart = active.parts[0];
+  return mergeParts(active, active.parts, now);
+}
+
+function mergeParts(
+  active: ActiveLoop,
+  parts: readonly WindowPart[],
+  now: () => Date
+): MergedWindowParts {
+  const firstPart = parts[0];
   if (!firstPart) {
     throw new Error("Cannot run an agent turn without a message window.");
   }
 
-  const recordsBySeq = new Map<number, SessionEventRecord>();
-  for (const part of active.parts) {
+  const recordsById = new Map<string, SessionEventRecord>();
+  for (const part of parts) {
     for (const record of part.eventRecords) {
-      recordsBySeq.set(record.seq, record);
+      if (!recordsById.has(record.event.id)) {
+        recordsById.set(record.event.id, record);
+      }
     }
   }
 
-  const eventRecords = Array.from(recordsBySeq.values()).sort(
-    (left, right) => left.seq - right.seq
-  );
+  const eventRecords = Array.from(recordsById.values());
   const firstRecord = eventRecords[0];
   const lastRecord = eventRecords.at(-1);
   if (!firstRecord || !lastRecord) {
@@ -409,19 +508,17 @@ function mergeWindowParts(
   }
 
   const window = MessageWindowSchema.parse({
-    id: `turn-${active.id}-${firstRecord.seq}-${lastRecord.seq}`,
+    id: `turn-${active.id}-${firstRecord.event.id}-${lastRecord.event.id}`,
     conversation: firstPart.window.conversation,
-    reason: active.parts.length > 1 ? "steer" : firstPart.window.reason,
-    fromSeq: firstRecord.seq,
-    toSeq: lastRecord.seq,
-    eventSeqs: eventRecords.map((record) => record.seq),
+    reason: parts.length > 1 ? "steer" : firstPart.window.reason,
+    eventIds: eventRecords.map((record) => record.event.id),
     closedAt: now().toISOString()
   });
 
   return {
     window,
     eventRecords,
-    windowIds: active.parts.map((part) => part.window.id)
+    windowIds: parts.map((part) => part.window.id)
   };
 }
 
@@ -433,15 +530,13 @@ function createSessionTurnRecord(
 ): SessionTurnRecord {
   return {
     id: active.currentTurnId,
-    traceId: result.traceId,
+    rolloutId: active.rollout.id,
     conversation: result.window.conversation,
     status: "completed",
     startedAt: active.currentTurnStartedAt,
     endedAt: now().toISOString(),
     windowIds: merged.windowIds,
-    fromSeq: result.window.fromSeq,
-    toSeq: result.window.toSeq,
-    eventSeqs: result.window.eventSeqs,
+    eventIds: result.window.eventIds,
     steerCount: result.steerCount,
     phases: result.phases,
     proposedActions: result.proposedActions,
@@ -467,102 +562,6 @@ function updateActiveLoopAfterTurn(
     return;
   }
   active.consecutiveSayNothing = 0;
-}
-
-function recordSelfMessagesFromToolResults(
-  dependencies: ActiveLoopDependencies,
-  result: AgentTurnResult
-): void {
-  for (const toolResult of result.toolResults) {
-    const proposal = toolResult.proposal;
-    const isGroupMessage =
-      proposal.toolName === "send_group_message" &&
-      proposal.params.groupId === result.window.conversation.id;
-    const isConversationSticker =
-      proposal.toolName === "send_sticker" &&
-      proposal.params.conversation.kind === result.window.conversation.kind &&
-      proposal.params.conversation.id === result.window.conversation.id;
-    if (
-      toolResult.status !== "executed" ||
-      (!isGroupMessage && !isConversationSticker)
-    ) {
-      continue;
-    }
-
-    const selfId = readOptionalString(
-      dependencies.config.flatValues,
-      "bot_user_id"
-    ) ?? result.event.source.accountId ?? "gestalt-bot";
-    const selfName =
-      readOptionalString(dependencies.config.flatValues, "bot_display_name") ??
-      "Gestalt";
-    const text = isGroupMessage
-      ? proposal.toolName === "send_group_message"
-        ? proposal.params.text
-        : ""
-      : stickerTranscriptText(toolResult);
-    const replyToMessageId =
-      proposal.toolName === "send_sticker"
-        ? proposal.params.replyToMessageId
-        : parseLeadingReplyMessageId(text);
-    const occurredAt = toolResult.executedAt;
-
-    dependencies.sessionStore.appendEvent(
-      {
-        id: `self-event-${proposal.id}`,
-        type: "MessageReceived",
-        occurredAt,
-        source: {
-          platform: result.event.source.platform,
-          connector: "runtime-self",
-          accountId: selfId,
-          rawEventId: toolResult.result?.externalId ?? proposal.id
-        },
-        conversation: result.window.conversation,
-        sender: {
-          id: selfId,
-          displayName: selfName,
-          isSelf: true
-        },
-        message: {
-          id: toolResult.result?.externalId ?? `self-message-${proposal.id}`,
-          text,
-          rawText: text,
-          mentionsBot: false,
-          ...(replyToMessageId ? { replyToMessageId } : {})
-        },
-        raw: {
-          generatedBy: proposal.toolName,
-          proposalId: proposal.id,
-          ...(proposal.toolName === "send_sticker"
-            ? { stickerId: proposal.params.stickerId }
-            : {})
-        }
-      },
-      {
-        receivedAt: occurredAt
-      }
-    );
-  }
-}
-
-function stickerTranscriptText(
-  toolResult: AgentTurnResult["toolResults"][number]
-): string {
-  const proposal = toolResult.proposal;
-  if (proposal.toolName !== "send_sticker") {
-    return "[表情包]";
-  }
-  const data =
-    toolResult.result?.data &&
-    typeof toolResult.result.data === "object" &&
-    !Array.isArray(toolResult.result.data)
-      ? (toolResult.result.data as Record<string, unknown>)
-      : undefined;
-  const desc = typeof data?.desc === "string" ? data.desc : undefined;
-  return desc
-    ? `[表情包 ${proposal.params.stickerId}：${desc}]`
-    : `[表情包 ${proposal.params.stickerId}]`;
 }
 
 async function waitForNextInputOrExit(
@@ -647,13 +646,14 @@ function createExitState(active: ActiveLoop): AgentLoopExitState {
   };
 }
 
-function recordLoopExit(
+async function recordLoopExit(
   dependencies: ActiveLoopDependencies,
   active: ActiveLoop,
   decision: AgentLoopExitDecision
-): void {
-  const lastSeq = active.forceExitLastSeq ?? active.lastResult?.window.toSeq;
-  dependencies.sessionStore.recordLoopExit({
+): Promise<void> {
+  const lastEventId =
+    active.forceExitLastEventId ?? active.lastResult?.window.eventIds.at(-1);
+  await dependencies.sessionStore.recordLoopExit({
     id: randomUUID(),
     conversation: active.conversation,
     triggerName: decision.triggerName,
@@ -662,7 +662,7 @@ function recordLoopExit(
     startedAt: active.loopStartedAt,
     endedAt: dependencies.now().toISOString(),
     turnIds: active.turnIds,
-    ...(lastSeq ? { lastSeq } : {})
+    ...(lastEventId ? { lastEventId } : {})
   });
 }
 
@@ -676,20 +676,10 @@ function isCancellablePhase(phase: ActiveLoopPhase): boolean {
   );
 }
 
-function parseLeadingReplyMessageId(text: string): string | undefined {
-  return text.match(/^\[CQ:reply,id=([^\],]+)[^\]]*\]/)?.[1];
-}
-
-function readOptionalString(
-  flat: ActiveLoopDependencies["config"]["flatValues"],
-  key: string
-): string | undefined {
-  const value = flat[key];
-  if (value === undefined) {
-    return undefined;
+function appendBounded<T>(values: T[], value: T, limit: number): void {
+  values.push(value);
+  const excess = values.length - limit;
+  if (excess > 0) {
+    values.splice(0, excess);
   }
-  if (typeof value !== "string") {
-    throw new Error(`Config value ${key} must be a string.`);
-  }
-  return value;
 }

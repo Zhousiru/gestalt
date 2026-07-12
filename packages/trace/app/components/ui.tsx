@@ -135,7 +135,10 @@ export function Dialog({
             <DialogPrimitive.Title className="text-sm font-semibold text-neutral-950">
               {title}
             </DialogPrimitive.Title>
-            <DialogPrimitive.Close className="grid h-8 w-8 place-items-center rounded-md text-neutral-500 hover:bg-neutral-100 hover:text-neutral-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--trace-accent)]">
+            <DialogPrimitive.Close
+              aria-label="Close dialog"
+              className="grid h-8 w-8 place-items-center rounded-md text-neutral-500 hover:bg-neutral-100 hover:text-neutral-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--trace-accent)]"
+            >
               <X size={16} />
             </DialogPrimitive.Close>
           </header>

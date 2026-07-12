@@ -25,12 +25,11 @@
       "selfMessages": 1,
       "windows": 1,
       "turns": 1,
-      "nextSeq": 3,
       "turnStatus": "completed",
       "loopExits": 1,
       "loopExitReasons": ["idle_timeout"],
       "steerCount": 0,
-      "eventSeqs": [1],
+      "eventIds": ["message-1"],
       "phases": [
         "memory_injecting",
         "context_compiling",
@@ -76,8 +75,8 @@
       "responseContains": ["send_group_message"],
       "responseDoesNotContain": ["\"toolName\":\"leave\""]
     },
-    "trace": {
-      "traces": 1,
+    "rollout": {
+      "rollouts": 1,
       "spans": [
         "memory.inject",
         "context.compile",

@@ -8,7 +8,7 @@ export function assertReplayRun(result: ReplayRunResult): void {
   assertModelInput(result);
   assertModelExchange(result);
   assertPromptCache(result);
-  assertTrace(result);
+  assertRollout(result);
   assertMemory(result);
 }
 
@@ -26,9 +26,6 @@ function assertSession(result: ReplayRunResult): void {
   const conversation = result.session.conversations[0];
   assert.ok(conversation, "expected at least one conversation in session export");
 
-  if (expected.nextSeq !== undefined) {
-    assert.equal(conversation.nextSeq, expected.nextSeq);
-  }
   if (expected.events !== undefined) {
     assert.equal(conversation.events.length, expected.events);
   }
@@ -66,12 +63,6 @@ function assertSession(result: ReplayRunResult): void {
       expected.triggerAttemptAdmissions
     );
   }
-  if (expected.triggerAttemptSamplerVersions !== undefined) {
-    assert.deepEqual(
-      conversation.triggerAttempts.map((attempt) => attempt.samplerVersion),
-      expected.triggerAttemptSamplerVersions
-    );
-  }
   if (expected.loopExits !== undefined) {
     assert.equal(conversation.loopExits.length, expected.loopExits);
   }
@@ -82,32 +73,24 @@ function assertSession(result: ReplayRunResult): void {
     );
   }
 
-  if (expected.realtimeExports !== undefined) {
-    assert.equal(result.sessionExports.length, expected.realtimeExports);
+  if (expected.journalRecords !== undefined) {
+    assert.equal(result.sessionJournal.length, expected.journalRecords);
   }
-  if (expected.minRealtimeExports !== undefined) {
+  if (expected.minJournalRecords !== undefined) {
     assert.ok(
-      result.sessionExports.length >= expected.minRealtimeExports,
-      `expected at least ${expected.minRealtimeExports} realtime session exports, got ${result.sessionExports.length}`
+      result.sessionJournal.length >= expected.minJournalRecords,
+      `expected at least ${expected.minJournalRecords} session journal records, got ${result.sessionJournal.length}`
     );
   }
-  if (
-    expected.realtimeExports !== undefined ||
-    expected.minRealtimeExports !== undefined ||
-    expected.finalRealtimeExportMatches === true
-  ) {
+  if (expected.journalRecords !== undefined || expected.minJournalRecords !== undefined) {
     assert.ok(
       result.homeAfter.files.some(
         (file) =>
-          file.path.startsWith("sessions/") && file.path.endsWith(".jsonl")
+          file.path.startsWith("sessions/journal/") &&
+          file.path.endsWith("/000001.jsonl")
       ),
-      "expected home-after to include a rotated realtime session export"
+      "expected home-after to include the append-only session journal"
     );
-  }
-  if (expected.finalRealtimeExportMatches === true) {
-    const lastExport = result.sessionExports.at(-1);
-    assert.ok(lastExport, "expected at least one realtime session export");
-    assert.deepEqual(lastExport.conversations, result.session.conversations);
   }
 
   const turn = conversation.turns[0];
@@ -127,13 +110,13 @@ function assertSession(result: ReplayRunResult): void {
       expected.steerCounts
     );
   }
-  if (expected.eventSeqs !== undefined) {
-    assert.deepEqual(turn.eventSeqs, expected.eventSeqs);
+  if (expected.eventIds !== undefined) {
+    assert.deepEqual(turn.eventIds, expected.eventIds);
   }
-  if (expected.turnEventSeqs !== undefined) {
+  if (expected.turnEventIds !== undefined) {
     assert.deepEqual(
-      conversation.turns.map((candidate) => candidate.eventSeqs),
-      expected.turnEventSeqs
+      conversation.turns.map((candidate) => candidate.eventIds),
+      expected.turnEventIds
     );
   }
   if (expected.windowReasons !== undefined) {
@@ -142,10 +125,10 @@ function assertSession(result: ReplayRunResult): void {
       expected.windowReasons
     );
   }
-  if (expected.windowEventSeqs !== undefined) {
+  if (expected.windowEventIds !== undefined) {
     assert.deepEqual(
-      conversation.windows.map((window) => window.eventSeqs),
-      expected.windowEventSeqs
+      conversation.windows.map((window) => window.eventIds),
+      expected.windowEventIds
     );
   }
   if (expected.phases !== undefined) {
@@ -265,7 +248,7 @@ function assertModelInput(result: ReplayRunResult): void {
 
   const allContent = result.modelRequests
     .flatMap((request) =>
-      request.messages.map((message) => message.content ?? "")
+      request.messages.map((message) => modelContentText(message.content))
     )
     .join("\n");
   for (const pattern of expected.contains ?? []) {
@@ -515,14 +498,20 @@ function assertTerminalDreamingContinuation(result: ReplayRunResult): void {
   const terminalMessage = firstDreamingRequest.messages.at(-1);
   assert.equal(terminalMessage?.role, "user");
   assert.match(
-    terminalMessage?.content ?? "",
+    modelContentText(terminalMessage?.content),
     /Now you are dreaming\./
   );
   assert.doesNotMatch(
-    terminalMessage?.content ?? "",
+    modelContentText(terminalMessage?.content),
     /Turn transcript:|Agent proposed actions:|Tool results:|Injected memory:/,
     "dreaming repeated context that already exists in the session prefix"
   );
+}
+
+function modelContentText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value === undefined || value === null) return "";
+  return JSON.stringify(value) ?? String(value);
 }
 
 function parseRequestBody(value: unknown): Record<string, unknown> {
@@ -544,41 +533,47 @@ function readNestedString(
   return typeof candidate === "string" ? candidate : undefined;
 }
 
-function assertTrace(result: ReplayRunResult): void {
-  const expected = result.fixture.expectations.trace;
+function assertRollout(result: ReplayRunResult): void {
+  const expected = result.fixture.expectations.rollout;
   if (!expected) {
     return;
   }
 
-  if (expected.traces !== undefined) {
-    assert.equal(result.traces.length, expected.traces);
+  if (expected.rollouts !== undefined) {
+    assert.equal(result.rollouts.length, expected.rollouts);
   }
 
-  const spanNames = result.traces.flatMap((trace) =>
-    trace.spans.map((span) => span.name)
-  );
-  for (const spanName of expected.spans ?? []) {
-    assert.ok(spanNames.includes(spanName), `missing trace span ${spanName}`);
+  const records = result.rollouts.flatMap((rollout) => rollout.records);
+  if (expected.recordTypes !== undefined) {
+    for (const recordType of expected.recordTypes) {
+      assert.ok(
+        records.some((record) => record.type === recordType),
+        `missing rollout record type ${recordType}`
+      );
+    }
   }
-  const tracedToolNames = result.traces
-      .flatMap((trace) => trace.spans)
-      .filter((span) => span.name === "tool.execute")
-      .flatMap((span) => {
-        const toolCalls = span.attributes.toolCalls;
-        return Array.isArray(toolCalls)
-          ? toolCalls.map(readToolCallName).filter((name): name is string => Boolean(name))
-          : [];
-      });
+  const spanNames = records
+    .filter((record) => record.type === "span_completed")
+    .map((record) => record.name);
+  for (const spanName of expected.spans ?? []) {
+    assert.ok(spanNames.includes(spanName), `missing rollout span ${spanName}`);
+  }
+  const tracedToolNames = records
+    .filter((record) => record.type === "tool_completed")
+    .map((record) => record.toolName);
   if (expected.toolNames !== undefined) {
     assert.deepEqual(tracedToolNames, expected.toolNames);
   }
   for (const toolName of expected.toolNamesInclude ?? []) {
     assert.ok(tracedToolNames.includes(toolName), `missing traced tool ${toolName}`);
   }
-  const tracedModelResponses = result.traces
-    .flatMap((trace) => trace.observations)
-    .filter((observation) => observation.type === "generation")
-    .map((observation) => JSON.stringify(observation.output ?? {}))
+  const tracedModelResponses = records
+    .flatMap((record) =>
+      record.type === "message_committed" &&
+      (record.source === "assistant" || record.source === "tool")
+        ? [JSON.stringify(record.message.content)]
+        : []
+    )
     .join("\n");
   for (const pattern of expected.modelResponseContains ?? []) {
     assert.match(tracedModelResponses, new RegExp(escapeRegExp(pattern)));
@@ -621,18 +616,18 @@ function assertMemory(result: ReplayRunResult): void {
     );
   }
 
-  const dreamSpan = result.traces
-    .flatMap((trace) => trace.spans)
-    .find((span) => span.name === "dream.run");
-  const memoryInjectSpan = result.traces
-    .flatMap((trace) => trace.spans)
-    .find((span) => span.name === "memory.inject");
+  const rolloutSpans = result.rollouts
+    .flatMap((rollout) => rollout.records)
+    .filter((record) => record.type === "span_completed");
+  const dreamSpan = rolloutSpans.find((span) => span.name === "dream.run");
+  const memoryInjectSpan = rolloutSpans.find(
+    (span) => span.name === "memory.inject"
+  );
   assert.ok(memoryInjectSpan, "expected a memory.inject trace span");
 
-  const injectedMemoryFiles = Array.isArray(
-    memoryInjectSpan.attributes.memoryFiles
-  )
-    ? memoryInjectSpan.attributes.memoryFiles
+  const memoryAttributes = readRecord(memoryInjectSpan.attributes);
+  const injectedMemoryFiles = Array.isArray(memoryAttributes.memoryFiles)
+    ? memoryAttributes.memoryFiles
     : [];
   const injectedMemoryText = JSON.stringify(injectedMemoryFiles);
   for (const expectedPath of expected.injectedMemoryPaths ?? []) {
@@ -644,8 +639,9 @@ function assertMemory(result: ReplayRunResult): void {
 
   assert.ok(dreamSpan, "expected a dream.run trace span");
 
-  const commands = Array.isArray(dreamSpan.attributes.commands)
-    ? dreamSpan.attributes.commands
+  const dreamAttributes = readRecord(dreamSpan.attributes);
+  const commands = Array.isArray(dreamAttributes.commands)
+    ? dreamAttributes.commands
     : [];
   const commandText = commands
     .map((command) =>
@@ -663,12 +659,12 @@ function assertMemory(result: ReplayRunResult): void {
   }
 
   assertStringArrayAttributeIncludes(
-    dreamSpan.attributes.addedFiles,
+    dreamAttributes.addedFiles,
     expected.dreamAddedFiles ?? [],
     "dream.run addedFiles"
   );
   assertStringArrayAttributeIncludes(
-    dreamSpan.attributes.changedFiles,
+    dreamAttributes.changedFiles,
     expected.dreamChangedFiles ?? [],
     "dream.run changedFiles"
   );
@@ -721,12 +717,10 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function readToolCallName(value: unknown): string | undefined {
-  if (!value || typeof value !== "object") {
-    return undefined;
-  }
-  const toolName = (value as { toolName?: unknown }).toolName;
-  return typeof toolName === "string" ? toolName : undefined;
+function readRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
 }
 
 function isSelfMessageEvent(

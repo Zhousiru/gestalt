@@ -27,6 +27,9 @@ importers:
       '@gestalt/app':
         specifier: workspace:*
         version: link:../packages/app
+      '@gestalt/live-contracts':
+        specifier: workspace:*
+        version: link:../packages/live-contracts
       ai:
         specifier: ^7.0.16
         version: 7.0.16(zod@4.4.3)
@@ -52,6 +55,9 @@ importers:
       '@ai-sdk/openai-compatible':
         specifier: ^3.0.5
         version: 3.0.5(zod@4.4.3)
+      '@gestalt/live-contracts':
+        specifier: workspace:*
+        version: link:../live-contracts
       '@lancedb/lancedb':
         specifier: ^0.31.0
         version: 0.31.0(apache-arrow@18.1.0)
@@ -84,8 +90,17 @@ importers:
         specifier: ^0.28.1
         version: 0.28.1
 
+  packages/live-contracts:
+    dependencies:
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
+
   packages/trace:
     dependencies:
+      '@gestalt/live-contracts':
+        specifier: workspace:*
+        version: link:../live-contracts
       '@radix-ui/react-dialog':
         specifier: ^1.1.19
         version: 1.1.19(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)

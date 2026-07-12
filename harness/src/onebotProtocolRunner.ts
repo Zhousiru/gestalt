@@ -1,11 +1,10 @@
 import { createHash } from "node:crypto";
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { config as loadDotenvFile } from "dotenv";
 import { WebSocketServer, type WebSocket } from "ws";
 import {
-  AgentTurnTraceSchema,
   createAiSdkModelFromConfig,
   createNoopDreamingRunner,
   createOneBotConnector,
@@ -13,30 +12,41 @@ import {
   createRuntime,
   loadConfig,
   resolveGestaltHome,
-  type AgentTurnTrace,
   type AgentTurnResult,
   type MessageReceivedEvent,
   type ModelRequestSnapshot,
   type ModelResponseSnapshot,
-  type ObservationRecord,
-  type SessionSnapshot
+  type ReconstructedInput,
+  type RolloutDetail,
+  type SessionDiagnostics
 } from "@gestalt/app";
+import {
+  createModelExchangeCapture,
+  type ModelExchangeSnapshot as HarnessModelExchangeSnapshot
+} from "./modelExchangeCapture";
+import { readAndValidateRolloutCapture } from "./rolloutCaptureValidation";
+import { writeArtifactJson } from "./artifactBinary";
 
 export interface OneBotProtocolRunResult {
   id: string;
-  session: SessionSnapshot;
+  session: SessionDiagnostics;
   event: MessageReceivedEvent;
   turnResults: AgentTurnResult[];
   modelRequests: ModelRequestSnapshot[];
   modelResponses: ModelResponseSnapshot[];
+  modelExchanges: HarnessModelExchangeSnapshot[];
+  rollouts: RolloutDetail[];
+  reconstructedInputs: ReconstructedInput[];
   onebotApiCalls: OneBotApiCall[];
   artifactPaths: {
     session: string;
     canonicalEvent: string;
     modelRequests: string;
     modelResponses: string;
+    modelExchanges: string;
     onebotApiCalls: string;
-    traces: string;
+    rollouts: string;
+    reconstructedInputs: string;
     report: string;
   };
 }
@@ -77,22 +87,24 @@ export async function runOneBotProtocolE2E(): Promise<OneBotProtocolRunResult> {
     const connector = createOneBotConnector({
       caller: transport
     });
+    const modelCapture = createModelExchangeCapture();
     const runtime = await createRuntime({
       gestaltHome: tempHome,
       connector,
-      model: createAiSdkModelFromConfig(config),
+      model: modelCapture.wrap(createAiSdkModelFromConfig(config)),
       dreamingRunner: createNoopDreamingRunner()
     });
     const turnPromises: Promise<AgentTurnResult | undefined>[] = [];
     let canonicalEvent: MessageReceivedEvent | undefined;
 
-    transport.onEvent((rawEvent) => {
+    transport.onEvent(async (rawEvent) => {
       const event = connector.normalizeEvent(rawEvent);
       if (!event) {
         return;
       }
       canonicalEvent = event;
-      turnPromises.push(runtime.handleEvent(event));
+      const dispatch = await runtime.dispatchEvent(event);
+      turnPromises.push(dispatch.outcome);
     });
     await transport.connect();
     await fakeOneBot.waitForConnection();
@@ -105,20 +117,28 @@ export async function runOneBotProtocolE2E(): Promise<OneBotProtocolRunResult> {
       throw new Error("OneBot protocol run did not produce a canonical event.");
     }
 
-    const session = runtime.exportSession({
+    const session = runtime.exportDiagnostics({
       exportedAt: new Date().toISOString()
     });
-    const traces = await readTraces(home.tracesDir);
-    const modelRequests = extractModelRequestsFromTraces(traces);
-    const modelResponses = extractModelResponsesFromTraces(traces);
+    const { rollouts, reconstructedInputs } =
+      await readAndValidateRolloutCapture(
+        home.tracesDir,
+        modelCapture.exchanges
+      );
+    const modelRequests = modelCapture.exchanges.map((exchange) => exchange.request);
+    const modelResponses = modelCapture.exchanges
+      .map((exchange) => exchange.response)
+      .filter((response): response is ModelResponseSnapshot => Boolean(response));
     const artifactPaths = await writeArtifacts({
       artifactDir,
       session,
       canonicalEvent,
       modelRequests,
       modelResponses,
+      modelExchanges: modelCapture.exchanges,
       onebotApiCalls: fakeOneBot.apiCalls,
-      traces
+      rollouts,
+      reconstructedInputs
     });
 
     await transport[Symbol.asyncDispose]();
@@ -129,6 +149,9 @@ export async function runOneBotProtocolE2E(): Promise<OneBotProtocolRunResult> {
       turnResults,
       modelRequests,
       modelResponses,
+      modelExchanges: modelCapture.exchanges,
+      rollouts,
+      reconstructedInputs,
       onebotApiCalls: fakeOneBot.apiCalls,
       artifactPaths
     };
@@ -370,35 +393,16 @@ async function createFixtureHome(repoRoot: string): Promise<string> {
   return tempHome;
 }
 
-async function readTraces(tracesDir: string): Promise<AgentTurnTrace[]> {
-  const traces: AgentTurnTrace[] = [];
-  let fileNames: string[];
-  try {
-    fileNames = await import("node:fs/promises").then((fs) =>
-      fs.readdir(tracesDir)
-    );
-  } catch {
-    return traces;
-  }
-  for (const fileName of fileNames.filter((name) => name.endsWith(".jsonl"))) {
-    const raw = await readFile(path.join(tracesDir, fileName), "utf8");
-    for (const line of raw.split(/\r?\n/)) {
-      if (line.trim()) {
-        traces.push(AgentTurnTraceSchema.parse(JSON.parse(line)));
-      }
-    }
-  }
-  return traces;
-}
-
 async function writeArtifacts(input: {
   artifactDir: string;
-  session: SessionSnapshot;
+  session: SessionDiagnostics;
   canonicalEvent: MessageReceivedEvent;
   modelRequests: ModelRequestSnapshot[];
   modelResponses: ModelResponseSnapshot[];
+  modelExchanges: HarnessModelExchangeSnapshot[];
   onebotApiCalls: OneBotApiCall[];
-  traces: unknown[];
+  rollouts: RolloutDetail[];
+  reconstructedInputs: ReconstructedInput[];
 }): Promise<OneBotProtocolRunResult["artifactPaths"]> {
   await rm(input.artifactDir, { recursive: true, force: true });
   await mkdir(input.artifactDir, { recursive: true });
@@ -408,25 +412,32 @@ async function writeArtifacts(input: {
     canonicalEvent: path.join(input.artifactDir, "canonical-event.json"),
     modelRequests: path.join(input.artifactDir, "model-requests.json"),
     modelResponses: path.join(input.artifactDir, "model-responses.json"),
+    modelExchanges: path.join(input.artifactDir, "model-exchanges.json"),
     onebotApiCalls: path.join(input.artifactDir, "onebot-api-calls.json"),
-    traces: path.join(input.artifactDir, "traces.json"),
+    rollouts: path.join(input.artifactDir, "rollouts.json"),
+    reconstructedInputs: path.join(
+      input.artifactDir,
+      "reconstructed-inputs.json"
+    ),
     report: path.join(input.artifactDir, "report.md")
   };
 
   await Promise.all([
-    writeJson(artifactPaths.session, input.session),
-    writeJson(artifactPaths.canonicalEvent, input.canonicalEvent),
-    writeJson(artifactPaths.modelRequests, input.modelRequests),
-    writeJson(artifactPaths.modelResponses, input.modelResponses),
-    writeJson(artifactPaths.onebotApiCalls, input.onebotApiCalls),
-    writeJson(artifactPaths.traces, input.traces),
+    writeArtifactJson(artifactPaths.session, input.session),
+    writeArtifactJson(artifactPaths.canonicalEvent, input.canonicalEvent),
+    writeArtifactJson(artifactPaths.modelRequests, input.modelRequests),
+    writeArtifactJson(artifactPaths.modelResponses, input.modelResponses),
+    writeArtifactJson(artifactPaths.modelExchanges, input.modelExchanges),
+    writeArtifactJson(artifactPaths.onebotApiCalls, input.onebotApiCalls),
+    writeArtifactJson(artifactPaths.rollouts, input.rollouts),
+    writeArtifactJson(artifactPaths.reconstructedInputs, input.reconstructedInputs),
     writeFile(artifactPaths.report, renderReport(input), "utf8")
   ]);
   return artifactPaths;
 }
 
 function renderReport(input: {
-  session: SessionSnapshot;
+  session: SessionDiagnostics;
   canonicalEvent: MessageReceivedEvent;
   modelRequests: ModelRequestSnapshot[];
   modelResponses: ModelResponseSnapshot[];
@@ -450,57 +461,6 @@ function renderReport(input: {
   ].join("\n");
 }
 
-function extractModelRequestsFromTraces(
-  traces: AgentTurnTrace[]
-): ModelRequestSnapshot[] {
-  return traces
-    .flatMap((trace) => trace.observations)
-    .filter((observation) => observation.type === "generation")
-    .map(readModelRequestFromObservation)
-    .filter((request): request is ModelRequestSnapshot => Boolean(request));
-}
-
-function extractModelResponsesFromTraces(
-  traces: AgentTurnTrace[]
-): ModelResponseSnapshot[] {
-  return traces
-    .flatMap((trace) => trace.observations)
-    .filter((observation) => observation.type === "generation")
-    .map(readModelResponseFromObservation)
-    .filter((response): response is ModelResponseSnapshot => Boolean(response));
-}
-
-function readModelRequestFromObservation(
-  observation: ObservationRecord
-): ModelRequestSnapshot | undefined {
-  const value = observation.input;
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return undefined;
-  }
-  const candidate = value as Partial<ModelRequestSnapshot>;
-  if (
-    typeof candidate.provider !== "string" ||
-    typeof candidate.model !== "string" ||
-    typeof candidate.temperature !== "number" ||
-    typeof candidate.stepNumber !== "number" ||
-    !Array.isArray(candidate.messages) ||
-    !Array.isArray(candidate.tools)
-  ) {
-    return undefined;
-  }
-  return candidate as ModelRequestSnapshot;
-}
-
-function readModelResponseFromObservation(
-  observation: ObservationRecord
-): ModelResponseSnapshot | undefined {
-  const value = observation.output;
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return undefined;
-  }
-  return value as ModelResponseSnapshot;
-}
-
 function dedupeTurnResults(
   results: Array<AgentTurnResult | undefined>
 ): AgentTurnResult[] {
@@ -521,10 +481,6 @@ function loadLocalEnv(repoRoot: string): void {
       quiet: true
     });
   }
-}
-
-async function writeJson(filePath: string, value: unknown): Promise<void> {
-  await writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
 export function hashOneBotArtifacts(result: OneBotProtocolRunResult): string {

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { compileContext } from "../context/compileContext";
 import { renderConversationTranscript } from "../context/renderTranscript";
 import { selectContextEvents } from "../context/selectContextEvents";
@@ -18,6 +18,7 @@ import type {
 } from "../model/session";
 import { readModelStepsFromError } from "../model/session";
 import type { PersonaPack } from "../persona/loadPersona";
+import { sanitizeUntrustedValue } from "../privacy/stickerRedaction";
 import type {
   MessageWindow,
   SessionEventRecord,
@@ -25,7 +26,6 @@ import type {
   TurnPhaseRecord
 } from "../session/schemas";
 import type { SessionStore } from "../session/store";
-import { createTraceRecorder, type TraceRecorder } from "../trace/recorder";
 import type {
   AgentTurnTrace,
   ObservationRecord,
@@ -39,6 +39,7 @@ import {
 } from "../tools/executeActions";
 import type { ActionProposal, ToolDefinition } from "../tools/schemas";
 import { throwIfTurnSteered } from "./turnSignals";
+import type { ActiveRollout } from "./activeRollout";
 
 export interface AgentTurnResult {
   traceId: string;
@@ -63,7 +64,11 @@ export interface AgentLoopDependencies {
   connector: Connector;
   model: ModelClient;
   sessionStore: SessionStore;
-  traceRecorder?: TraceRecorder;
+  commitOutboundMessage?: (input: {
+    sourceEvent: CanonicalEvent;
+    proposal: ActionProposal;
+    result: ToolExecutionResult;
+  }) => Promise<void>;
   toolImplementations?: ToolImplementations;
   liveEvents?: LiveEventSink;
   now: () => Date;
@@ -75,6 +80,7 @@ export interface RunAgentTurnInput {
   eventRecords: SessionEventRecord[];
   steerCount: number;
   modelSession: ModelSession;
+  rollout?: ActiveRollout;
   includeSelfHistory?: boolean;
   signal?: AbortSignal;
   onPhaseChange?: (phase: TurnPhase) => void;
@@ -92,7 +98,7 @@ export async function runAgentTurn(
   dependencies: AgentLoopDependencies,
   input: RunAgentTurnInput
 ): Promise<AgentTurnResult> {
-  const traceId = randomUUID();
+  const traceId = input.rollout?.id ?? randomUUID();
   const traceStartedAt = dependencies.now().toISOString();
   const spans: SpanRecord[] = [];
   const observations: ObservationRecord[] = [];
@@ -192,15 +198,26 @@ export async function runAgentTurn(
           onModelAttemptStart() {
             input.onPhaseChange?.("model_running");
           },
-          onToolExecutionStart(proposal) {
-            if (isVisibleSideEffect(proposal)) {
+          onModelStepCommitted() {
+            input.onPhaseChange?.("model_running");
+          },
+          async onToolExecutionStart(proposal) {
+            const outbound = isVisibleSideEffect(proposal);
+            if (outbound) {
               input.onPhaseChange?.("executing");
             }
+            await input.rollout?.recordToolStarted(proposal, outbound);
           },
-          onToolExecutionEnd(proposal) {
-            if (isVisibleSideEffect(proposal)) {
-              input.onPhaseChange?.("model_running");
-            }
+          async onToolExecutionEnd(proposal, result) {
+            const outbound = isVisibleSideEffect(proposal);
+            await recordCompletedToolEffect(
+              dependencies,
+              input.rollout,
+              event,
+              proposal,
+              result,
+              outbound
+            );
           }
         }
       ),
@@ -251,6 +268,29 @@ export async function runAgentTurn(
         traceId,
         ...(dependencies.toolImplementations
           ? { toolImplementations: dependencies.toolImplementations }
+          : {}),
+        ...(input.rollout
+          ? {
+              onExecutionStart(proposal: ActionProposal) {
+                return input.rollout?.recordToolStarted(
+                  proposal,
+                  isVisibleSideEffect(proposal)
+                );
+              },
+              onExecutionEnd(
+                proposal: ActionProposal,
+                result: ToolExecutionResult
+              ) {
+                return recordCompletedToolEffect(
+                  dependencies,
+                  input.rollout,
+                  event,
+                  proposal,
+                  result,
+                  isVisibleSideEffect(proposal)
+                );
+              }
+            }
           : {})
       });
     },
@@ -289,8 +329,11 @@ export async function runAgentTurn(
       traceId,
       endedAt: trace.endedAt,
       proposedActions,
-      toolResults,
-      trace
+      toolResults: toolResults.map((result) => ({
+        toolName: result.proposal.toolName,
+        status: result.status,
+        ...(result.reason ? { reason: result.reason } : {})
+      }))
     },
     trace.endedAt
   );
@@ -314,8 +357,7 @@ export async function runAgentTurn(
       {
         traceId,
         endedAt: trace.endedAt,
-        error: message,
-        trace
+        error: message
       },
       trace.endedAt
     );
@@ -358,8 +400,8 @@ async function compileInitialTurnContext(
     {
       strategy: "file-indexes",
       windowId: input.window.id,
-      fromSeq: input.window.fromSeq,
-      toSeq: input.window.toSeq,
+      firstEventId: input.window.eventIds[0],
+      lastEventId: input.window.eventIds.at(-1),
       contextEventCount: contextEvents.length
     },
     (result) => ({
@@ -499,6 +541,50 @@ function isVisibleSideEffect(proposal: ActionProposal): boolean {
   );
 }
 
+async function recordCompletedToolEffect(
+  dependencies: AgentLoopDependencies,
+  rollout: ActiveRollout | undefined,
+  sourceEvent: CanonicalEvent,
+  proposal: ActionProposal,
+  result: ToolExecutionResult,
+  outbound: boolean
+): Promise<void> {
+  if (outbound && result.status === "executed") {
+    try {
+      await dependencies.commitOutboundMessage?.({
+        sourceEvent,
+        proposal,
+        result
+      });
+    } catch (error) {
+      dependencies.liveEvents?.publish("session.event.appended", {
+        conversationKey: outboundConversationKey(proposal),
+        status: "failed",
+        summary: `outbound_session_commit_failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      });
+    }
+  }
+  await rollout?.recordToolFinished(proposal, result, outbound);
+}
+
+function outboundConversationKey(proposal: ActionProposal): string | undefined {
+  if (proposal.toolName === "send_group_message") {
+    return `group:${proposal.params.groupId}`;
+  }
+  if (proposal.toolName === "send_dm") {
+    return `private:${proposal.params.userId}`;
+  }
+  if (
+    proposal.toolName === "send_image" ||
+    proposal.toolName === "send_sticker"
+  ) {
+    return `${proposal.params.conversation.kind}:${proposal.params.conversation.id}`;
+  }
+  return undefined;
+}
+
 export async function runDreamingForAgentTurn(
   dependencies: AgentLoopDependencies,
   result: AgentTurnResult,
@@ -541,8 +627,8 @@ export async function runDreamingForAgentTurn(
       }),
     {
       windowId: input.window.id,
-      fromSeq: input.window.fromSeq,
-      toSeq: input.window.toSeq,
+      firstEventId: input.window.eventIds[0],
+      lastEventId: input.window.eventIds.at(-1),
       eventCount: input.eventRecords.length,
       proposedActions: input.proposedActions.length,
       toolResults: input.toolResults.length
@@ -579,31 +665,6 @@ export async function runDreamingForAgentTurn(
   result.dreamingResult = dreamingResult;
   result.trace.endedAt = dependencies.now().toISOString();
   return dreamingResult;
-}
-
-export async function recordAgentTurnTrace(
-  dependencies: AgentLoopDependencies,
-  result: AgentTurnResult
-): Promise<void> {
-  await recordAgentTrace(dependencies, result.trace);
-}
-
-export async function recordAgentTrace(
-  dependencies: AgentLoopDependencies,
-  trace: AgentTurnTrace
-): Promise<void> {
-  const traceRecorder =
-    dependencies.traceRecorder ?? createTraceRecorder(dependencies.home);
-  trace.endedAt = dependencies.now().toISOString();
-  await traceRecorder.recordAgentTurn(trace);
-  dependencies.liveEvents?.publish(
-    "trace.recorded",
-    {
-      traceId: trace.id,
-      trace
-    },
-    trace.endedAt
-  );
 }
 
 const agentTurnTraceErrorKey = "__gestaltAgentTurnTrace";
@@ -707,7 +768,7 @@ async function runSpan<T>(
         "agent.observation.created",
         {
           traceId,
-          observation
+          observation: summarizeObservationForLive(observation)
         },
         observation.endedAt ?? observation.startedAt ?? span.endedAt
       );
@@ -745,13 +806,47 @@ async function runSpan<T>(
         "agent.observation.created",
         {
           traceId,
-          observation
+          observation: summarizeObservationForLive(observation)
         },
         observation.endedAt ?? observation.startedAt ?? span.endedAt
       );
     }
     throw error;
   }
+}
+
+function summarizeObservationForLive(
+  observation: ObservationRecord
+): ObservationRecord {
+  return {
+    id: observation.id,
+    traceId: observation.traceId,
+    ...(observation.parentObservationId
+      ? { parentObservationId: observation.parentObservationId }
+      : {}),
+    type: observation.type,
+    name: observation.name,
+    ...(observation.startedAt ? { startedAt: observation.startedAt } : {}),
+    ...(observation.endedAt ? { endedAt: observation.endedAt } : {}),
+    metadata: summarizeLiveMetadata(observation.metadata),
+    ...(observation.model ? { model: observation.model } : {}),
+    ...(observation.usage !== undefined ? { usage: observation.usage } : {}),
+    ...(observation.level ? { level: observation.level } : {}),
+    ...(observation.statusMessage
+      ? { statusMessage: truncateForTrace(observation.statusMessage) }
+      : {})
+  };
+}
+
+function summarizeLiveMetadata(
+  metadata: Record<string, unknown>
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(metadata).map(([key, value]) => [
+      key,
+      typeof value === "string" ? truncateForTrace(value) : value
+    ])
+  );
 }
 
 function summarizeDreamingCommand(command: {
@@ -799,8 +894,12 @@ function createGenerationObservations(input: {
     name: `${input.purpose}.model.step`,
     ...(step.startedAt ? { startedAt: step.startedAt } : {}),
     ...(step.endedAt ? { endedAt: step.endedAt } : {}),
-    ...(step.request ? { input: step.request } : {}),
-    ...(step.response ? { output: step.response } : {}),
+    ...(step.request
+      ? { input: summarizeModelRequestForTrace(step.request) }
+      : {}),
+    ...(step.response
+      ? { output: summarizeModelResponseForTrace(step.response) }
+      : {}),
     ...(step.request?.model ? { model: step.request.model } : {}),
     ...(step.response?.usage !== undefined ? { usage: step.response.usage } : {}),
     metadata: {
@@ -826,6 +925,65 @@ function createGenerationObservations(input: {
   }));
 }
 
+function summarizeModelRequestForTrace(
+  request: NonNullable<ModelStepTraceSnapshot["request"]>
+): Record<string, unknown> {
+  return {
+    provider: request.provider,
+    model: request.model,
+    temperature: request.temperature,
+    stepNumber: request.stepNumber,
+    messageCount: request.messageCount ?? request.messages?.length ?? 0,
+    messagesHash:
+      request.messagesHash ?? hashTraceValue(request.messages ?? []),
+    tools: request.tools,
+    ...(request.toolChoice !== undefined
+      ? { toolChoice: sanitizeUntrustedValue(request.toolChoice) }
+      : {}),
+    ...(request.prompt ? { prompt: request.prompt } : {})
+  };
+}
+
+function summarizeModelResponseForTrace(
+  response: NonNullable<ModelStepTraceSnapshot["response"]>
+): Record<string, unknown> {
+  return {
+    ...(response.stepNumber !== undefined
+      ? { stepNumber: response.stepNumber }
+      : {}),
+    ...(response.content
+      ? { content: truncateForTrace(response.content) }
+      : {}),
+    ...(response.finishReason ? { finishReason: response.finishReason } : {}),
+    ...(response.toolCalls
+      ? { toolCalls: sanitizeUntrustedValue(response.toolCalls) }
+      : {}),
+    ...(response.toolResults
+      ? { toolResults: sanitizeUntrustedValue(response.toolResults) }
+      : {}),
+    ...(response.usage !== undefined ? { usage: response.usage } : {}),
+    ...(response.cacheUsage ? { cacheUsage: response.cacheUsage } : {}),
+    ...(response.requestBody !== undefined
+      ? { requestBody: summarizeOpaqueBody(response.requestBody) }
+      : {}),
+    ...(response.responseBody !== undefined
+      ? { responseBody: summarizeOpaqueBody(response.responseBody) }
+      : {})
+  };
+}
+
+function summarizeOpaqueBody(value: unknown): Record<string, unknown> {
+  const serialized = typeof value === "string" ? value : JSON.stringify(value);
+  return {
+    byteLength: Buffer.byteLength(serialized, "utf8"),
+    sha256: createHash("sha256").update(serialized).digest("hex")
+  };
+}
+
+function hashTraceValue(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
 function createToolObservation(
   traceId: string,
   parentObservationId: string,
@@ -849,7 +1007,10 @@ function createToolObservation(
         : {}),
       ...(toolResult.reason ? { resultReason: toolResult.reason } : {})
     },
-    ...(toolResult.status === "failed" ? { level: "ERROR" as const } : {})
+    ...(toolResult.status === "failed" ||
+    toolResult.status === "result_unknown"
+      ? { level: "ERROR" as const }
+      : {})
   };
 }
 

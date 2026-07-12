@@ -17,8 +17,7 @@ export interface TriggerDecision {
   triggerName: string;
   reason: MessageWindowReason;
   conversation: Conversation;
-  fromSeq: number;
-  toSeq: number;
+  eventIds: string[];
   description?: string;
 }
 

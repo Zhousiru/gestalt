@@ -34,15 +34,25 @@ import {
   createInMemorySessionStore,
   getConversationKey,
   type CreatedMessageWindow,
-  type ExportSessionOptions
+  type ExportSessionDiagnosticsOptions,
+  type SessionStore
 } from "../session/store";
 import { createSessionRecorder } from "../session/recorder";
 import {
+  createRecentSessionEventAppender,
+  createSessionHistoryReader,
+  hydrateRecentSessionMessages,
+  type SessionHistoryReader
+} from "../session/history";
+import {
   type MessageWindowReason,
   type SessionEventRecord,
-  type SessionSnapshot
+  type SessionDiagnostics
 } from "../session/schemas";
-import { createTraceRecorder } from "../trace/recorder";
+import {
+  createRolloutReader,
+  type RolloutReader
+} from "../rollout";
 import { createDefaultGroupTriggers } from "../triggers/defaultTriggers";
 import {
   evaluateTriggerAdmission,
@@ -79,24 +89,40 @@ import {
   createDefaultAgentLoopExitTriggers,
   type AgentLoopExitTrigger
 } from "./exitTriggers";
+import { commitOutboundMessage } from "./outboundMessages";
 
 export interface Runtime {
   home: GestaltHome;
   stickers?: StickerService;
-  ingestEvent(event: unknown): SessionEventRecord;
+  sessionStore: SessionStore;
+  sessionHistory: SessionHistoryReader;
+  rolloutReader: RolloutReader;
+  ingestEvent(event: unknown): Promise<SessionEventRecord>;
+  dispatchEvent(event: unknown): Promise<RuntimeEventDispatch>;
   handleEvent(event: unknown): Promise<AgentTurnResult | undefined>;
   handleMessageWindow(
     input: HandleMessageWindowInput
   ): Promise<AgentTurnResult | undefined>;
-  exportSession(options?: ExportSessionOptions): SessionSnapshot;
-  importSession(snapshot: unknown): void;
+  exportDiagnostics(options?: ExportSessionDiagnosticsOptions): SessionDiagnostics;
   whenIdle(): Promise<void>;
+}
+
+export interface RuntimeEventDispatch {
+  /** Settles with the active-loop result; dispatch itself never waits for it. */
+  outcome: Promise<AgentTurnResult | undefined>;
+}
+
+const EMPTY_RUNTIME_OUTCOME = Promise.resolve<AgentTurnResult | undefined>(
+  undefined
+);
+
+function noRuntimeOutcome(): RuntimeEventDispatch {
+  return { outcome: EMPTY_RUNTIME_OUTCOME };
 }
 
 export interface HandleMessageWindowInput {
   conversation: Conversation;
-  fromSeq: number;
-  toSeq: number;
+  eventIds: string[];
   reason?: MessageWindowReason;
 }
 
@@ -108,7 +134,6 @@ export interface CreateRuntimeOptions {
   toolImplementations?: ToolImplementations;
   dreamingRunner?: DreamingRunner;
   inspectRunner?: InspectRunner;
-  sessionSnapshot?: unknown;
   maxSteersPerTurn?: number;
   triggers?: GroupTrigger[];
   exitTriggers?: AgentLoopExitTrigger[];
@@ -172,15 +197,17 @@ export async function createRuntime(
     ...(options.toolImplementations ?? {})
   };
   const model = options.model ?? createMockModel({ now });
-  const traceRecorder = createTraceRecorder(home);
   const sessionRecorder = createSessionRecorder(home);
-  const sessionStore = createInMemorySessionStore(options.sessionSnapshot, {
+  const sessionStore = createInMemorySessionStore({
     now,
+    onJournalRecord: (record) => sessionRecorder.enqueue(record),
     onEventAppended(record) {
       options.liveEvents?.publish(
         "session.event.appended",
         {
-          record
+          conversationKey: getConversationKey(record.event.conversation),
+          eventId: record.event.id,
+          recordId: record.id
         },
         record.receivedAt
       );
@@ -189,7 +216,8 @@ export async function createRuntime(
       options.liveEvents?.publish(
         "session.window.created",
         {
-          window
+          conversationKey: getConversationKey(window.conversation),
+          windowId: window.id
         },
         window.closedAt
       );
@@ -197,7 +225,10 @@ export async function createRuntime(
     onTriggerAttemptRecorded(attempt) {
       options.liveEvents?.publish(
         "session.trigger_attempt.recorded",
-        { attempt },
+        {
+          conversationKey: getConversationKey(attempt.conversation),
+          attemptId: attempt.id
+        },
         attempt.evaluatedAt
       );
     },
@@ -205,7 +236,9 @@ export async function createRuntime(
       options.liveEvents?.publish(
         "session.turn.recorded",
         {
-          turn
+          conversationKey: getConversationKey(turn.conversation),
+          turnId: turn.id,
+          rolloutId: turn.rolloutId
         },
         turn.endedAt
       );
@@ -214,21 +247,27 @@ export async function createRuntime(
       options.liveEvents?.publish(
         "session.loop_exit.recorded",
         {
-          exit
+          conversationKey: getConversationKey(exit.conversation),
+          exitId: exit.id
         },
         exit.endedAt
       );
-    },
-    onSnapshotChange(snapshot) {
-      sessionRecorder.recordSnapshot(snapshot);
-      options.liveEvents?.publish(
-        "session.snapshot.changed",
-        {
-          snapshot
-        },
-        snapshot.exportedAt
-      );
     }
+  });
+  const sessionHistory = createSessionHistoryReader(home);
+  const rolloutReader = createRolloutReader({ tracesDir: home.tracesDir });
+  await hydrateRecentSessionMessages({
+    home,
+    config,
+    store: sessionStore,
+    reader: sessionHistory,
+    now
+  });
+  const sessionEventAppender = createRecentSessionEventAppender({
+    config,
+    store: sessionStore,
+    reader: sessionHistory,
+    now
   });
   const triggers = options.triggers ?? createDefaultGroupTriggers(config);
   const exitTriggers =
@@ -247,10 +286,20 @@ export async function createRuntime(
     tools,
     connector,
     model,
-    traceRecorder,
     now,
     resolvedTimezone,
     sessionStore,
+    async commitOutboundMessage({ sourceEvent, proposal, result }) {
+      await commitOutboundMessage({
+        config,
+        sourceEvent,
+        proposal,
+        result,
+        appendEvent: (event, appendOptions) =>
+          sessionEventAppender.appendEvent(event, appendOptions),
+        flushDurable: () => sessionRecorder.flush({ durable: true })
+      });
+    },
     maxSteersPerTurn: options.maxSteersPerTurn ?? 2,
     ...(options.liveEvents ? { liveEvents: options.liveEvents } : {}),
     ...(Object.keys(toolImplementations).length > 0
@@ -258,23 +307,24 @@ export async function createRuntime(
       : {})
   };
 
-  const appendParsedEvent = (parsedEvent: CanonicalEvent): SessionEventRecord => {
-    return dependencies.sessionStore.appendEvent(parsedEvent, {
+  const appendParsedEvent = (
+    parsedEvent: CanonicalEvent
+  ): Promise<SessionEventRecord> => {
+    return sessionEventAppender.appendEvent(parsedEvent, {
       receivedAt: dependencies.now().toISOString()
     });
   };
 
-  const ingestEvent = (event: unknown): SessionEventRecord => {
+  const ingestEvent = (event: unknown): Promise<SessionEventRecord> => {
     return appendParsedEvent(CanonicalEventSchema.parse(event));
   };
 
   const createMessageWindowPart = (
     input: HandleMessageWindowInput
-  ): CreatedMessageWindow =>
+  ): Promise<CreatedMessageWindow> =>
     dependencies.sessionStore.createMessageWindow({
       conversation: input.conversation,
-      fromSeq: input.fromSeq,
-      toSeq: input.toSeq,
+      eventIds: input.eventIds,
       closedAt: dependencies.now().toISOString(),
       ...(input.reason ? { reason: input.reason } : {})
     });
@@ -290,16 +340,19 @@ export async function createRuntime(
       onActiveTurnSettled
     );
 
-  const handleMessageWindow = (
+  const handleMessageWindow = async (
     input: HandleMessageWindowInput
   ): Promise<AgentTurnResult | undefined> => {
-    return startWindowPart(createMessageWindowPart(input));
+    return startWindowPart(await createMessageWindowPart(input));
   };
 
-  const startTriggeredRecord = (
+  const startTriggeredRecord = async (
     record: SessionEventRecord,
-    options: { minFromSeq?: number } = {}
-  ): Promise<AgentTurnResult | undefined> | undefined => {
+    options: { allowedEventIds?: ReadonlySet<string> } = {}
+  ): Promise<
+    | { promise: Promise<AgentTurnResult | undefined> }
+    | undefined
+  > => {
     const decision = evaluateGroupTriggers(triggers, {
       config: dependencies.config,
       sessionStore: dependencies.sessionStore,
@@ -315,33 +368,36 @@ export async function createRuntime(
       record,
       decision
     );
-    dependencies.sessionStore.recordTriggerAttempt({
+    const eventIds = options.allowedEventIds
+      ? decision.eventIds.filter((eventId) =>
+          options.allowedEventIds?.has(eventId)
+        )
+      : decision.eventIds;
+    if (eventIds.length === 0) {
+      return undefined;
+    }
+    await dependencies.sessionStore.recordTriggerAttempt({
       id: randomUUID(),
       conversation: decision.conversation,
       triggerName: decision.triggerName,
       reason: decision.reason,
-      eventSeq: record.seq,
-      fromSeq: decision.fromSeq,
-      toSeq: decision.toSeq,
+      eventId: record.event.id,
+      eventIds,
       probability: admission.probability,
       sample: admission.sample,
       admitted: admission.admitted,
-      samplerVersion: admission.samplerVersion,
       evaluatedAt: dependencies.now().toISOString()
     });
     if (!admission.admitted) {
       return undefined;
     }
 
-    return handleMessageWindow({
+    const part = await createMessageWindowPart({
       conversation: decision.conversation,
-      fromSeq:
-        options.minFromSeq !== undefined
-          ? Math.max(decision.fromSeq, options.minFromSeq)
-          : decision.fromSeq,
-      toSeq: decision.toSeq,
+      eventIds,
       reason: decision.reason
     });
+    return { promise: startWindowPart(part) };
   };
 
   function queueActiveLoopRecord(
@@ -375,11 +431,13 @@ export async function createRuntime(
 
     buffer.timer = setTimeout(() => {
       delete buffer.timer;
-      flushActiveLoopBuffer(conversationKey);
+      void flushActiveLoopBuffer(conversationKey).catch((error: unknown) => {
+        publishBackgroundFailure("active_loop_buffer_flush_failed", error);
+      });
     }, buffer.nextDelayMs);
   }
 
-  function flushActiveLoopBuffer(conversationKey: string): void {
+  async function flushActiveLoopBuffer(conversationKey: string): Promise<void> {
     const buffer = activeLoopBuffers.get(conversationKey);
     if (!buffer || buffer.records.length === 0) {
       return;
@@ -387,7 +445,7 @@ export async function createRuntime(
 
     const activeTurn = activeTurns.get(conversationKey);
     if (!activeTurn) {
-      reactivatePreTriggerFromBuffer(conversationKey, buffer);
+      await reactivatePreTriggerFromBuffer(conversationKey, buffer);
       return;
     }
 
@@ -413,10 +471,9 @@ export async function createRuntime(
       return;
     }
 
-    const windowPart = dependencies.sessionStore.createMessageWindow({
+    const windowPart = await dependencies.sessionStore.createMessageWindow({
       conversation: buffer.conversation,
-      fromSeq: firstRecord.seq,
-      toSeq: lastRecord.seq,
+      eventIds: records.map((record) => record.event.id),
       closedAt: dependencies.now().toISOString(),
       reason: "steer"
     });
@@ -439,13 +496,17 @@ export async function createRuntime(
     if (!buffer) {
       return;
     }
-    reactivatePreTriggerFromBuffer(conversationKey, buffer);
+    void reactivatePreTriggerFromBuffer(conversationKey, buffer).catch(
+      (error: unknown) => {
+        publishBackgroundFailure("buffer_reactivation_failed", error);
+      }
+    );
   }
 
-  function reactivatePreTriggerFromBuffer(
+  async function reactivatePreTriggerFromBuffer(
     conversationKey: string,
     buffer: ActiveLoopBuffer
-  ): void {
+  ): Promise<void> {
     if (buffer.timer) {
       clearTimeout(buffer.timer);
     }
@@ -456,10 +517,12 @@ export async function createRuntime(
       return;
     }
 
-    const firstRecord = records[0];
+    const allowedEventIds = new Set(
+      records.map((record) => record.event.id)
+    );
     for (const record of records) {
-      const result = startTriggeredRecord(record, {
-        ...(firstRecord ? { minFromSeq: firstRecord.seq } : {})
+      const result = await startTriggeredRecord(record, {
+        allowedEventIds
       });
       if (result) {
         return;
@@ -477,7 +540,7 @@ export async function createRuntime(
       config,
       eventRecord: record,
       command,
-      sessionSnapshot: dependencies.sessionStore.exportSnapshot({
+      sessionDiagnostics: dependencies.sessionStore.exportDiagnostics({
         exportedAt: dependencies.now().toISOString()
       }),
       now: dependencies.now
@@ -490,7 +553,11 @@ export async function createRuntime(
         result.reportText
       );
       if (sendResult.ok) {
-        appendSelfMessageFromInspectResult(record, result.reportText, sendResult);
+        await appendSelfMessageFromInspectResult(
+          record,
+          result.reportText,
+          sendResult
+        );
       }
       await sessionRecorder.flush();
       return;
@@ -503,16 +570,20 @@ export async function createRuntime(
       fallbackText
     );
     if (fallbackResult.ok) {
-      appendSelfMessageFromInspectResult(record, fallbackText, fallbackResult);
+      await appendSelfMessageFromInspectResult(
+        record,
+        fallbackText,
+        fallbackResult
+      );
       await sessionRecorder.flush();
     }
   }
 
-  function appendSelfMessageFromInspectResult(
+  async function appendSelfMessageFromInspectResult(
     record: SessionEventRecord,
     text: string,
     sendResult: ConnectorCallResult
-  ): void {
+  ): Promise<void> {
     if (record.event.type !== "MessageReceived") {
       return;
     }
@@ -526,7 +597,7 @@ export async function createRuntime(
       "Gestalt";
     const occurredAt = dependencies.now().toISOString();
 
-    dependencies.sessionStore.appendEvent(
+    await dependencies.sessionStore.appendEvent(
       {
         id: `self-inspect-${record.event.id}`,
         type: "MessageReceived",
@@ -564,15 +635,42 @@ export async function createRuntime(
   return {
     home,
     ...(stickerService ? { stickers: stickerService } : {}),
+    sessionStore,
+    sessionHistory,
+    rolloutReader,
     ingestEvent,
+    dispatchEvent,
 
     async handleEvent(event) {
-      const parsedEvent = CanonicalEventSchema.parse(event);
-      if (!isAllowedGroupEvent(parsedEvent, allowedGroupIds)) {
-        return undefined;
-      }
+      return (await dispatchEvent(event)).outcome;
+    },
 
-      const record = appendParsedEvent(parsedEvent);
+    handleMessageWindow,
+
+    exportDiagnostics(options = {}) {
+      return dependencies.sessionStore.exportDiagnostics(options);
+    },
+
+    async whenIdle() {
+      while (activeTurns.size > 0) {
+        await Promise.allSettled(
+          Array.from(activeTurns.values()).map((turn) => turn.promise)
+        );
+      }
+      await sessionRecorder.flush({ durable: true });
+      await stickerService?.whenIdle();
+    }
+  };
+
+  async function dispatchEvent(event: unknown): Promise<RuntimeEventDispatch> {
+    const parsedEvent = CanonicalEventSchema.parse(event);
+    if (!isAllowedGroupEvent(parsedEvent, allowedGroupIds)) {
+      return noRuntimeOutcome();
+    }
+
+    dependencies.sessionStore.pinConversation(parsedEvent.conversation);
+    try {
+      const record = await appendParsedEvent(parsedEvent);
       const conversationKey = getConversationKey(record.event.conversation);
       const scrapeCommand = parseScrapeStickerCommand(record.event);
       if (scrapeCommand) {
@@ -605,16 +703,16 @@ export async function createRuntime(
           reply
         );
         if (sendResult.ok) {
-          appendRuntimeControlReply(record, reply, sendResult);
+          await appendRuntimeControlReply(record, reply, sendResult);
           await sessionRecorder.flush();
         }
-        return undefined;
+        return noRuntimeOutcome();
       }
 
       if (isSlashLeaveCommand(record.event)) {
         const activeTurn = activeTurns.get(conversationKey);
         if (!activeTurn) {
-          return undefined;
+          return noRuntimeOutcome();
         }
 
         clearActiveLoopBuffer(conversationKey);
@@ -624,24 +722,28 @@ export async function createRuntime(
             reason: "slash_leave",
             description: "A /leave command force-ended the active loop."
           },
-          lastSeq: record.seq
+          lastEventId: record.event.id
         });
-        return activeTurn.promise;
+        return { outcome: activeTurn.promise };
       }
 
       const inspectCommand = parseInspectCommand(record.event);
       if (inspectCommand) {
         await handleInspectRecord(record, inspectCommand);
-        return undefined;
+        return noRuntimeOutcome();
       }
 
-      if (stickerService && record.event.type === "MessageReceived") {
+      if (stickerService && parsedEvent.type === "MessageReceived") {
         try {
-          await stickerService.observe(record.event);
+          // Session storage intentionally retains only its sanitized journal
+          // representation. Sticker extraction gets the transient connector
+          // event so source segments are usable without pinning transport media
+          // in the bounded SessionStore.
+          await stickerService.observe(parsedEvent);
         } catch (error) {
           try {
             options.liveEvents?.publish("sticker.job.updated", {
-              sourceEventId: record.event.id,
+              sourceEventId: parsedEvent.id,
               error: error instanceof Error ? error.message : String(error)
             });
           } catch {
@@ -654,42 +756,22 @@ export async function createRuntime(
       const activeTurn = activeTurns.get(conversationKey);
       if (activeTurn) {
         if (isSelfMessageEvent(record.event)) {
-          return activeTurn.promise;
+          return { outcome: activeTurn.promise };
         }
-        return queueActiveLoopRecord(record, activeTurn);
+        return { outcome: queueActiveLoopRecord(record, activeTurn) };
       }
-      return startTriggeredRecord(record);
-    },
-
-    handleMessageWindow,
-
-    exportSession(options = {}) {
-      return dependencies.sessionStore.exportSnapshot(options);
-    },
-
-    importSession(snapshot) {
-      if (activeTurns.size > 0) {
-        throw new Error("Cannot import a session while agent turns are active.");
-      }
-      dependencies.sessionStore.importSnapshot(snapshot);
-    },
-
-    async whenIdle() {
-      while (activeTurns.size > 0) {
-        await Promise.allSettled(
-          Array.from(activeTurns.values()).map((turn) => turn.promise)
-        );
-      }
-      await sessionRecorder.flush();
-      await stickerService?.whenIdle();
+      const started = await startTriggeredRecord(record);
+      return started ? { outcome: started.promise } : noRuntimeOutcome();
+    } finally {
+      dependencies.sessionStore.unpinConversation(parsedEvent.conversation);
     }
-  };
+  }
 
-  function appendRuntimeControlReply(
+  async function appendRuntimeControlReply(
     record: SessionEventRecord,
     text: string,
     sendResult: ConnectorCallResult
-  ): void {
+  ): Promise<void> {
     const selfId =
       readOptionalString(dependencies.config.flatValues, "bot_user_id") ??
       record.event.source.accountId ??
@@ -698,7 +780,7 @@ export async function createRuntime(
       readOptionalString(dependencies.config.flatValues, "bot_display_name") ??
       "Gestalt";
     const occurredAt = dependencies.now().toISOString();
-    dependencies.sessionStore.appendEvent(
+    await dependencies.sessionStore.appendEvent(
       {
         id: `self-control-${record.event.id}`,
         type: "MessageReceived",
@@ -724,6 +806,14 @@ export async function createRuntime(
       },
       { receivedAt: occurredAt }
     );
+  }
+
+  function publishBackgroundFailure(code: string, error: unknown): void {
+    options.liveEvents?.publish("agent.run.failed", {
+      entity: { kind: "signal", id: code },
+      status: "failed",
+      summary: error instanceof Error ? error.message : String(error)
+    });
   }
 }
 

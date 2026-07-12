@@ -25,6 +25,9 @@
     "verify:stickers": "tsx src/stickers.verify.ts",
     "verify:sticker-media": "tsx src/stickerMedia.verify.ts",
     "verify:stickers-ui": "tsx src/liveStickersUi.verify.ts",
+    "verify:traces-ui": "tsx src/tracesUi.verify.ts",
+    "verify:artifact-binary": "tsx src/artifactBinary.verify.ts",
+    "preview:traces-ui": "tsx src/tracesUi.verify.ts --hold",
     "preview:stickers-ui": "tsx src/liveStickersUi.verify.ts --hold",
     "verify:build": "tsx src/liveUiBuild.verify.ts",
     "eval": "tsx src/eval.ts && tsx src/onebotProtocol.eval.ts && tsx src/toolContract.eval.ts",
@@ -40,6 +43,7 @@
   },
   "dependencies": {
     "@gestalt/app": "workspace:*",
+    "@gestalt/live-contracts": "workspace:*",
     "ai": "^7.0.16",
     "dotenv": "^17.4.2",
     "sharp": "^0.35.3",

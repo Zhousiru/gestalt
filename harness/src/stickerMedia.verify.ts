@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import path from "node:path";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import {
   StickerJobSchema,
   STICKER_MEDIA_LIMITS,
@@ -14,6 +14,7 @@ import {
   type StickerJob
 } from "@gestalt/app";
 import sharp from "sharp";
+import { writeArtifactJson } from "./artifactBinary";
 
 async function main(): Promise<void> {
   const inline = Buffer.from("safe-inline-sticker");
@@ -351,11 +352,7 @@ async function main(): Promise<void> {
   const repoRoot = path.resolve(import.meta.dirname, "../..");
   const artifactDir = path.join(repoRoot, "harness", "artifacts", "sticker-media-security");
   await mkdir(artifactDir, { recursive: true });
-  await writeFile(
-    path.join(artifactDir, "summary.json"),
-    `${JSON.stringify(summary, null, 2)}\n`,
-    "utf8"
-  );
+  await writeArtifactJson(path.join(artifactDir, "summary.json"), summary);
   console.log(JSON.stringify(summary, null, 2));
 }
 

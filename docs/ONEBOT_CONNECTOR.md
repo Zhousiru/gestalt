@@ -22,9 +22,15 @@ OneBot events enter the system as raw protocol objects.
 OneBot raw event
 -> OneBot schema validation
 -> canonical MessageReceived event
--> runtime.handleEvent()
+-> bounded ingress queue
+-> runtime.dispatchEvent()
 -> existing trigger / active-loop / agent-turn path
 ```
+
+The dispatch receipt waits for journal admission and active-loop routing, not
+for the whole idle/dreaming lifetime of that loop. The longer outcome is
+observed separately so eight ingress workers cannot be occupied by eight idle
+loops and block later steering messages.
 
 Tool execution leaves the runtime through the connector:
 
@@ -167,6 +173,11 @@ Two transport modes exist:
 - `reverse_ws`: Gestalt opens a WebSocket server and waits for the OneBot implementation to connect.
 
 Both modes use OneBot's `echo` field to correlate API calls with responses.
+Inbound handling is bounded to eight active dispatches and 256 queued events;
+overflow and handler failures are explicit diagnostics. Once an outbound frame
+has been queued, a disconnect, malformed response, disposal, or asynchronous
+send failure means the remote result is unknown. The runtime records that state
+and does not retry the side effect automatically.
 
 Configure the transport in GestaltHome `config.toml`:
 
@@ -194,7 +205,7 @@ pnpm --filter @gestalt/app dev -- --home .gestalt
 
 For live OneBot mode, the runtime uses the model configured in GestaltHome.
 
-The same host config controls the optional live trace server:
+The same host config controls the optional Live inspection server:
 
 ```toml
 live_enabled = true
@@ -206,11 +217,17 @@ live_port = 3000
 enabled, the Gestalt app owns the single public port: it serves `/api/live/*`,
 SSE, and the bundled Live UI from the same HTTP server and origin.
 
-The first-version Live server has no authentication and refuses non-loopback
-bindings. Keep `live_host` on `127.0.0.1`, `::1`, or `localhost`; binding it to
-`0.0.0.0` or a LAN address fails closed at startup. Requests whose `Host` or
-optional `Origin` is not loopback are also rejected to close the DNS-rebinding
-path against this unauthenticated debug surface.
+The Trace UI reads cursor-paged conversation and rollout endpoints and loads a
+selected rollout/blob on demand; it does not request one aggregate workspace
+payload. See [PERSISTENCE_AND_TRACES.md](PERSISTENCE_AND_TRACES.md) for the API,
+SSE budgets, and binary-serving boundary.
+
+The Live debug server has no authentication. It may bind to `0.0.0.0` for
+trusted local-network inspection, which exposes conversation, rollout, blob,
+and sticker diagnostics to every client that can reach the port. Browser
+requests with an `Origin` header must match the request `Host`; non-browser
+clients may connect without an Origin. Internet exposure requires
+authentication at a reverse proxy or a future application transport.
 
 Connector, OneBot transport, and live host/port settings are no longer accepted
 as CLI arguments. `--home` remains the bootstrap override, and
@@ -229,8 +246,13 @@ It verifies:
 - The runtime stays on the normal trigger and agent-loop path.
 - Optional read-only helper tool execution can call `get_msg` or `get_image` before a visible send action.
 - A `fetch_message` result preserves complete mface and custom-sticker CQ text, and `read_image` preserves metadata while attaching connector-returned image bytes to the next main-model step.
+- Complete provider image input remains in harness-only model exchange capture.
+  Production rollout JSON contains only its binary descriptor, and production
+  blob capture remains disabled unless the fixture explicitly tests that option.
 - Tool execution sends a `send_group_msg` OneBot API call over WebSocket with CQ string message text.
 - The API response is matched by `echo`.
+- `model-exchanges.json` is written directly from the capture sink, including
+  structured canonical messages and complete tool protocol definitions.
 
 Commands:
 

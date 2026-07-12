@@ -1,10 +1,14 @@
-import type { Connector, ConnectorCallResult } from "../connectors/types";
+import {
+  isConnectorOutcomeUnknownError,
+  type Connector,
+  type ConnectorCallResult
+} from "../connectors/types";
 import { redactSensitiveString } from "../privacy/stickerRedaction";
 import type { ActionProposal, ToolName } from "./schemas";
 
 export interface ToolExecutionResult {
   proposal: ActionProposal;
-  status: "executed" | "skipped" | "failed";
+  status: "executed" | "skipped" | "failed" | "result_unknown";
   result?: ConnectorCallResult;
   reason?: string;
   executedAt: string;
@@ -35,6 +39,11 @@ export interface ExecuteActionsInput {
   now?: () => Date;
   traceId?: string;
   toolImplementations?: ToolImplementations;
+  onExecutionStart?: (proposal: ActionProposal) => void | Promise<void>;
+  onExecutionEnd?: (
+    proposal: ActionProposal,
+    result: ToolExecutionResult
+  ) => void | Promise<void>;
 }
 
 export async function executeActions(
@@ -51,20 +60,37 @@ export async function executeActions(
   for (const proposal of input.proposals) {
     const implementation = implementations[proposal.toolName];
     if (!implementation) {
-      results.push({
+      const result: ToolExecutionResult = {
         proposal,
         status: "failed",
         reason: `No tool implementation registered for ${proposal.toolName}.`,
         executedAt: now().toISOString()
-      });
+      };
+      results.push(result);
+      await input.onExecutionEnd?.(proposal, result);
       continue;
     }
 
-    const handlerResult = await implementation(proposal, {
-      connector: input.connector,
-      now,
-      ...(input.traceId ? { traceId: input.traceId } : {})
-    });
+    await input.onExecutionStart?.(proposal);
+    let handlerResult: ToolHandlerResult;
+    try {
+      handlerResult = await implementation(proposal, {
+        connector: input.connector,
+        now,
+        ...(input.traceId ? { traceId: input.traceId } : {})
+      });
+    } catch (error) {
+      handlerResult = isConnectorOutcomeUnknownError(error)
+        ? {
+            status: "result_unknown",
+            reason:
+              "The external action was dispatched, but its result is unknown. Do not retry it automatically."
+          }
+        : {
+            status: "failed",
+            reason: error instanceof Error ? error.message : String(error)
+          };
+    }
     const executionResult: ToolExecutionResult = {
       proposal,
       status: handlerResult.status,
@@ -77,6 +103,10 @@ export async function executeActions(
       executionResult.reason = handlerResult.reason;
     }
     results.push(executionResult);
+    await input.onExecutionEnd?.(proposal, executionResult);
+    if (executionResult.status === "result_unknown") {
+      break;
+    }
   }
 
   return results;

@@ -88,12 +88,18 @@ function createActivityTrigger(
       }
 
       const cutoff = currentTime - options.activityWindowMs;
-      const recentRecords = input.sessionStore
-        .getEvents(event.conversation)
+      const conversationRecords = input.sessionStore.getEvents(
+        event.conversation
+      );
+      const currentIndex = conversationRecords.findIndex(
+        (record) => record.id === input.record.id
+      );
+      if (currentIndex < 0) {
+        return undefined;
+      }
+      const recentRecords = conversationRecords
+        .slice(0, currentIndex + 1)
         .filter((record) => {
-          if (record.seq > input.record.seq) {
-            return false;
-          }
           if (!getGroupMessageEvent(record)) {
             return false;
           }
@@ -102,7 +108,7 @@ function createActivityTrigger(
         });
 
       const previousCount = recentRecords.filter(
-        (record) => record.seq < input.record.seq
+        (record) => record.id !== input.record.id
       ).length;
       if (
         previousCount <= options.activityMinMessages &&
@@ -116,8 +122,7 @@ function createActivityTrigger(
           triggerName: "group_activity",
           reason: "activity",
           conversation: event.conversation,
-          fromSeq: firstRecord.seq,
-          toSeq: input.record.seq,
+          eventIds: recentRecords.map((record) => record.event.id),
           description: `More than ${options.activityMinMessages} messages within ${options.activityWindowMs}ms.`
         };
       }
@@ -147,12 +152,15 @@ function createIcebreakerTrigger(
         return undefined;
       }
 
-      const previousRecord = input.sessionStore
-        .getEvents(event.conversation)
-        .filter(
-          (record) =>
-            record.seq < input.record.seq && getGroupMessageEvent(record)
-        )
+      const conversationRecords = input.sessionStore.getEvents(
+        event.conversation
+      );
+      const currentIndex = conversationRecords.findIndex(
+        (record) => record.id === input.record.id
+      );
+      const previousRecord = conversationRecords
+        .slice(0, Math.max(0, currentIndex))
+        .filter((record) => getGroupMessageEvent(record))
         .at(-1);
       if (!previousRecord) {
         return undefined;
@@ -168,8 +176,7 @@ function createIcebreakerTrigger(
           triggerName: "icebreaker",
           reason: "icebreaker",
           conversation: event.conversation,
-          fromSeq: input.record.seq,
-          toSeq: input.record.seq,
+          eventIds: [input.record.event.id],
           description: `Conversation was quiet for at least ${options.icebreakerQuietMs}ms.`
         };
       }
@@ -193,8 +200,7 @@ function createDecision(
     triggerName,
     reason,
     conversation: event.conversation,
-    fromSeq: record.seq,
-    toSeq: record.seq
+    eventIds: [record.event.id]
   };
 }
 

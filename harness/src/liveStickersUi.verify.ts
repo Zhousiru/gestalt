@@ -21,6 +21,7 @@ import {
   type StickerEmbedder
 } from "@gestalt/app";
 import sharp from "sharp";
+import { writeArtifactJson } from "./artifactBinary";
 
 const repoRoot = path.resolve(import.meta.dirname, "../..");
 const uiDir = path.join(repoRoot, "packages", "app", "dist", "live-ui");
@@ -142,7 +143,7 @@ try {
   const snapshotSecretKey = "snapshot-secret-key-sentinel";
   const snapshotSecretUrl =
     "https://example.invalid/snapshot.gif?token=snapshot-secret";
-  runtime.ingestEvent({
+  await runtime.ingestEvent({
     id: "live-snapshot-privacy-event",
     type: "MessageReceived",
     occurredAt: "2026-07-11T12:03:00.000Z",
@@ -197,22 +198,13 @@ try {
       headers: { origin: "https://attacker.example" }
     });
     assert.equal(crossOriginResponse.status, 403);
-    const liveSnapshotText = await (
-      await fetch(`${server.url}/api/live/snapshot`)
-    ).text();
-    for (const originalCqField of [
-      snapshotSecretKey,
-      snapshotSecretUrl,
-      "snapshot-emoji-secret",
-      "[CQ:mface"
-    ]) {
-      assert.ok(
-        liveSnapshotText.includes(originalCqField),
-        `Live snapshot did not preserve CQ field ${originalCqField}`
-      );
-    }
-    assert.ok(!liveSnapshotText.includes("snapshot-package-secret"));
-    assert.ok(!liveSnapshotText.includes("snapshot-secret.gif"));
+    const legacySnapshotResponse = await fetch(
+      `${server.url}/api/live/snapshot`
+    );
+    assert.equal(legacySnapshotResponse.status, 404);
+    const legacySnapshotText = await legacySnapshotResponse.text();
+    assert.equal(legacySnapshotText.includes(snapshotSecretKey), false);
+    assert.equal(legacySnapshotText.includes(snapshotSecretUrl), false);
     const snapshotResponse = await fetch(
       `${server.url}/api/live/stickers/snapshot`
     );
@@ -353,11 +345,9 @@ try {
       { stickerId: "sse-catalog-sentinel" },
       now().toISOString()
     );
-    const sseText = await readUntil(reader, "sse-catalog-sentinel");
+    const sseText = await readUntil(reader, "sticker.catalog.updated");
     assert.match(sseText, /sticker\.catalog\.updated/);
-    assert.match(sseText, /safe-live-job/);
-    assert.match(sseText, /safe-session-event/);
-    for (const originalCqField of [
+    for (const privateField of [
       secretKey,
       secretEmojiId,
       secretPackageId,
@@ -367,13 +357,10 @@ try {
       "[CQ:mface"
     ]) {
       const serializedField =
-        originalCqField === secretPath
-          ? JSON.stringify(originalCqField).slice(1, -1)
-          : originalCqField;
-      assert.ok(
-        sseText.includes(serializedField),
-        `SSE did not preserve CQ field ${originalCqField}`
-      );
+        privateField === secretPath
+          ? JSON.stringify(privateField).slice(1, -1)
+          : privateField;
+      assert.equal(sseText.includes(serializedField), false);
     }
     await reader.cancel();
     sseController.abort();
@@ -397,17 +384,13 @@ try {
         csp: assetResponse.headers.get("content-security-policy")
       },
       sseCatalogUpdateObserved: true,
-      sseOriginalCqObserved: true,
-      sessionSnapshotOriginalCqObserved: true,
+      sseSummaryOnlyObserved: true,
+      legacySnapshotRemoved: true,
       allInterfacesBindingAllowed: true,
       crossOriginRejected: true
     };
     await mkdir(artifactDir, { recursive: true });
-    await writeFile(
-      path.join(artifactDir, "summary.json"),
-      `${JSON.stringify(artifact, null, 2)}\n`,
-      "utf8"
-    );
+    await writeArtifactJson(path.join(artifactDir, "summary.json"), artifact);
     console.log(JSON.stringify({ ...artifact, hold }, null, 2));
 
     if (hold) {

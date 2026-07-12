@@ -46,8 +46,8 @@
       "loopExits": 1,
       "loopExitReasons": ["consecutive_say_nothing"],
       "windowReasons": ["keyword", "steer", "steer"],
-      "windowEventSeqs": [[1], [2], [3]],
-      "turnEventSeqs": [[1], [2], [3]],
+      "windowEventIds": [["say-nothing-exit-message-1"], ["say-nothing-exit-message-2"], ["say-nothing-exit-message-3"]],
+      "turnEventIds": [["say-nothing-exit-message-1"], ["say-nothing-exit-message-2"], ["say-nothing-exit-message-3"]],
       "steerCounts": [0, 0, 0]
     },
     "tools": {
@@ -55,8 +55,8 @@
       "toolNames": ["say_nothing", "say_nothing", "say_nothing"],
       "connectorSideEffects": 0
     },
-    "trace": {
-      "traces": 3,
+    "rollout": {
+      "rollouts": 1,
       "spans": [
         "memory.inject",
         "context.compile",

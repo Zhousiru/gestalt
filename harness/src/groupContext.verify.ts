@@ -16,14 +16,22 @@ const result = await runScenarioFixture(
 
 assertReplayRun(result);
 
-const contextSpans = result.traces
-  .flatMap((trace) => trace.spans)
-  .filter((span) => span.name === "context.compile");
+const contextSpans = result.rollouts
+  .flatMap((rollout) => rollout.records)
+  .filter(
+    (record) =>
+      record.type === "span_completed" && record.name === "context.compile"
+  );
 assert.ok(contextSpans.length > 0, "expected a context.compile span");
 for (const span of contextSpans) {
-  assert.equal(span.attributes.timezone, "Asia/Shanghai");
-  assert.equal(span.attributes.timezoneSource, "config");
-  assert.equal(span.attributes.localTime, "2026-07-11 18:42");
+  assert.equal(span.type, "span_completed");
+  if (span.type !== "span_completed") {
+    continue;
+  }
+  const attributes = span.attributes as Record<string, unknown>;
+  assert.equal(attributes.timezone, "Asia/Shanghai");
+  assert.equal(attributes.timezoneSource, "config");
+  assert.equal(attributes.localTime, "2026-07-11 18:42");
 }
 
 const conversation = result.session.conversations[0];

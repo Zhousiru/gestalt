@@ -15,7 +15,7 @@ import {
   type InspectRunner,
   type MessageReceivedEvent,
   type SessionEventRecord,
-  type SessionSnapshot
+  type SessionDiagnostics
 } from "@gestalt/app";
 
 const fixedNow = new Date("2026-07-08T05:00:00.000Z");
@@ -31,8 +31,8 @@ const inspectRunner: InspectRunner = {
     const command = [
       "ls /sessions",
       "ls /traces",
-      "cat /sessions/2026-07-08.jsonl",
-      "cat /traces/2026-07-08.jsonl"
+      "cat /sessions/journal/2026-07-08/000001.jsonl",
+      "cat /traces/2026/07/08/rollout-inspect-fixture.jsonl"
     ].join("; ");
     const bashResult = await bash.exec(command);
     inspectedStdout.push(bashResult.stdout);
@@ -40,7 +40,7 @@ const inspectRunner: InspectRunner = {
     const reportText = [
       `inspect ok: ${input.command.query}`,
       `conversation=${input.eventRecord.event.conversation.kind}:${input.eventRecord.event.conversation.id}`,
-      `seq=${input.eventRecord.seq}`
+      `event_id=${input.eventRecord.event.id}`
     ].join(" ");
 
     return {
@@ -65,33 +65,34 @@ try {
     now: () => fixedNow
   });
 
-  await mkdir(runtime.home.tracesDir, { recursive: true });
+  const traceDayDir = path.join(runtime.home.tracesDir, "2026", "07", "08");
+  await mkdir(traceDayDir, { recursive: true });
   await writeFile(
-    path.join(runtime.home.tracesDir, "2026-07-08.jsonl"),
-    `${JSON.stringify({
-      id: "trace-inspect-fixture",
-      name: "agent.turn",
-      startedAt: fixedNow.toISOString(),
-      endedAt: fixedNow.toISOString(),
-      gestaltHome: runtime.home.root,
-      eventId: "prior-event",
-      personaVersion: "test",
-      spans: [
-        {
-          id: "span-model",
-          traceId: "trace-inspect-fixture",
-          name: "model.decide",
-          startedAt: fixedNow.toISOString(),
-          endedAt: fixedNow.toISOString(),
-          attributes: {
-            status: "ok",
-            explanationFixture: "prior action evidence"
-          }
+    path.join(traceDayDir, "rollout-inspect-fixture.jsonl"),
+    [
+      {
+        id: "rollout-start",
+        rolloutId: "inspect-fixture",
+        timestamp: fixedNow.toISOString(),
+        type: "rollout_started",
+        activeLoopId: "inspect-fixture",
+        eventId: "prior-event"
+      },
+      {
+        id: "span-model",
+        rolloutId: "inspect-fixture",
+        timestamp: fixedNow.toISOString(),
+        type: "span_completed",
+        spanId: "span-model",
+        name: "model.decide",
+        startedAt: fixedNow.toISOString(),
+        endedAt: fixedNow.toISOString(),
+        attributes: {
+          status: "ok",
+          explanationFixture: "prior action evidence"
         }
-      ],
-      proposedActions: [],
-      toolResults: []
-    })}\n`,
+      }
+    ].map((record) => JSON.stringify(record)).join("\n") + "\n",
     "utf8"
   );
 
@@ -111,7 +112,7 @@ try {
   const inspectedInput = inspectedInputs[0];
   assert.ok(inspectedInput, "expected inspect runner input");
   assert.equal(inspectedInput.command.query, "为什么刚才会发那句话");
-  assert.equal(inspectedInput.eventRecord.seq, 1);
+  assert.equal(inspectedInput.eventRecord.event.id, "inspect-message-1");
 
   assert.equal(connector.sentGroupMessages.length, 1);
   assert.match(
@@ -119,7 +120,7 @@ try {
     /inspect ok: 为什么刚才会发那句话/
   );
 
-  const session = runtime.exportSession({
+  const session = runtime.exportDiagnostics({
     exportedAt: fixedNow.toISOString()
   });
   const conversation = session.conversations[0];
@@ -135,7 +136,8 @@ try {
   );
 
   const stdout = inspectedStdout.join("\n");
-  assert.match(stdout, /2026-07-08\.jsonl/);
+  assert.match(stdout, /000001\.jsonl/);
+  assert.match(stdout, /rollout-inspect-fixture\.jsonl/);
   assert.match(stdout, /inspect-message-1/);
   assert.match(stdout, /trace-inspect-fixture/);
   assert.match(stdout, /prior action evidence/);
@@ -175,68 +177,59 @@ async function verifyAiSdkInspectUsesReportToolAfterBash(): Promise<void> {
 
   try {
     const home = await resolveGestaltHome({ homePath: aiHomeRoot });
-    await mkdir(home.sessionsDir, { recursive: true });
-    await mkdir(home.tracesDir, { recursive: true });
+    const sessionDayDir = path.join(
+      home.sessionsDir,
+      "journal",
+      "2026-07-08"
+    );
+    const traceDayDir = path.join(home.tracesDir, "2026", "07", "08");
+    await mkdir(sessionDayDir, { recursive: true });
+    await mkdir(traceDayDir, { recursive: true });
     await writeFile(
-      path.join(home.sessionsDir, "2026-07-08.jsonl"),
+      path.join(sessionDayDir, "000001.jsonl"),
       `${JSON.stringify({
-        version: 1,
-        exportedAt: fixedNow.toISOString(),
-        conversations: [
-          {
+        type: "event",
+        recordedAt: fixedNow.toISOString(),
+        record: {
+          id: "prior-memory-write-event",
+          receivedAt: fixedNow.toISOString(),
+          event: {
+            id: "prior-memory-write-event",
+            type: "MessageReceived",
+            occurredAt: fixedNow.toISOString(),
+            source: {
+              platform: "mock",
+              connector: "mock",
+              accountId: "gestalt-bot"
+            },
             conversation: { kind: "group", id: "inspect-group" },
-            nextSeq: 2,
-            events: [
-              {
-                seq: 1,
-                receivedAt: fixedNow.toISOString(),
-                event: {
-                  id: "prior-memory-write-event",
-                  type: "MessageReceived",
-                  occurredAt: fixedNow.toISOString(),
-                  source: {
-                    platform: "mock",
-                    connector: "mock",
-                    accountId: "gestalt-bot"
-                  },
-                  conversation: { kind: "group", id: "inspect-group" },
-                  sender: { id: "alice", displayName: "Alice" },
-                  message: {
-                    id: "prior-message",
-                    text: "请记住这条测试记忆",
-                    rawText: "请记住这条测试记忆",
-                    mentionsBot: true
-                  }
-                }
-              }
-            ],
-            triggerAttempts: [],
-            windows: [],
-            turns: [],
-            loopExits: []
+            sender: { id: "alice", displayName: "Alice" },
+            message: {
+              id: "prior-message",
+              text: "请记住这条测试记忆",
+              rawText: "请记住这条测试记忆",
+              mentionsBot: true
+            }
           }
-        ]
+        }
       })}\n`,
       "utf8"
     );
     await writeFile(
-      path.join(home.tracesDir, "2026-07-08.jsonl"),
+      path.join(traceDayDir, "rollout-memory-write.jsonl"),
       `${JSON.stringify({
-        id: "trace-memory-write",
-        name: "agent.turn",
+        id: "span-dreaming",
+        rolloutId: "trace-memory-write",
+        timestamp: fixedNow.toISOString(),
+        type: "span_completed",
+        spanId: "span-dreaming",
+        name: "memory.dreaming",
         startedAt: fixedNow.toISOString(),
         endedAt: fixedNow.toISOString(),
-        spans: [
-          {
-            id: "span-dreaming",
-            traceId: "trace-memory-write",
-            name: "memory.dreaming",
-            attributes: {
-              changedFiles: ["users/alice/index.md"],
-              reason: "explicit remember request"
-            }
-          }
-        ]
+        attributes: {
+          changedFiles: ["users/alice/index.md"],
+          reason: "explicit remember request"
+        }
       })}\n`,
       "utf8"
     );
@@ -261,7 +254,7 @@ async function verifyAiSdkInspectUsesReportToolAfterBash(): Promise<void> {
                   name: "bash",
                   arguments: {
                     command:
-                      "cat /sessions/2026-07-08.jsonl; cat /traces/2026-07-08.jsonl"
+                      "cat /sessions/journal/2026-07-08/000001.jsonl; cat /traces/2026/07/08/rollout-memory-write.jsonl"
                   }
                 }
               ]
@@ -318,17 +311,15 @@ async function verifyAiSdkInspectUsesReportToolAfterBash(): Promise<void> {
       }
     };
     const eventRecord: SessionEventRecord = {
-      seq: 1,
+      id: "inspect-event-tool-only",
       receivedAt: fixedNow.toISOString(),
       event
     };
-    const sessionSnapshot: SessionSnapshot = {
-      version: 1,
+    const sessionDiagnostics: SessionDiagnostics = {
       exportedAt: fixedNow.toISOString(),
       conversations: [
         {
           conversation: event.conversation,
-          nextSeq: 2,
           events: [eventRecord],
           triggerAttempts: [],
           windows: [],
@@ -343,7 +334,7 @@ async function verifyAiSdkInspectUsesReportToolAfterBash(): Promise<void> {
       config,
       eventRecord,
       command: { query: "上一次memory write原因" },
-      sessionSnapshot,
+      sessionDiagnostics,
       now: () => fixedNow
     });
 

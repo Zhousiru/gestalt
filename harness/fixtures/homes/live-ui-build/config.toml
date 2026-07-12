@@ -4,3 +4,5 @@ dreaming_enabled = false
 live_enabled = false
 live_host = "127.0.0.1"
 live_port = 3000
+session_recent_history_hours = 24
+trace_binary_capture_enabled = false
