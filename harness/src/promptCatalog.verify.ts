@@ -44,13 +44,20 @@ const windowPrompt = renderActionWindowPrompt("one deterministic window");
 assert.equal(windowPrompt.content, "one deterministic window");
 
 const dreaming = renderDreamingTaskPrompt({ participants: "- Alice (id=alice)" });
-assert.match(dreaming.content, /conversation and your actions above/);
+assert.match(dreaming.content, /conversation and actions above/);
 assert.match(dreaming.content, /finish_dreaming/);
-assert.match(dreaming.content, /Infer only memories likely to change a future judgment or interaction/);
-assert.match(dreaming.content, /Usually, make no memory change/);
-assert.match(dreaming.content, /per-interaction records/);
-assert.match(dreaming.content, /not wording or a detailed account/);
-assert.match(dreaming.content, /Generalize; do not quote or log/);
+assert.match(dreaming.content, /likely to change a future judgment/);
+assert.match(dreaming.content, /Usually change nothing/);
+assert.match(dreaming.content, /message-by-message chronology/);
+assert.match(dreaming.content, /Do not quote dialogue/);
+assert.match(dreaming.content, /profile\.md/);
+assert.match(dreaming.content, /current\.md/);
+assert.match(dreaming.content, /preferences\.md/);
+assert.match(dreaming.content, /relationship\.md/);
+assert.match(dreaming.content, /uncertain\.md/);
+assert.match(dreaming.content, /Keep uncertain claims out of factual files/);
+assert.match(dreaming.content, /Do not create a file per event/);
+assert.match(dreaming.content, /instead of appending another bullet/);
 assert.doesNotMatch(dreaming.content, /asked to remember|asks? you to remember|explicit memory request/i);
 assert.doesNotMatch(dreaming.content, /preserve the concrete meaning and important phrases/);
 

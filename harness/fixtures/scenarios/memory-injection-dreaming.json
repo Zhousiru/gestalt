@@ -93,12 +93,6 @@
           "contains": "Alice memory baseline"
         }
       ],
-      "homeAfterContains": [
-        {
-          "path": "memories/users/alice/index.md",
-          "contains": "artifact evidence"
-        }
-      ],
       "injectedMemoryPaths": [
         "self/index.md",
         "users/alice/index.md"
@@ -108,9 +102,7 @@
         "Alice memory baseline"
       ],
       "dreamCommandsContain": [
-        "/memories",
-        "Markdown",
-        "artifact evidence"
+        "/memories"
       ],
       "dreamChangedFiles": ["users/alice/index.md"]
     }

@@ -42,7 +42,7 @@ export const RUBRICS_BY_SCENARIO: Record<string, EvalRubric[]> = {
     id: "memory_dreaming_quality",
     title: "Memory Dreaming Quality",
     prompt: "Judge whether the memory dreaming pass wrote useful concrete memory through the bash tool.",
-    criteria: ["The model should inspect relevant memory before writing.", "The model should use bash tool calls rather than plain text commands.", "Memory updates should be concrete, useful, and not placeholder text.", "Self memory and Alice memory should be written to the correct areas.", "Commands should stay inside /memories."]
+    criteria: ["The model should inspect relevant memory before writing.", "The model should use bash tool calls rather than plain text commands.", "Memory updates should preserve durable meaning without quoting dialogue or creating a message-by-message log.", "The model should consolidate into a compact index and appropriate subject files instead of blindly appending fragmented bullets.", "Useful but unverified hypotheses should remain conservative and be separated from factual memory; casual guesses should not be saved.", "Self memory and Alice memory should be written to the correct areas.", "Commands should stay inside /memories."]
   }]
 };
 

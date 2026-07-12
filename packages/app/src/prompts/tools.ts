@@ -86,7 +86,7 @@ export const ACTION_TOOL_PROMPTS = {
 export const DREAMING_TOOL_PROMPTS = {
   bash: {
     description: "Only while you are dreaming, run one executable bash command in a virtual filesystem where /memories is the only writable and persistent place.",
-    parameters: { command: "Executable shell code to run. Use paths under /memories for memory files. Examples: cat /memories/self/index.md ; printf 'text' >> /memories/users/alice/index.md" }
+    parameters: { command: "Executable shell code to inspect or coherently rewrite memory files under /memories. Example: ls /memories/users/alice && cat /memories/users/alice/index.md" }
   },
   finish_dreaming: {
     description: "Only while you are dreaming, finish after your memories feel coherent and no useful inspection or update remains.",

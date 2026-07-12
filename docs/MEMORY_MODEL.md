@@ -57,7 +57,7 @@ It should cover:
 - Important self-related memories.
 - Links to subject files.
 
-Subject files under `memories/self/` hold focused summaries for specific themes, projects, habits, preferences, or long-running internal threads.
+Subject files under `memories/self/` hold focused summaries. Prefer the small shared vocabulary below before inventing another subject.
 
 ### User Memory
 
@@ -72,7 +72,15 @@ It should stay short and high-signal. It should cover:
 - Cautions or boundaries.
 - Links to subject files.
 
-Subject files under `memories/users/<user-id>/` hold focused summaries for one topic, recurring pattern, project, shared history, or open thread.
+Subject files under `memories/users/<user-id>/` hold focused summaries. Prefer:
+
+- `profile.md`: identity and stable background.
+- `current.md`: current situation, projects, commitments, and open threads.
+- `preferences.md`: interests, habits, likes, dislikes, and boundaries.
+- `relationship.md`: relationship context, durable shared history, and well-supported recurring interaction patterns.
+- `uncertain.md`: potentially useful but unverified hypotheses, including brief evidence and what would confirm them.
+
+Create another subject only for a substantial long-running theme that does not fit these files. Never create one file per event. `index.md` remains the compact overview and links or briefly points to subject detail rather than duplicating it.
 
 The index file should point to subject files instead of duplicating all detail.
 
@@ -88,6 +96,9 @@ They should avoid:
 - Giant append-only logs.
 - Unlabeled speculation presented as fact.
 - Storing everything forever.
+- Quoting dialogue or preserving a message-by-message chronology.
+- Treating one interaction or one missing reply as a stable personality pattern.
+- Mixing unverified hypotheses into factual profile, preference, or relationship memory.
 
 They should prefer:
 
@@ -96,6 +107,8 @@ They should prefer:
 - Links between index files and subject files.
 - Corrections over contradictory layering.
 - Deleting or rewriting stale material when it no longer helps.
+- Merging new evidence into existing prose instead of appending another dated bullet.
+- Promoting, revising, or deleting entries in `uncertain.md` as evidence changes; casual guesses should not be stored at all.
 
 ## Context Injection
 
