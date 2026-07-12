@@ -226,6 +226,7 @@ function createAiSdkModelSession(
   );
   const modelStepRecorder = createModelStepRecorder(now);
   const pendingExchangeRequests: Array<{
+    exchangeId: string;
     request: ModelRequestSnapshot;
     startedAt: string;
     revision: number;
@@ -375,7 +376,7 @@ function createAiSdkModelSession(
               requestMessages: true,
               responseBody: true
             },
-            onStepStart(event) {
+            async onStepStart(event) {
               const request = snapshotStepRequest(event, {
                 providerName,
                 modelName: options.modelName,
@@ -390,11 +391,20 @@ function createAiSdkModelSession(
                   )
                 }
               });
+              const exchangeId = randomUUID();
+              const startedAt = now().toISOString();
               modelStepRecorder.recordRequest(request);
               pendingExchangeRequests.push({
+                exchangeId,
                 request,
-                startedAt: now().toISOString(),
+                startedAt,
                 revision: attemptRevision
+              });
+              await exchangeSink?.onStepStarted({
+                exchangeId,
+                purpose: "agent_action",
+                request,
+                startedAt
               });
               options.onRequest?.(request);
             },
@@ -428,7 +438,8 @@ function createAiSdkModelSession(
                   ? pendingExchangeRequests.splice(exchangeIndex, 1)[0]
                   : undefined;
               if (exchangeRequest) {
-                await exchangeSink?.onStep({
+                await exchangeSink?.onStepCompleted({
+                  exchangeId: exchangeRequest.exchangeId,
                   purpose: "agent_action",
                   request: exchangeRequest.request,
                   response,
@@ -479,7 +490,8 @@ function createAiSdkModelSession(
                 : "failed";
             const endedAt = now().toISOString();
             for (const exchangeRequest of unfinishedExchanges) {
-              await exchangeSink?.onStep({
+              await exchangeSink?.onStepCompleted({
+                exchangeId: exchangeRequest.exchangeId,
                 purpose: "agent_action",
                 request: exchangeRequest.request,
                 status: exchangeStatus,

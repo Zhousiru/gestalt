@@ -4,6 +4,7 @@ import type { GestaltHome } from "../home/resolveGestaltHome";
 import type {
   ModelExchangeSink,
   ModelExchangeSnapshot,
+  ModelExchangeStartedSnapshot,
   ModelRequestTraceSnapshot
 } from "../model/session";
 import {
@@ -78,6 +79,7 @@ export function createActiveRollout(
   let operationTail: Promise<void> = Promise.resolve();
   let initialized = false;
   let closed = false;
+  const pendingExchangeIds = new Set<string>();
 
   const enqueue = (
     operation: (writer: RolloutWriter) => Promise<void>
@@ -91,8 +93,11 @@ export function createActiveRollout(
   };
 
   const exchangeSink: ModelExchangeSink = {
-    onStep(exchange) {
-      return enqueue((writer) => recordExchange(writer, exchange));
+    onStepStarted(exchange) {
+      return enqueue((writer) => recordExchangeStarted(writer, exchange));
+    },
+    onStepCompleted(exchange) {
+      return enqueue((writer) => recordExchangeCompleted(writer, exchange));
     },
     async flush() {
       await operationTail;
@@ -209,10 +214,13 @@ export function createActiveRollout(
     }
   };
 
-  async function recordExchange(
+  async function recordExchangeStarted(
     writer: RolloutWriter,
-    exchange: ModelExchangeSnapshot
+    exchange: ModelExchangeStartedSnapshot
   ): Promise<void> {
+    if (pendingExchangeIds.has(exchange.exchangeId)) {
+      throw new Error(`Model exchange ${exchange.exchangeId} was already started.`);
+    }
     const requestMessages = normalizeMessages(exchange.request.messages ?? []);
     if (!initialized) {
       const prefixLength = initialPrefixLength(requestMessages);
@@ -256,7 +264,18 @@ export function createActiveRollout(
         await commitMessage(writer, message, inputSource(exchange, message.role));
       }
     }
+    pendingExchangeIds.add(exchange.exchangeId);
+  }
 
+  async function recordExchangeCompleted(
+    writer: RolloutWriter,
+    exchange: ModelExchangeSnapshot
+  ): Promise<void> {
+    if (!pendingExchangeIds.delete(exchange.exchangeId)) {
+      throw new Error(
+        `Model exchange ${exchange.exchangeId} completed without a matching start.`
+      );
+    }
     const generationId = randomUUID();
     const outputMessages =
       exchange.status === "cancelled" || !exchange.response
@@ -451,7 +470,7 @@ function synthesizeOutput(
 }
 
 function inputSource(
-  exchange: ModelExchangeSnapshot,
+  exchange: ModelExchangeStartedSnapshot,
   role: string
 ): MessageCommitSource {
   if (exchange.purpose === "dreaming") {

@@ -208,6 +208,17 @@ function createBarrierModel(): {
         running = true;
         try {
           options.onModelAttemptStart?.();
+          const firstRequest = [
+            { role: "system", content: "commit barrier fixture" },
+            { role: "user", content: context.transcript }
+          ];
+          const firstExchange = {
+            exchangeId: "commit-barrier-exchange-1",
+            purpose: "agent_action" as const,
+            request: requestSnapshot(0, firstRequest),
+            startedAt: NOW.toISOString()
+          };
+          await sessionOptions.exchangeSink?.onStepStarted(firstExchange);
           const send = sendProposal();
           await options.onToolExecutionStart?.(send);
           const connectorResult = await options.connector!.sendGroupMessage({
@@ -222,10 +233,6 @@ function createBarrierModel(): {
           };
           await options.onToolExecutionEnd?.(send, sendResult);
 
-          const firstRequest = [
-            { role: "system", content: "commit barrier fixture" },
-            { role: "user", content: context.transcript }
-          ];
           const firstResponse = [
             {
               role: "assistant",
@@ -250,16 +257,14 @@ function createBarrierModel(): {
               ]
             }
           ];
-          await sessionOptions.exchangeSink?.onStep({
-            purpose: "agent_action",
-            request: requestSnapshot(0, firstRequest),
+          await sessionOptions.exchangeSink?.onStepCompleted({
+            ...firstExchange,
             response: {
               messages: firstResponse,
               stepNumber: 0,
               finishReason: "tool-calls"
             },
             status: "completed",
-            startedAt: NOW.toISOString(),
             endedAt: NOW.toISOString()
           });
           effectStepPersisted.resolve();
@@ -273,6 +278,18 @@ function createBarrierModel(): {
           await allowSteeredAttempt.promise;
           options.onModelAttemptStart?.();
 
+          const secondRequest = [
+            ...firstRequest,
+            ...firstResponse,
+            { role: "user", content: pendingContext.transcript }
+          ];
+          const secondExchange = {
+            exchangeId: "commit-barrier-exchange-2",
+            purpose: "agent_action" as const,
+            request: requestSnapshot(1, secondRequest),
+            startedAt: NOW.toISOString()
+          };
+          await sessionOptions.exchangeSink?.onStepStarted(secondExchange);
           const leave = leaveProposal();
           const leaveResult: ToolExecutionResult = {
             proposal: leave,
@@ -282,11 +299,6 @@ function createBarrierModel(): {
           };
           await options.onToolExecutionStart?.(leave);
           await options.onToolExecutionEnd?.(leave, leaveResult);
-          const secondRequest = [
-            ...firstRequest,
-            ...firstResponse,
-            { role: "user", content: pendingContext.transcript }
-          ];
           const secondResponse = [
             {
               role: "assistant",
@@ -311,16 +323,14 @@ function createBarrierModel(): {
               ]
             }
           ];
-          await sessionOptions.exchangeSink?.onStep({
-            purpose: "agent_action",
-            request: requestSnapshot(1, secondRequest),
+          await sessionOptions.exchangeSink?.onStepCompleted({
+            ...secondExchange,
             response: {
               messages: secondResponse,
               stepNumber: 1,
               finishReason: "tool-calls"
             },
             status: "completed",
-            startedAt: NOW.toISOString(),
             endedAt: NOW.toISOString()
           });
           await options.onModelStepCommitted?.();

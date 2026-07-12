@@ -9,6 +9,7 @@ import type {
 export type ModelExchangePurpose = "agent_action" | "dreaming";
 
 export interface ModelExchangeSnapshot {
+  exchangeId: string;
   purpose: ModelExchangePurpose;
   request: ModelRequestSnapshot;
   response?: ModelResponseSnapshot;
@@ -88,7 +89,8 @@ function createCaptureSink(
   exchanges: ModelExchangeSnapshot[]
 ): ModelExchangeSink {
   return {
-    onStep(exchange) {
+    onStepStarted() {},
+    onStepCompleted(exchange) {
       exchanges.push(toCapturedExchange(exchange));
     }
   };
@@ -99,9 +101,13 @@ function mergeExchangeSinks(
   second: ModelExchangeSink
 ): ModelExchangeSink {
   return {
-    async onStep(exchange) {
-      await first?.onStep(exchange);
-      await second.onStep(exchange);
+    async onStepStarted(exchange) {
+      await first?.onStepStarted(exchange);
+      await second.onStepStarted(exchange);
+    },
+    async onStepCompleted(exchange) {
+      await first?.onStepCompleted(exchange);
+      await second.onStepCompleted(exchange);
     },
     async flush() {
       await first?.flush?.();
@@ -119,6 +125,7 @@ function toCapturedExchange(
     );
   }
   return {
+    exchangeId: exchange.exchangeId,
     purpose: exchange.purpose,
     request: exchange.request as ModelRequestSnapshot,
     ...(exchange.response

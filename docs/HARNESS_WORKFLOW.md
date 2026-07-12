@@ -645,6 +645,10 @@ all-interface binding plus same-origin browser guards. Responsive browser QA art
 The rollout-first Live API uses cursor-paged server-side search. Conversation
 timelines initially load only the newest page, rollout detail streams one target
 file, and full prompt reconstruction happens only for a selected generation.
+The newest conversation summaries and timeline page overlay committed in-memory
+session state on journal history, so an SSE-triggered read sees a message even
+while the journal writer is still inside its batch window. `verify:traces-ui`
+asserts this pre-flush visibility for both the chat list and timeline.
 SSE carries changed entity ids under count and byte budgets, so the client
 invalidates only affected queries instead of rescanning all journal and rollout
 history. Browser verification covers desktop, tablet, and mobile navigation,

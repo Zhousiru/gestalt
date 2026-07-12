@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { loadConfig } from "../home/loadConfig";
 import { resolveGestaltHome } from "../home/resolveGestaltHome";
+import type { ModelExchangeSink, ModelExchangeSnapshot } from "../model/session";
 import { createRolloutReader } from "../rollout";
 import { createDefaultToolRegistry } from "../tools/registry";
 import type { ActionProposal } from "../tools/schemas";
@@ -35,7 +36,8 @@ try {
     }
   ];
   const assistant = { role: "assistant", content: "ack" };
-  await rollout.exchangeSink.onStep({
+  const firstExchange: ModelExchangeSnapshot = {
+    exchangeId: "exchange-1",
     purpose: "agent_action",
     request: {
       provider: "test",
@@ -54,9 +56,29 @@ try {
     status: "completed",
     startedAt: now().toISOString(),
     endedAt: now().toISOString()
-  });
+  };
+  await rollout.exchangeSink.onStepStarted(firstExchange);
+  const inlineTool: ActionProposal = {
+    id: "inline-tool-1",
+    proposedAt: now().toISOString(),
+    toolName: "fetch_message",
+    params: { messageId: "quoted-message-1" }
+  };
+  await rollout.recordToolStarted(inlineTool, false);
+  await rollout.recordToolFinished(
+    inlineTool,
+    {
+      proposal: inlineTool,
+      status: "executed",
+      executedAt: now().toISOString(),
+      result: { ok: true, externalId: "quoted-message-1" }
+    },
+    false
+  );
+  await rollout.exchangeSink.onStepCompleted(firstExchange);
 
-  await rollout.exchangeSink.onStep({
+  await recordExchange(rollout.exchangeSink, {
+    exchangeId: "exchange-2",
     purpose: "agent_action",
     request: {
       provider: "test",
@@ -75,7 +97,8 @@ try {
     endedAt: now().toISOString()
   });
 
-  await rollout.exchangeSink.onStep({
+  await recordExchange(rollout.exchangeSink, {
+    exchangeId: "exchange-3",
     purpose: "agent_action",
     request: {
       provider: "test",
@@ -149,6 +172,25 @@ try {
   const detail = await reader.read("loop-1");
   assert.equal(detail.summary.status, "completed");
   assert.equal(detail.summary.generationCount, 3);
+  const initializedIndex = detail.records.findIndex(
+    (record) => record.type === "model_session_initialized"
+  );
+  const initialUserIndex = detail.records.findIndex(
+    (record) =>
+      record.type === "message_committed" && record.source === "user"
+  );
+  const inlineToolIndex = detail.records.findIndex(
+    (record) =>
+      record.type === "tool_completed" &&
+      record.toolCallId === inlineTool.id
+  );
+  const firstGenerationIndex = detail.records.findIndex(
+    (record) => record.type === "generation_completed"
+  );
+  assert.ok(initializedIndex > 0);
+  assert.ok(initialUserIndex > initializedIndex);
+  assert.ok(inlineToolIndex > initialUserIndex);
+  assert.ok(firstGenerationIndex > inlineToolIndex);
   assert.equal(detail.summary.outboundActionCount, 2);
   assert.deepEqual(detail.unresolvedOutboundActions, [
     {
@@ -232,6 +274,14 @@ try {
 function createClock(initial: string): () => Date {
   let time = Date.parse(initial);
   return () => new Date(time++);
+}
+
+async function recordExchange(
+  sink: ModelExchangeSink,
+  exchange: ModelExchangeSnapshot
+): Promise<void> {
+  await sink.onStepStarted(exchange);
+  await sink.onStepCompleted(exchange);
 }
 
 function findRolloutPath(timestamp: string, tracesDir: string): string {

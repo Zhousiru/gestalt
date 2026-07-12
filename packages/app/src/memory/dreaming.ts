@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import {
@@ -214,6 +214,7 @@ async function runDreamingToolLoop(
   const temperature = options.temperature ?? readModelTemperature(config) ?? 1;
   const modelStepRecorder = createModelStepRecorder(input.now);
   const pendingExchangeRequests: Array<{
+    exchangeId: string;
     request: ModelRequestSnapshot;
     startedAt: string;
   }> = [];
@@ -267,7 +268,7 @@ async function runDreamingToolLoop(
         toolChoice: "auto"
       };
     },
-    onStepStart(event) {
+    async onStepStart(event) {
       const request = snapshotStepRequest(event, {
         providerName: resolved.providerName,
         modelName: resolved.modelName,
@@ -282,10 +283,19 @@ async function runDreamingToolLoop(
             : {})
         }
       });
+      const exchangeId = randomUUID();
+      const startedAt = input.now().toISOString();
       modelStepRecorder.recordRequest(request);
       pendingExchangeRequests.push({
+        exchangeId,
         request,
-        startedAt: input.now().toISOString()
+        startedAt
+      });
+      await continuation.exchangeSink?.onStepStarted({
+        exchangeId,
+        purpose: "dreaming",
+        request,
+        startedAt
       });
       options.onRequest?.(request);
     },
@@ -297,7 +307,8 @@ async function runDreamingToolLoop(
       modelStepRecorder.recordResponse(response);
       const exchangeRequest = pendingExchangeRequests.shift();
       if (exchangeRequest) {
-        await continuation.exchangeSink?.onStep({
+        await continuation.exchangeSink?.onStepCompleted({
+          exchangeId: exchangeRequest.exchangeId,
           purpose: "dreaming",
           request: exchangeRequest.request,
           response,
@@ -330,7 +341,8 @@ async function runDreamingToolLoop(
     );
     const endedAt = input.now().toISOString();
     for (const exchangeRequest of unfinishedExchanges) {
-      await continuation.exchangeSink?.onStep({
+      await continuation.exchangeSink?.onStepCompleted({
+        exchangeId: exchangeRequest.exchangeId,
         purpose: "dreaming",
         request: exchangeRequest.request,
         status: "failed",

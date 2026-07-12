@@ -307,9 +307,20 @@ The model boundary exposes this test seam without importing harness code:
 
 ```ts
 interface ModelExchangeSink {
-  onStep(exchange: ModelExchangeSnapshot): void | Promise<void>;
+  onStepStarted(exchange: ModelExchangeStartedSnapshot): void | Promise<void>;
+  onStepCompleted(exchange: ModelExchangeSnapshot): void | Promise<void>;
 }
 ```
+
+The model boundary awaits `onStepStarted` before tool execution can begin. The
+rollout sink commits the initial model session and that generation's new input
+messages at this boundary. `onStepCompleted` later appends the immutable
+generation result and any committed assistant/tool output. A stable
+`exchangeId` joins the two callbacks. This keeps the authoritative stateful
+model/tool records in lifecycle order even when a provider executes tools
+inside a model step; readers never repair replay order by sorting timestamps.
+Completed diagnostic spans may still be appended later with their own explicit
+start/end times because they do not participate in state reconstruction.
 
 `model-requests.json`, `model-exchanges.json`, eval inputs, prefix-cache checks,
 and OneBot protocol evidence come from the harness capture sink. Replay and

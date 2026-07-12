@@ -21,17 +21,22 @@ export interface ModelClient {
 
 export type ModelExchangePurpose = "agent_action" | "dreaming";
 
-export interface ModelExchangeSnapshot {
+export interface ModelExchangeStartedSnapshot {
+  exchangeId: string;
   purpose: ModelExchangePurpose;
   request: ModelRequestTraceSnapshot;
+  startedAt?: string;
+}
+
+export interface ModelExchangeSnapshot extends ModelExchangeStartedSnapshot {
   response?: ModelResponseTraceSnapshot;
   status: "completed" | "failed" | "cancelled";
-  startedAt?: string;
   endedAt?: string;
 }
 
 export interface ModelExchangeSink {
-  onStep(exchange: ModelExchangeSnapshot): void | Promise<void>;
+  onStepStarted(exchange: ModelExchangeStartedSnapshot): void | Promise<void>;
+  onStepCompleted(exchange: ModelExchangeSnapshot): void | Promise<void>;
   flush?(): Promise<void>;
 }
 
@@ -238,22 +243,31 @@ function createMockModelSession(
               role: "user",
               content: currentContext.transcript
             });
+            const exchangeId = randomUUID();
+            const request: ModelRequestTraceSnapshot = {
+              provider: "mock",
+              model: "mock",
+              temperature: 0,
+              stepNumber: 0,
+              messages: [...messages],
+              tools: currentContext.tools.map((tool) => tool.name),
+              toolProtocol: currentContext.tools
+            };
+            await exchangeSink?.onStepStarted({
+              exchangeId,
+              purpose: "agent_action",
+              request,
+              startedAt
+            });
             const result = proposeMockActions(currentContext, now);
             const responseMessage = {
               role: "assistant",
               content: JSON.stringify(result.proposedActions)
             };
-            await exchangeSink?.onStep({
+            await exchangeSink?.onStepCompleted({
+              exchangeId,
               purpose: "agent_action",
-              request: {
-                provider: "mock",
-                model: "mock",
-                temperature: 0,
-                stepNumber: 0,
-                messages: [...messages],
-                tools: currentContext.tools.map((tool) => tool.name),
-                toolProtocol: currentContext.tools
-              },
+              request,
               response: {
                 messages: [responseMessage],
                 finishReason: "stop",

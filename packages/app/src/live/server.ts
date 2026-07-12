@@ -449,20 +449,24 @@ async function listConversations(
   const cursor = url.searchParams.has("cursor")
     ? decodeConversationCursor(url.searchParams.get("cursor") ?? "")
     : undefined;
-  const states = new Map(
-    options.runtime.sessionStore
-      .listConversationStates()
-      .map((state) => [getConversationKey(state.conversation), state] as const)
-  );
+  const states = options.runtime.sessionStore.listConversationStates();
   const since = new Date(
     options.now().valueOf() -
       options.sessionRecentHistoryHours * 60 * 60 * 1_000
   );
-  const seen = new Set<string>();
-  const items: ConversationSummary[] = [];
+  const summaries = new Map<string, ConversationSummary>();
+  for (const state of states) {
+    if (stateConversationMatches(state, query)) {
+      const summary = toConversationSummary(state);
+      summaries.set(summary.key, summary);
+    }
+  }
   let historyCursor: string | undefined;
+  const visibleSummaryCount = () => [...summaries.values()].filter(
+    (summary) => !cursor || isConversationAfterCursor(summary, cursor)
+  ).length;
 
-  while (items.length <= limit) {
+  while (visibleSummaryCount() <= limit) {
     const page = await options.runtime.sessionHistory.searchMessages(
       "",
       {},
@@ -472,34 +476,26 @@ async function listConversations(
     );
     for (const record of page.items) {
       const key = getConversationKey(record.event.conversation);
-      if (seen.has(key)) {
+      if (summaries.has(key)) {
         continue;
       }
       if (!historyConversationMatches(record, query)) {
         continue;
       }
-      // Mark the first (newest matching) occurrence even when it is before the
-      // page boundary, otherwise an older match could duplicate the
-      // conversation on a later page.
-      seen.add(key);
-      const cached = states.get(key);
-      const summary = cached && cached.events.at(-1)?.id === record.id
-        ? toConversationSummary(cached)
-        : toHistoryConversationSummary(record);
-      if (cursor && !isConversationAfterCursor(summary, cursor)) {
-        continue;
-      }
-      items.push(summary);
-      if (items.length > limit) {
+      summaries.set(key, toHistoryConversationSummary(record));
+      if (visibleSummaryCount() > limit) {
         break;
       }
     }
-    if (items.length > limit || !page.nextCursor) {
+    if (visibleSummaryCount() > limit || !page.nextCursor) {
       break;
     }
     historyCursor = page.nextCursor;
   }
 
+  const items = [...summaries.values()]
+    .filter((summary) => !cursor || isConversationAfterCursor(summary, cursor))
+    .sort(compareConversations);
   const pageItems = items.slice(0, limit);
   const last = pageItems.at(-1);
   return {
@@ -556,10 +552,13 @@ async function readConversationTimeline(
     }
     throw error;
   }
-  const messageItems = page.items.map(toTimelineMessage);
+  const records = cursor
+    ? page.items
+    : mergeCurrentSessionEvents(page.items, state?.events ?? [], messageLimit);
+  const messageItems = records.map(toTimelineMessage);
   const items = [...messageItems, ...rolloutMarkers].sort(compareTimelineItems);
   const effectiveState =
-    state ?? stateFromTimeline(conversation, page.items, rolloutMarkers);
+    state ?? stateFromTimeline(conversation, records, rolloutMarkers);
   return {
     conversation: toConversationSummary(effectiveState),
     items,
@@ -1725,6 +1724,43 @@ function historyConversationMatches(
     event.sender.id,
     event.sender.displayName
   ].some((value) => value?.toLowerCase().includes(query));
+}
+
+function stateConversationMatches(
+  state: ConversationSessionState,
+  query: string
+): boolean {
+  if (!query) return true;
+  return state.events.some((record) => historyConversationMatches(record, query)) ||
+    [
+      getConversationKey(state.conversation),
+      state.conversation.name
+    ].some((value) => value?.toLowerCase().includes(query));
+}
+
+function compareConversations(
+  left: ConversationSummary,
+  right: ConversationSummary
+): number {
+  const time = (right.lastAt ?? "").localeCompare(left.lastAt ?? "");
+  return time || left.key.localeCompare(right.key);
+}
+
+function mergeCurrentSessionEvents(
+  history: SessionEventRecord[],
+  current: SessionEventRecord[],
+  limit: number
+): SessionEventRecord[] {
+  const records = new Map<string, SessionEventRecord>();
+  for (const record of [...history, ...current]) {
+    records.set(record.id, record);
+  }
+  return [...records.values()]
+    .sort((left, right) => {
+      const time = right.receivedAt.localeCompare(left.receivedAt);
+      return time || right.id.localeCompare(left.id);
+    })
+    .slice(0, limit);
 }
 
 function isConversationAfterCursor(

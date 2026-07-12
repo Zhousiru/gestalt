@@ -36,8 +36,8 @@ await cp(
   tempHome,
   { recursive: true }
 );
-const fixedNow = new Date("2026-07-12T11:20:00.000Z");
-const now = () => new Date(fixedNow);
+let currentNow = new Date("2026-07-12T11:20:00.000Z");
+const now = () => new Date(currentNow);
 const bus = createLiveEventBus({ now });
 const runStore = createLiveRunStore(bus);
 const connector = createMockConnector({ now });
@@ -100,6 +100,34 @@ try {
   assert.equal(timeline.conversation.key, conversation.key);
   assert.equal(timeline.items.length, 1);
 
+  currentNow = new Date(currentNow.valueOf() + 1_000);
+  const liveEvent = connector.createMessageEvent({
+    conversationId: "trace-ui-group",
+    conversationName: "Trace UI Contract Group",
+    senderId: "bob",
+    senderName: "Bob",
+    messageId: "trace-ui-live-contract",
+    text: "live update without page refresh",
+    mentionsBot: false
+  });
+  await runtime.ingestEvent(liveEvent);
+  const liveConversations = ConversationsPageSchema.parse(
+    await fetchJson(`${server.url}/api/live/conversations?limit=1`)
+  );
+  assert.equal(liveConversations.items[0]?.lastText, liveEvent.message.text);
+  assert.equal(liveConversations.items[0]?.messageCount, 3);
+  const liveTimeline = ConversationTimelinePageSchema.parse(
+    await fetchJson(
+      `${server.url}/api/live/conversations/${encodeURIComponent(conversation.key)}/timeline?limit=10`
+    )
+  );
+  assert.ok(
+    liveTimeline.items.some(
+      (item) => item.type === "message" && item.messageId === liveEvent.message.id
+    ),
+    "newly committed in-memory message must be visible before the journal batch flushes"
+  );
+
   const rolloutPage = RolloutsPageSchema.parse(
     await fetchJson(`${server.url}/api/live/rollouts?limit=1&status=completed`)
   );
@@ -159,6 +187,11 @@ try {
     overview,
     conversation,
     timelineItems: timeline.items.length,
+    liveUpdate: {
+      lastText: liveConversations.items[0]?.lastText,
+      messageCount: liveConversations.items[0]?.messageCount,
+      timelineVisible: true
+    },
     rollout: rollout.summary,
     recordTypes: rollout.records.map((record) => record.type),
     generationId: generation.id,
@@ -172,12 +205,32 @@ try {
   console.log(JSON.stringify({ ...artifact, artifactDir }, null, 2));
   if (holdOpen) {
     console.log(`Trace UI preview: ${server.url}`);
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (input) => {
+      if (String(input).trim() !== "update") return;
+      void appendLiveUpdate();
+    });
     await waitForShutdownSignal();
   }
 } finally {
   await server.close();
   runStore.dispose();
   await rm(tempHome, { recursive: true, force: true });
+}
+
+async function appendLiveUpdate(): Promise<void> {
+  currentNow = new Date(currentNow.valueOf() + 1_000);
+  const event = connector.createMessageEvent({
+    conversationId: "trace-ui-group",
+    conversationName: "Trace UI Contract Group",
+    senderId: "bob",
+    senderName: "Bob",
+    messageId: `trace-ui-live-${currentNow.valueOf()}`,
+    text: `live update ${currentNow.toISOString()}`,
+    mentionsBot: false
+  });
+  await runtime.ingestEvent(event);
+  console.log(`Trace UI live update appended: ${event.message.id}`);
 }
 
 async function waitForShutdownSignal(): Promise<void> {
