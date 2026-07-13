@@ -55,6 +55,7 @@ try {
     proposal: ActionProposal;
     expectedConversation: { kind: "group" | "private"; id: string };
     expectedText: string;
+    expectedRaw?: Record<string, unknown>;
     resultData?: unknown;
   }> = [
     {
@@ -92,6 +93,10 @@ try {
       }),
       expectedConversation: { kind: "private", id: "sticker-user" },
       expectedText: "[表情包 sticker-1：celebration]",
+      expectedRaw: {
+        generatedBy: "send_sticker",
+        stickerId: "sticker-1"
+      },
       resultData: { stickerId: "sticker-1", desc: "celebration" }
     }
   ];
@@ -120,6 +125,7 @@ try {
     assert.equal(record.event.message.text, fixture.expectedText);
     assert.equal(record.event.sender.isSelf, true);
     assert.equal(record.event.message.id, `external-${index}`);
+    assert.deepEqual(record.event.raw, fixture.expectedRaw);
   }
 
   for (const fixture of cases) {

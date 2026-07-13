@@ -314,7 +314,13 @@ function readLanguageString(
   suffix: string
 ): string | undefined {
   const value = readLanguageValue(config, role, suffix);
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "string") {
+    throw new Error(`${languageConfigKey(role, suffix)} must be a string.`);
+  }
+  return value.trim() || undefined;
 }
 
 function readLanguageStringList(
@@ -336,7 +342,13 @@ function readLanguageBoolean(
   suffix: string
 ): boolean | undefined {
   const value = readLanguageValue(config, role, suffix);
-  return typeof value === "boolean" ? value : undefined;
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "boolean") {
+    throw new Error(`${languageConfigKey(role, suffix)} must be a boolean.`);
+  }
+  return value;
 }
 
 function readLanguageValue(
@@ -345,27 +357,22 @@ function readLanguageValue(
   suffix: string
 ): GestaltConfig["flatValues"][string] | undefined {
   if (role === "sub") {
-    const subValue = config.flatValues[languageConfigKey("sub", suffix)];
-    return isConfiguredValue(subValue)
-      ? subValue
-      : readLanguageValue(config, "main", suffix);
+    const subKey = languageConfigKey("sub", suffix);
+    if (Object.hasOwn(config.flatValues, subKey)) {
+      return config.flatValues[subKey];
+    }
+    return readLanguageValue(config, "main", suffix);
   }
 
-  const mainValue = config.flatValues[languageConfigKey("main", suffix)];
-  if (isConfiguredValue(mainValue)) {
-    return mainValue;
+  const mainKey = languageConfigKey("main", suffix);
+  if (Object.hasOwn(config.flatValues, mainKey)) {
+    return config.flatValues[mainKey];
   }
   return config.flatValues[`model_${suffix}`];
 }
 
 function languageConfigKey(role: LanguageModelRole, suffix: string): string {
   return `${role}_model_${suffix}`;
-}
-
-function isConfiguredValue(
-  value: GestaltConfig["flatValues"][string] | undefined
-): boolean {
-  return value !== undefined && value !== "";
 }
 
 function requireConfigString(config: GestaltConfig, key: string): string {

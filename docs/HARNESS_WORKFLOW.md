@@ -122,6 +122,18 @@ The current real-model baseline uses an AI SDK OpenAI-compatible model. Provider
 - `bot_user_id` and `bot_display_name`: identity used when recording successful bot group-message tool calls back into session history.
 - `allowedgroups`: optional group id allowlist. When present, runtime-triggered group events outside the array are ignored before session ingestion.
 
+GestaltHome config parsing and strict-schema behavior has its own durable
+fixture and artifact export. Run it after adding a config key, changing a
+default or inheritance rule, or changing TOML parsing behavior:
+
+```bash
+pnpm --filter @gestalt/harness run verify:config
+```
+
+Inspect `harness/artifacts/config-validation/resolved-config.json` and
+`report.md`; the artifact proves resolved sub-model routing and records the
+expected validation failures for malformed, unknown, or inconsistent config.
+
 Some OpenAI-compatible providers reject forced tool choice. In that case use `model_tool_choice = "auto"` and let the model decide whether to call tools. Harness assertions must still verify that the real model actually called the expected tool.
 
 ### Eval Judge Configuration
@@ -532,8 +544,13 @@ For GestaltHome behavior, verify:
 - Exported journal/session evidence records the expected stable event ids,
   window reason, and turn.
 - `model-requests.json` records that the real configured model saw the trigger-created window transcript.
-- Keyword windows currently verify `send_group_message -> leave` because the message naturally addresses the persona by name.
-- Activity and icebreaker windows currently verify direct `leave` with no visible side effect when the chat itself does not invite the persona to join; the hidden trigger reason is not used to force a visible response.
+- Trigger fixtures verify activation, context, and any socially expected visible
+  action without requiring `leave` as the terminal action. A loop may close via
+  explicit `leave`, consecutive `say_nothing`, or idle timeout; dedicated mock
+  lifecycle fixtures verify each exact exit mechanism deterministically.
+- Activity and icebreaker windows verify admission and model context without
+  prescribing a visible action; the hidden trigger reason is not used to force
+  a response or a particular exit tool.
 
 `group-context-history.json` verifies:
 
@@ -556,7 +573,8 @@ For GestaltHome behavior, verify:
 - The batched message enters the same turn as a `steer` window.
 - The exported session records two windows but only one completed turn with `steerCount: 1`.
 - The real configured model sees two natural chat-log messages appended to one model session, without initial/steer window narration.
-- The resulting turn verifies `send_group_message -> leave`.
+- The resulting turn verifies that the steered message reaches the same model
+  session; both the visible action and loop closure remain model/runtime choices.
 
 `multi-step-agent-tools.json` verifies:
 

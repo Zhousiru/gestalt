@@ -23,6 +23,7 @@ const tempHome = await mkdtemp(path.join(os.tmpdir(), "gestalt-inspect-"));
 
 const inspectedInputs: InspectRunInput[] = [];
 const inspectedStdout: string[] = [];
+const inspectedCommands: string[] = [];
 
 const inspectRunner: InspectRunner = {
   async run(input) {
@@ -36,6 +37,7 @@ const inspectRunner: InspectRunner = {
     ].join("; ");
     const bashResult = await bash.exec(command);
     inspectedStdout.push(bashResult.stdout);
+    inspectedCommands.push(...bash.commands.map((result) => result.command));
 
     const reportText = [
       `inspect ok: ${input.command.query}`,
@@ -112,7 +114,8 @@ try {
   const inspectedInput = inspectedInputs[0];
   assert.ok(inspectedInput, "expected inspect runner input");
   assert.equal(inspectedInput.command.query, "为什么刚才会发那句话");
-  assert.equal(inspectedInput.eventRecord.event.id, "inspect-message-1");
+  assert.equal(inspectedInput.eventRecord.event.id, inspectEvent.id);
+  assert.equal(inspectedInput.eventRecord.event.message.id, "inspect-message-1");
 
   assert.equal(connector.sentGroupMessages.length, 1);
   assert.match(
@@ -134,13 +137,29 @@ try {
     readStringProperty(conversation.events[1]?.event.raw, "generatedBy"),
     "inspect"
   );
+  assert.equal(
+    readStringProperty(conversation.events[1]?.event.raw, "requestEventId"),
+    inspectEvent.id
+  );
+  assert.equal(
+    readStringProperty(conversation.events[1]?.event.raw, "requestMessageId"),
+    "inspect-message-1"
+  );
 
   const stdout = inspectedStdout.join("\n");
-  assert.match(stdout, /000001\.jsonl/);
-  assert.match(stdout, /rollout-inspect-fixture\.jsonl/);
   assert.match(stdout, /inspect-message-1/);
-  assert.match(stdout, /trace-inspect-fixture/);
+  assert.match(stdout, /rolloutId":"inspect-fixture/);
   assert.match(stdout, /prior action evidence/);
+  assert.ok(
+    inspectedCommands.some((command) =>
+      command.includes("/sessions/journal/2026-07-08/000001.jsonl")
+    )
+  );
+  assert.ok(
+    inspectedCommands.some((command) =>
+      command.includes("/traces/2026/07/08/rollout-inspect-fixture.jsonl")
+    )
+  );
 
   console.log(
     JSON.stringify(

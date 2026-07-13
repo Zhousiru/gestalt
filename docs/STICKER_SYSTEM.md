@@ -193,8 +193,10 @@ CQ, and `read_image` keeps the original `file` value while attaching connector-
 returned image bytes to the next main-model step. Outgoing `send_sticker` actions are recorded in transcript history as
 `[表情包 <sticker_id>：<desc>]`; the proposal's exact id is therefore the durable
 association between the model action, the local record, the send log, and the
-synthetic self-message. The self event also stores `raw.stickerId`, so replay
-never has to parse the human-readable transcript text to recover the link.
+synthetic self-message. The self event also stores the allowlisted runtime
+metadata `raw.generatedBy = "send_sticker"` and `raw.stickerId`, so replay never
+has to parse the human-readable transcript text to recover the link. Ordinary
+connector `raw` trees remain excluded from session memory and diagnostics.
 The model-visible send result contains only `stickerId` and `desc`; native/image
 delivery and fallback details remain internal lifecycle logs.
 

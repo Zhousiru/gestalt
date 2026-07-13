@@ -71,7 +71,8 @@ export async function commitOutboundMessage(
         ...(target.replyToMessageId
           ? { replyToMessageId: target.replyToMessageId }
           : {})
-      }
+      },
+      ...(target.raw ? { raw: target.raw } : {})
     },
     { receivedAt: occurredAt }
   );
@@ -88,6 +89,7 @@ function outboundMessageTarget(
       conversation: Conversation;
       text: string;
       replyToMessageId?: string;
+      raw?: Record<string, unknown>;
     }
   | undefined {
   switch (proposal.toolName) {
@@ -132,6 +134,10 @@ function outboundMessageTarget(
           sourceEvent
         ),
         text: stickerTranscriptText(proposal, result),
+        raw: {
+          generatedBy: "send_sticker",
+          stickerId: proposal.params.stickerId
+        },
         ...(proposal.params.replyToMessageId
           ? { replyToMessageId: proposal.params.replyToMessageId }
           : {})

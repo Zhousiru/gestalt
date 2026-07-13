@@ -26,6 +26,19 @@ only `sub_model_name`, or omit the entire role to use the main model.
 If neither the sub role nor its inherited main role specifies temperature, the
 resolved default is `1`.
 
+Inheritance is based on key presence, not truthiness. For optional string
+settings, an explicitly empty value clears the inherited value. For example,
+when the sub model differs from the main model and should use OpenRouter's
+automatic provider selection instead of inheriting the main provider order:
+
+```toml
+sub_model_name = "qwen/qwen3.5-9b"
+sub_model_routing_order = ""
+```
+
+The resolved sub request then omits `provider.order`. Other omitted sub fields
+continue to inherit normally.
+
 ```toml
 sub_model_name = "a-vision-capable-model"
 sub_model_temperature = 1
@@ -120,3 +133,17 @@ inherits the resolved main role.
 
 The `model_*` keys in `harness/config/eval.toml` are intentionally separate.
 They configure the external eval judge, not a Gestalt runtime model role.
+
+## File parsing and validation
+
+GestaltHome `config.toml` is parsed as TOML and validated against one strict Zod
+schema before runtime components consume it. The runtime rejects malformed
+TOML, nested tables, unknown keys, invalid value types, out-of-range values, and
+inconsistent aggregation delay bounds. This is intentional: a misspelled key
+must fail startup instead of silently falling back to a default.
+
+Run the durable config verification with:
+
+```text
+pnpm --filter @gestalt/harness run verify:config
+```

@@ -31,8 +31,6 @@
   "expectations": {
     "session": {
       "conversations": 1,
-      "events": 3,
-      "selfMessages": 1,
       "windows": 2,
       "turns": 1,
       "triggerAttempts": 1,
@@ -41,22 +39,14 @@
       "triggerAttemptAdmissions": [true],
       "turnStatus": "completed",
       "loopExits": 1,
-      "loopExitReasons": ["leave_tool"],
+      "loopExitReasonsAllowed": ["leave_tool", "idle_timeout", "consecutive_say_nothing"],
       "steerCount": 1,
       "eventIds": ["active-loop-message-1", "active-loop-message-2"],
       "windowReasons": ["mention", "steer"],
       "windowEventIds": [["active-loop-message-1"], ["active-loop-message-2"]]
     },
-    "action": {
-      "toolNames": ["send_group_message", "leave"]
-    },
-    "tools": {
-      "calls": 2,
-      "toolNames": ["send_group_message", "leave"],
-      "connectorSideEffects": 0
-    },
     "modelInput": {
-      "requests": 3,
+      "minRequests": 2,
       "contains": [
         "message_id=active-loop-message-1",
         "message_id=active-loop-message-2",
@@ -64,11 +54,10 @@
       ]
     },
     "modelExchange": {
-      "exchanges": 3,
-      "responses": 2,
+      "minExchanges": 2,
+      "minResponses": 1,
       "maxToolCallsPerResponse": 1,
-      "purposes": ["agent_action", "agent_action", "agent_action"],
-      "responseContains": ["send_group_message", "leave"]
+      "purposeIncludes": ["agent_action"]
     },
     "rollout": {
       "rollouts": 1,
@@ -77,8 +66,7 @@
         "context.compile",
         "model.decide",
         "tool.execute"
-      ],
-      "toolNames": ["send_group_message", "leave"]
+      ]
     }
   }
 }

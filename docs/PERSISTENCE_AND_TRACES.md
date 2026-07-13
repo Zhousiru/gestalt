@@ -111,6 +111,10 @@ all journal history to filter it in memory.
 
 Any bounded session object exported to the harness or Live UI is a diagnostic
 view, not a startup persistence format and not valid replay input.
+Connector transport `raw` trees are removed from both the in-memory working set
+and exported diagnostics. Runtime-created self events may retain only a strict,
+reconstructed allowlist of non-secret correlation fields, such as a sent
+sticker's `generatedBy` marker and `stickerId`.
 
 The public storage seams are deliberately small:
 

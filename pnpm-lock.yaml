@@ -73,6 +73,9 @@ importers:
       sharp:
         specifier: ^0.35.3
         version: 0.35.3(@types/node@26.1.0)
+      smol-toml:
+        specifier: ^1.7.0
+        version: 1.7.0
       ws:
         specifier: ^8.21.0
         version: 8.21.0

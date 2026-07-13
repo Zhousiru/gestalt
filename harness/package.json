@@ -18,6 +18,7 @@
     "verify:agent": "tsx src/multiStepAgent.verify.ts",
     "verify:cache": "tsx src/prefixCache.verify.ts",
     "verify:dream-cache": "tsx src/dreamingPrefixCache.verify.ts",
+    "verify:config": "tsx src/config.verify.ts",
     "verify:eval-config": "tsx src/evalModelConfig.verify.ts",
     "verify:prompts": "tsx src/promptCatalog.verify.ts",
     "verify:app-config": "tsx src/appHostConfig.verify.ts",

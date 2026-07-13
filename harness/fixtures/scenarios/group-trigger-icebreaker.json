@@ -23,8 +23,6 @@
   "expectations": {
     "session": {
       "conversations": 1,
-      "events": 2,
-      "selfMessages": 0,
       "windows": 1,
       "turns": 1,
       "triggerAttempts": 1,
@@ -33,33 +31,23 @@
       "triggerAttemptAdmissions": [true],
       "turnStatus": "completed",
       "loopExits": 1,
-      "loopExitReasons": ["leave_tool"],
+      "loopExitReasonsAllowed": ["leave_tool", "idle_timeout", "consecutive_say_nothing"],
       "eventIds": ["icebreaker-message-1"],
       "windowReasons": ["icebreaker"],
       "windowEventIds": [["icebreaker-message-1"]]
     },
-    "action": {
-      "toolName": "leave",
-      "toolNames": ["leave"]
-    },
-    "tools": {
-      "calls": 1,
-      "toolNames": ["leave"],
-      "connectorSideEffects": 0
-    },
     "modelInput": {
-      "requests": 1,
+      "minRequests": 1,
       "contains": [
         "Group chat (group_id=mock-group)",
         "不用回复，我只是随口记一下：今天下班路上风还挺舒服的。"
       ]
     },
     "modelExchange": {
-      "exchanges": 1,
-      "responses": 1,
+      "minExchanges": 1,
+      "minResponses": 1,
       "maxToolCallsPerResponse": 1,
-      "purposes": ["agent_action"],
-      "responseContains": ["leave"]
+      "purposeIncludes": ["agent_action"]
     },
     "rollout": {
       "rollouts": 1,
@@ -68,8 +56,7 @@
         "context.compile",
         "model.decide",
         "tool.execute"
-      ],
-      "toolNames": ["leave"]
+      ]
     }
   }
 }

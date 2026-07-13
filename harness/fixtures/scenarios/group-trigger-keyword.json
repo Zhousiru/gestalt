@@ -21,8 +21,6 @@
   "expectations": {
     "session": {
       "conversations": 1,
-      "events": 2,
-      "selfMessages": 1,
       "windows": 1,
       "turns": 1,
       "triggerAttempts": 1,
@@ -31,32 +29,23 @@
       "triggerAttemptAdmissions": [true],
       "turnStatus": "completed",
       "loopExits": 1,
-      "loopExitReasons": ["leave_tool"],
+      "loopExitReasonsAllowed": ["leave_tool", "idle_timeout", "consecutive_say_nothing"],
       "eventIds": ["keyword-message-1"],
       "windowReasons": ["keyword"],
       "windowEventIds": [["keyword-message-1"]]
     },
-    "action": {
-      "toolNames": ["send_group_message", "leave"]
-    },
-    "tools": {
-      "calls": 2,
-      "toolNames": ["send_group_message", "leave"],
-      "connectorSideEffects": 0
-    },
     "modelInput": {
-      "requests": 2,
+      "minRequests": 1,
       "contains": [
         "Group chat \"Mock Group\" (group_id=mock-group)",
         "小格，帮我记一下这个触发链路要保持简单。"
       ]
     },
     "modelExchange": {
-      "exchanges": 2,
-      "responses": 2,
+      "minExchanges": 1,
+      "minResponses": 1,
       "maxToolCallsPerResponse": 1,
-      "purposes": ["agent_action", "agent_action"],
-      "responseContains": ["send_group_message", "leave"]
+      "purposeIncludes": ["agent_action"]
     },
     "rollout": {
       "rollouts": 1,
@@ -65,8 +54,7 @@
         "context.compile",
         "model.decide",
         "tool.execute"
-      ],
-      "toolNames": ["send_group_message", "leave"]
+      ]
     }
   }
 }

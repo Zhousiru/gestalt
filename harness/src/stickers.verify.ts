@@ -1483,11 +1483,21 @@ async function verifyRuntimeStickerTranscript(input: {
       };
     }
   };
+  const runtimeFailures: string[] = [];
   const runtime = await createRuntime({
     gestaltHome: runtimeHome,
     connector: input.connector,
     model,
     stickerService: input.service,
+    liveEvents: {
+      publish(type, data, at = new Date().toISOString()) {
+        const summary = asRecord(data)?.summary;
+        if (typeof summary === "string" && summary.includes("failed")) {
+          runtimeFailures.push(summary);
+        }
+        return { id: runtimeFailures.length + 1, type, at, data };
+      }
+    },
     now: createClock()
   });
   const event = createStickerEvent({
@@ -1505,6 +1515,7 @@ async function verifyRuntimeStickerTranscript(input: {
   });
   const conversation = session.conversations[0];
   assert.ok(conversation);
+  assert.deepEqual(runtimeFailures, [], "Runtime self-event commit must succeed.");
   const rolloutId = conversation.turns[0]?.rolloutId;
   const agentTraceId = turnResult?.traceId;
   assert.ok(rolloutId, "Sticker tool execution must belong to a rollout.");

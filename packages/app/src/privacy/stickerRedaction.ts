@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { MessageReceivedEvent } from "../events/schemas";
+import { readSafeRuntimeEventRaw } from "./runtimeEventMetadata";
 
 export function visibleMessageText(
   event: MessageReceivedEvent,
@@ -144,8 +145,14 @@ function sanitizeValue(
   const output: Record<string, unknown> = {};
   for (const [key, item] of Object.entries(input)) {
     const safeBinaryMedia = key === "media" && containsBinaryDescriptor(item);
+    if (key === "raw") {
+      const safeRuntimeRaw = readSafeRuntimeEventRaw(input, item);
+      if (safeRuntimeRaw) {
+        output[key] = safeRuntimeRaw;
+      }
+      continue;
+    }
     if (
-      key === "raw" ||
       key === "sourceContent" ||
       key === "segment" ||
       key === "segments" ||

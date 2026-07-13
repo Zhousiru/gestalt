@@ -71,6 +71,7 @@ export const ScenarioSessionExpectationsSchema = z
     triggerAttemptAdmissions: z.array(z.boolean()).optional(),
     loopExits: z.number().int().nonnegative().optional(),
     loopExitReasons: z.array(z.string().min(1)).optional(),
+    loopExitReasonsAllowed: z.array(z.string().min(1)).min(1).optional(),
     phases: z.array(z.string().min(1)).optional(),
     journalRecords: z.number().int().nonnegative().optional(),
     minJournalRecords: z.number().int().nonnegative().optional()
@@ -112,6 +113,7 @@ export const ScenarioToolExpectationsSchema = z
 export const ScenarioModelInputExpectationsSchema = z
   .object({
     requests: z.number().int().nonnegative().optional(),
+    minRequests: z.number().int().nonnegative().optional(),
     contains: z.array(z.string().min(1)).optional(),
     doesNotContain: z.array(z.string().min(1)).optional(),
     tools: z.array(z.string().min(1)).optional()

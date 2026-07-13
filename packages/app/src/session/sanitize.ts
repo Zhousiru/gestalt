@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { readSafeRuntimeEventRaw } from "../privacy/runtimeEventMetadata";
 import { sanitizeUntrustedValue } from "../privacy/stickerRedaction";
 
 const DATA_URI_PATTERN =
@@ -19,7 +20,9 @@ export function sanitizeSessionValue(value: unknown): unknown {
 
 /**
  * Keeps the connector-authorized message structure needed by the active loop,
- * but never retains transport `raw` trees or binary bytes in SessionStore.
+ * but never retains connector transport `raw` trees or binary bytes in
+ * SessionStore. A strict allowlist preserves only bounded correlation metadata
+ * on runtime-created self events.
  * Locators remain memory-only and are removed by sanitizeSessionValue before
  * journal, diagnostics, Live, or log serialization.
  */
@@ -80,11 +83,13 @@ function sanitizeBinaryRepresentations(
       );
     }
     return Object.fromEntries(
-      Object.entries(record).flatMap(([key, item]) =>
-        options.omitRawFields && key === "raw"
-          ? []
-          : [[key, sanitizeBinaryRepresentations(item, options, ancestors)]]
-      )
+      Object.entries(record).flatMap(([key, item]) => {
+        if (options.omitRawFields && key === "raw") {
+          const safeRuntimeRaw = readSafeRuntimeEventRaw(record, item);
+          return safeRuntimeRaw ? [[key, safeRuntimeRaw]] : [];
+        }
+        return [[key, sanitizeBinaryRepresentations(item, options, ancestors)]];
+      })
     );
   } finally {
     ancestors.delete(value);

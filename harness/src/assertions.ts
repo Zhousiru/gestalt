@@ -72,6 +72,14 @@ function assertSession(result: ReplayRunResult): void {
       expected.loopExitReasons
     );
   }
+  if (expected.loopExitReasonsAllowed !== undefined) {
+    for (const exit of conversation.loopExits) {
+      assert.ok(
+        expected.loopExitReasonsAllowed.includes(exit.reason),
+        `unexpected loop exit reason ${exit.reason}; expected one of ${expected.loopExitReasonsAllowed.join(", ")}`
+      );
+    }
+  }
 
   if (expected.journalRecords !== undefined) {
     assert.equal(result.sessionJournal.length, expected.journalRecords);
@@ -237,6 +245,12 @@ function assertModelInput(result: ReplayRunResult): void {
 
   if (expected.requests !== undefined) {
     assert.equal(result.modelRequests.length, expected.requests);
+  }
+  if (expected.minRequests !== undefined) {
+    assert.ok(
+      result.modelRequests.length >= expected.minRequests,
+      `expected at least ${expected.minRequests} model requests`
+    );
   }
 
   if (result.modelRequests.length === 0) {

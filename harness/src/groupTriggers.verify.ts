@@ -90,7 +90,7 @@ async function verifyInvalidProbability(): Promise<{ rejected: boolean }> {
     );
     await assert.rejects(
       createRuntime({ gestaltHome: tempHome }),
-      /trigger_activity_probability must be between 0 and 1/
+      /trigger_activity_probability: must be between 0 and 1/
     );
     return { rejected: true };
   } finally {

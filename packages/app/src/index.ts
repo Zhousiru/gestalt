@@ -13,6 +13,7 @@ export * from "./events/helpers";
 export * from "./events/schemas";
 export * from "./home/loadEnv";
 export * from "./home/loadConfig";
+export * from "./home/configSchema";
 export * from "./home/resolveGestaltHome";
 export * from "./home/resolveAppHostConfig";
 export * from "./inspect/agent";

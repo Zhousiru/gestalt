@@ -1,0 +1,21 @@
+# This fixture intentionally uses TOML features the former line parser mishandled.
+allowedgroups = [
+  "10001",
+  "10002",
+]
+bot_display_name = "露米 \"Lumi\"" # inline comments are valid TOML
+
+main_model_provider = "openrouter"
+main_model_base_url = "https://openrouter.ai/api/v1"
+main_model_name = "xiaomi/mimo-v2.5"
+main_model_routing_order = "xiaomi"
+main_model_routing_allow_fallbacks = true
+main_model_thinking = "disabled"
+
+sub_model_name = "qwen/qwen3.5-9b"
+# Presence with an empty value clears the inherited main provider order.
+sub_model_routing_order = ""
+
+agent_loop_aggregation_delay_ms = 3000
+agent_loop_aggregation_max_delay_ms = 15000
+agent_loop_aggregation_backoff_multiplier = 1.5
