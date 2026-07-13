@@ -332,10 +332,13 @@ Run the production bundle check:
 pnpm run build
 ```
 
-The app build keeps npm dependencies external and runs them from the existing
-`node_modules`. Verify that the generated ESM entry can load dotenv, config, and
-the runtime from the committed smoke-test GestaltHome, not only that compilation
-succeeded:
+The app build keeps third-party npm dependencies external and runs them from the
+deployed `node_modules`, while bundling the workspace-owned
+`@gestalt/live-contracts` source into the App entry. This prevents a production
+`pnpm deploy` layout from asking Node to execute TypeScript beneath
+`node_modules`. Verify that the generated ESM entry contains no runtime import
+of that workspace package and can load dotenv, config, and the runtime from the
+committed smoke-test GestaltHome, not only that compilation succeeded:
 
 ```bash
 pnpm run verify:build

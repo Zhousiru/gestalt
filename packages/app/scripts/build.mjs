@@ -10,6 +10,10 @@ const packageRoot = path.resolve(
 const outdir = path.join(packageRoot, "dist");
 const traceRoot = path.resolve(packageRoot, "../trace");
 const traceDist = path.join(traceRoot, "dist");
+const liveContractsEntry = path.resolve(
+  packageRoot,
+  "../live-contracts/src/index.ts"
+);
 
 await rm(outdir, { recursive: true, force: true });
 await requireTraceBuild(traceDist);
@@ -23,8 +27,21 @@ await build({
   format: "esm",
   target: "node24",
   sourcemap: true,
+  plugins: [bundleLiveContracts()],
   logLevel: "info"
 });
+
+function bundleLiveContracts() {
+  return {
+    name: "bundle-live-contracts",
+    setup(buildContext) {
+      buildContext.onResolve(
+        { filter: /^@gestalt\/live-contracts$/ },
+        () => ({ path: liveContractsEntry })
+      );
+    }
+  };
+}
 
 async function requireTraceBuild(directory) {
   try {

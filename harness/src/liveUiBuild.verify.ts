@@ -31,6 +31,13 @@ const artifactDir = path.join(
 const tempHome = await mkdtemp(path.join(os.tmpdir(), "gestalt-build-smoke-"));
 const port = await findAvailablePort();
 const fixtureConfig = await readFile(fixturePath, "utf8");
+const appEntry = path.join(appRoot, "dist", "main.js");
+const appBundle = await readFile(appEntry, "utf8");
+assert.doesNotMatch(
+  appBundle,
+  /from\s+["']@gestalt\/live-contracts["']/,
+  "The production entry must bundle live contracts instead of loading TypeScript from node_modules."
+);
 await writeFile(
   path.join(tempHome, "config.toml"),
   fixtureConfig
@@ -41,7 +48,7 @@ await writeFile(
 
 const child = spawn(
   process.execPath,
-  [path.join(appRoot, "dist", "main.js"), "--home", tempHome],
+  [appEntry, "--home", tempHome],
   {
     cwd: appRoot,
     env: process.env,
@@ -106,7 +113,8 @@ try {
 
   const artifact = {
     ok: true,
-    appEntry: path.join(appRoot, "dist", "main.js"),
+    appEntry,
+    liveContractsBundled: true,
     uiIndex: path.join(appRoot, "dist", "live-ui", "index.html"),
     liveUrl: origin,
     apiAndUiSharePort: true,
