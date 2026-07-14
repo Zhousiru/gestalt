@@ -59,7 +59,12 @@ try {
     configuredDimensions: 3,
     async embed(text) {
       return {
-        vector: text.includes("庆祝") ? [0, 1, 0] : [1, 0, 0]
+        vector:
+          text.includes("庆祝") ||
+          text.toLowerCase().includes("blue") ||
+          text.toLowerCase().includes("celebration")
+            ? [0, 1, 0]
+            : [1, 0, 0]
       };
     }
   };
@@ -217,6 +222,18 @@ try {
       }
     );
     assert.equal(crossOriginMutationResponse.status, 403);
+    const crossOriginRecallResponse = await fetch(
+      `${server.url}/api/live/stickers/recall`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          origin: "https://attacker.example"
+        },
+        body: JSON.stringify({ query: "庆祝", limit: 3 })
+      }
+    );
+    assert.equal(crossOriginRecallResponse.status, 403);
     const legacySnapshotResponse = await fetch(
       `${server.url}/api/live/snapshot`
     );
@@ -298,6 +315,66 @@ try {
       /sandbox/
     );
     assert.ok((await assetResponse.arrayBuffer()).byteLength > 0);
+
+    const recallMethodResponse = await fetch(
+      `${server.url}/api/live/stickers/recall`
+    );
+    assert.equal(recallMethodResponse.status, 405);
+    const invalidRecallResponse = await fetch(
+      `${server.url}/api/live/stickers/recall`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ query: "   ", limit: 3 })
+      }
+    );
+    assert.equal(invalidRecallResponse.status, 400);
+    const rowCountBeforeRecall = snapshot.embedding.rowCount;
+    const recallResponse = await fetch(
+      `${server.url}/api/live/stickers/recall`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ query: "庆祝", limit: 2 })
+      }
+    );
+    assert.equal(recallResponse.status, 200);
+    const recall = (await recallResponse.json()) as {
+      query: string;
+      limit: number;
+      returned: number;
+      results: Array<{
+        rank: number;
+        stickerId: string;
+        desc: string;
+        distance?: number;
+        affinity?: number;
+        thumbnailUrl: string;
+        contactSheetUrl?: string;
+      }>;
+    };
+    assert.equal(recall.query, "庆祝");
+    assert.equal(recall.limit, 2);
+    assert.equal(recall.returned, 2);
+    assert.deepEqual(
+      recall.results.map((result) => result.rank),
+      [1, 2]
+    );
+    assert.equal(recall.results[0]?.stickerId, animated.id);
+    assert.match(recall.results[0]?.desc ?? "", /blue character/);
+    assert.equal(recall.results[0]?.distance, 0);
+    assert.equal(recall.results[0]?.affinity, 1);
+    assert.ok(recall.results[0]?.contactSheetUrl);
+    assert.match(
+      recall.results[0]?.thumbnailUrl ?? "",
+      /^\/api\/live\/stickers\/assets\/[^/]+\/original$/
+    );
+    assert.ok((recall.results[1]?.distance ?? 0) > 0);
+    assert.ok((recall.results[1]?.affinity ?? 1) < 1);
+    assert.equal(
+      (await service.snapshot()).embedding.rowCount,
+      rowCountBeforeRecall
+    );
 
     const managementMethodResponse = await fetch(
       `${server.url}/api/live/stickers/manage`
@@ -506,6 +583,17 @@ try {
       },
       sseCatalogUpdateObserved: true,
       sseSummaryOnlyObserved: true,
+      recall: {
+        query: recall.query,
+        limit: recall.limit,
+        returned: recall.returned,
+        topStickerId: recall.results[0]?.stickerId,
+        topDistance: recall.results[0]?.distance,
+        topAffinity: recall.results[0]?.affinity,
+        rowCountUnchanged: true,
+        invalidRequestRejected: true,
+        crossOriginRequestRejected: true
+      },
       management: {
         batchRebuild: {
           requested: rebuildResult.requested,

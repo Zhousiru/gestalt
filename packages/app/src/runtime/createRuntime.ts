@@ -73,7 +73,9 @@ import {
   createStickerToolImplementations,
   isStickerSubsystemConfigured,
   readOperatorUserIds,
-  readStickerScrapingEnabled
+  readStickerRecommendationConfig,
+  readStickerScrapingEnabled,
+  withStickerRecommendations
 } from "../stickers/integration";
 import type { StickerService } from "../stickers/service";
 import { type AgentTurnResult } from "./agentLoop";
@@ -177,6 +179,7 @@ export async function createRuntime(
   }
   const connector = options.connector ?? createMockConnector();
   readStickerScrapingEnabled(config);
+  const stickerRecommendationConfig = readStickerRecommendationConfig(config);
   const stickerService =
     options.stickerService ??
     (isStickerSubsystemConfigured(config)
@@ -192,10 +195,17 @@ export async function createRuntime(
   const stickerToolImplementations = stickerService
     ? createStickerToolImplementations(stickerService)
     : {};
-  const toolImplementations = {
+  const baseToolImplementations = {
     ...stickerToolImplementations,
     ...(options.toolImplementations ?? {})
   };
+  const toolImplementations = stickerService
+    ? withStickerRecommendations({
+        service: stickerService,
+        config: stickerRecommendationConfig,
+        implementations: baseToolImplementations
+      })
+    : baseToolImplementations;
   const model = options.model ?? createMockModel({ now });
   const sessionRecorder = createSessionRecorder(home);
   const sessionStore = createInMemorySessionStore({

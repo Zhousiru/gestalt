@@ -87,6 +87,8 @@ export const gestaltConfigSchema = z
 
     sticker_scraping_enabled: z.boolean().optional(),
     sticker_processing_concurrency: z.number().int().min(1).max(32).optional(),
+    sticker_recommendation_probability: probability.optional(),
+    sticker_recommendation_limit: z.number().int().min(1).max(20).optional(),
     operator_user_ids: z.array(id).optional(),
 
     timezone: timezone.optional(),

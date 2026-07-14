@@ -21,11 +21,15 @@ import {
   createStickerService,
   createStickerStore,
   createStickerVectorIndex,
+  executeActions,
   extractStickerObservations,
   prepareStickerMedia,
+  readStickerRecommendationConfig,
   resolveGestaltHome,
   sampleFrameIndices,
   stickerIdFromSha256,
+  withStickerRecommendations,
+  type GestaltConfig,
   type LiveEventSink,
   type MessageReceivedEvent,
   type ModelClient,
@@ -72,6 +76,8 @@ try {
 
   const classification = verifyClassification(staticFixture);
   await writeJson("classification.json", classification);
+  const recommendationConfig = verifyStickerRecommendationConfiguration();
+  await writeJson("recommendation-config.json", recommendationConfig);
 
   const preparedAnimation = await prepareStickerMedia(animatedFixture);
   assert.equal(preparedAnimation.animated, true);
@@ -606,6 +612,7 @@ try {
   const summary = {
     ok: true,
     classification,
+    recommendationConfig,
     contactSheet: {
       sourceFrames: preparedAnimation.frameCount,
       sampledFrames: animationSampleIndices.length,
@@ -669,6 +676,7 @@ try {
       "- Exact dedupe: one bot-wide stable sticker record, no second analysis, latest mface delivery metadata merged.",
       `- LanceDB: ${finalSnapshot.embedding.rowCount} global rows at ${finalSnapshot.embedding.dimensions} dimensions.`,
       "- Search: every conversation uses the same bot-wide LanceDB catalog.",
+      `- Recommendations: successful text sends returned Top-${runtimeStickerTranscript.recommendationLimit} embedding candidates; probability zero made ${runtimeStickerTranscript.disabledProbabilitySearches} searches.`,
       `- Index hygiene: ${invalidVectorRows.invalidRows} orphan/failed nearest rows were bypassed during search and pruned to the exact ready catalog set.`,
       "- Sending: native mface, image `sub_type=1`, and mface failure fallback verified.",
       "- Runtime command: authorized on/off/toggle, unauthorized rejection, acknowledgement, and zero model/window/steer activity verified.",
@@ -1427,6 +1435,8 @@ async function verifyRuntimeStickerTranscript(input: {
       "trigger_mention_probability = 1",
       "agent_loop_exit_idle_enabled = true",
       "agent_loop_exit_idle_ms = 1",
+      "sticker_recommendation_probability = 1",
+      "sticker_recommendation_limit = 1",
       'bot_user_id = "fixture-bot"',
       'bot_display_name = "Sticker Bot"',
       ""
@@ -1451,6 +1461,16 @@ async function verifyRuntimeStickerTranscript(input: {
           try {
             return {
               proposedActions: [
+                {
+                  id: randomUUID(),
+                  proposedAt: "2026-07-11T10:00:00.000Z",
+                  toolName: "send_group_message",
+                  reason: "Fixture sends text and receives sticker recommendations.",
+                  params: {
+                    groupId: context.event.conversation.id,
+                    text: `[CQ:reply,id=${context.event.message.id}]蓝色角色跳舞庆祝一下`
+                  }
+                },
                 {
                   id: randomUUID(),
                   proposedAt: "2026-07-11T10:00:00.000Z",
@@ -1531,10 +1551,22 @@ async function verifyRuntimeStickerTranscript(input: {
   const searchToolResult = toolResults.find(
     (result) => result.proposal.toolName === "search_sticker"
   );
+  const recommendationToolResult = toolResults.find(
+    (result) => result.proposal.toolName === "send_group_message"
+  );
   const sendToolResult = toolResults.find(
     (result) => result.proposal.toolName === "send_sticker"
   );
   assert.equal(searchToolResult?.status, "executed");
+  assert.equal(recommendationToolResult?.status, "executed");
+  assert.deepEqual(recommendationToolResult?.result?.data, {
+    recommended_stickers: [
+      {
+        sticker_id: input.stickerId,
+        desc: DESCRIPTION_ANIMATED
+      }
+    ]
+  });
   assert.deepEqual(searchToolResult?.result?.data, {
     stickers: [
       {
@@ -1607,12 +1639,103 @@ async function verifyRuntimeStickerTranscript(input: {
     correlatedSearch,
     "Runtime sticker search logs must correlate the tool call with its agent trace."
   );
+  const correlatedRecommendationSearch = stickerLog
+    .trim()
+    .split(/\r?\n/)
+    .map(
+      (line) =>
+        JSON.parse(line) as {
+          type: string;
+          agentTraceId?: string;
+          data?: { source?: string };
+        }
+    )
+    .find(
+      (entry) =>
+        entry.type === "sticker.search_completed" &&
+        entry.agentTraceId === agentTraceId &&
+        entry.data?.source === "recommendation"
+    );
+  assert.ok(
+    correlatedRecommendationSearch,
+    "Recommendation retrieval must be distinguishable from explicit search in logs."
+  );
+
+  let disabledRecommendationSearches = 0;
+  const disabledService: StickerService = {
+    ...input.service,
+    async search(searchInput) {
+      disabledRecommendationSearches += 1;
+      return input.service.search(searchInput);
+    }
+  };
+  const disabledConnector = createMockConnector();
+  const disabledResults = await executeActions({
+    connector: disabledConnector,
+    proposals: [
+      {
+        id: "disabled-sticker-recommendation",
+        proposedAt: "2026-07-11T10:02:00.000Z",
+        toolName: "send_group_message",
+        params: {
+          groupId: "group-b",
+          text: "蓝色角色跳舞庆祝一下"
+        }
+      }
+    ],
+    toolImplementations: withStickerRecommendations({
+      service: disabledService,
+      config: { probability: 0, limit: 3 },
+      implementations: {}
+    })
+  });
+  assert.equal(disabledResults[0]?.status, "executed");
+  assert.equal(disabledResults[0]?.result?.data, undefined);
+  assert.equal(disabledRecommendationSearches, 0);
+
+  let failedRecommendationSearches = 0;
+  const failingService: StickerService = {
+    ...input.service,
+    async search() {
+      failedRecommendationSearches += 1;
+      throw new Error("fixture recommendation embedding unavailable");
+    }
+  };
+  const failureResults = await executeActions({
+    connector: createMockConnector(),
+    proposals: [
+      {
+        id: "failed-sticker-recommendation",
+        proposedAt: "2026-07-11T10:03:00.000Z",
+        toolName: "send_dm",
+        params: {
+          userId: "fixture-user",
+          text: "蓝色角色跳舞庆祝一下"
+        }
+      }
+    ],
+    toolImplementations: withStickerRecommendations({
+      service: failingService,
+      config: { probability: 1, limit: 3 },
+      implementations: {}
+    })
+  });
+  assert.equal(failureResults[0]?.status, "executed");
+  assert.equal(failureResults[0]?.result?.ok, true);
+  assert.equal(failureResults[0]?.result?.data, undefined);
+  assert.equal(failedRecommendationSearches, 1);
   return {
     eventCount: conversation.events.length,
     turnCount: conversation.turns.length,
     rolloutId,
     agentTraceId,
     stickerLogCorrelated: true,
+    recommendationSearchLogCorrelated: true,
+    recommendationToolOutput: recommendationToolResult.result?.data,
+    recommendationLimit: 1,
+    disabledProbabilitySearches: disabledRecommendationSearches,
+    failedRecommendationSearches,
+    successfulSendSurvivedRecommendationFailure: true,
     searchToolOutput: searchToolResult.result?.data,
     sendToolOutput: sendToolResult?.result?.data,
     selfStickerText: selfSticker.event.message.text,
@@ -2037,6 +2160,26 @@ function verifyClassification(staticFixture: Uint8Array): Record<string, unknown
     directMface: directMface ?? null,
     compatibilityMface: compatibilityMface ?? null
   };
+}
+
+function verifyStickerRecommendationConfiguration(): Record<string, unknown> {
+  const emptyConfig: GestaltConfig = {
+    path: "fixture-config.toml",
+    raw: "",
+    flatValues: {}
+  };
+  const defaults = readStickerRecommendationConfig(emptyConfig);
+  assert.deepEqual(defaults, { probability: 0, limit: 3 });
+
+  const configured = readStickerRecommendationConfig({
+    ...emptyConfig,
+    flatValues: {
+      sticker_recommendation_probability: 0.35,
+      sticker_recommendation_limit: 7
+    }
+  });
+  assert.deepEqual(configured, { probability: 0.35, limit: 7 });
+  return { defaults, configured };
 }
 
 function onlyObservation(event: MessageReceivedEvent): StickerObservation {

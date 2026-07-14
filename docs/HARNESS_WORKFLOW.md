@@ -644,6 +644,7 @@ For GestaltHome behavior, verify:
 - Worker wakeups, three-attempt failure isolation, and embedding-version rebuilds preserve ready catalog records.
 - Startup audit prunes LanceDB ids outside the exact ready catalog set.
 - Generated descriptions are embedded once per sticker and searched bot-wide through local LanceDB; large sets of closer orphan/failed rows cannot crowd out a valid result.
+- Successful text-send results can expose configured Top-N embedding-retrieved sticker ids/descriptions; probability `0` performs no recommendation search.
 - Stable sticker ids resolve to native mface, image `sub_type=1`, and native-failure fallback sends.
 - `/scrape-sticker` authorization and on/off/toggle execute without a model request, window, turn, or steer.
 - `sticker-logs`, snapshots, connector calls, records, jobs, and vector search results provide durable evidence.
@@ -661,7 +662,8 @@ sampled frames are also never enlarged. Read
 `verify:stickers-ui` starts the real Live HTTP server over a populated sticker
 fixture. It verifies ready/queued/failed overview state, paginated and filtered
 catalog responses, the 100-item service limit, retry-stage semantics, protected
-media assets, batch description/index rebuild, single catalog deletion with
+media assets, real text embedding and LanceDB recall ranking without catalog
+mutation, batch description/index rebuild, single catalog deletion with
 LanceDB and blob cleanup, management validation and same-origin enforcement,
 original CQ preservation in Live/SSE session messages, structured transport
 redaction, SSE catalog updates, and the

@@ -142,6 +142,12 @@ export interface StickerManagementResponse {
   results: StickerManagementResult[];
 }
 
+export type StickerSearchSource =
+  | "tool"
+  | "recommendation"
+  | "recall_test"
+  | "runtime";
+
 export interface StickerService {
   readonly configuredEnabled: boolean;
   isScrapingEnabled(): boolean;
@@ -157,6 +163,7 @@ export interface StickerService {
     query: string;
     limit?: number;
     agentTraceId?: string;
+    source?: StickerSearchSource;
   }): Promise<StickerSearchResult[]>;
   send(input: {
     conversation: MessageReceivedEvent["conversation"];
@@ -990,6 +997,7 @@ export function createStickerService(
             ? { agentTraceId: searchInput.agentTraceId }
             : {}),
           data: {
+            source: searchInput.source ?? "runtime",
             query: searchInput.query,
             limit,
             resultCount: results.length,
@@ -1017,6 +1025,7 @@ export function createStickerService(
             ? { agentTraceId: searchInput.agentTraceId }
             : {}),
           data: {
+            source: searchInput.source ?? "runtime",
             query: searchInput.query,
             limit,
             startedAt,

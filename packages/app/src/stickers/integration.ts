@@ -1,9 +1,16 @@
+import { createHash } from "node:crypto";
 import type { Connector } from "../connectors/types";
 import type { GestaltConfig } from "../home/loadConfig";
 import type { GestaltHome } from "../home/resolveGestaltHome";
 import type { LiveEventSink } from "../live/viewTypes";
 import { redactSensitiveString } from "../privacy/stickerRedaction";
-import type { ToolImplementations } from "../tools/executeActions";
+import {
+  createConnectorToolImplementations,
+  type ToolHandlerResult,
+  type ToolImplementation,
+  type ToolImplementations
+} from "../tools/executeActions";
+import type { ActionProposal } from "../tools/schemas";
 import { createAiStickerAnalyzer, createAiStickerEmbedder } from "./ai";
 import { createStickerVectorIndex } from "./lance";
 import { createStickerLogger } from "./logger";
@@ -11,10 +18,22 @@ import { createStickerMediaResolver } from "./media";
 import { createStickerService, type StickerService } from "./service";
 import { createStickerStore } from "./store";
 
+const DEFAULT_STICKER_RECOMMENDATION_PROBABILITY = 0;
+const DEFAULT_STICKER_RECOMMENDATION_LIMIT = 3;
+const STICKER_RECOMMENDATION_SAMPLE_DOMAIN =
+  "gestalt.sticker-recommendation.sha256-53";
+const SAMPLE_DENOMINATOR = 2 ** 53;
+
+export interface StickerRecommendationConfig {
+  probability: number;
+  limit: number;
+}
+
 export function isStickerSubsystemConfigured(config: GestaltConfig): boolean {
   return (
     Boolean(config.flatValues.embedding_model_name) ||
-    config.flatValues.sticker_scraping_enabled === true
+    config.flatValues.sticker_scraping_enabled === true ||
+    readStickerRecommendationConfig(config).probability > 0
   );
 }
 
@@ -69,6 +88,7 @@ export function createStickerToolImplementations(
       try {
         const stickers = await service.search({
           query: proposal.params.query,
+          source: "tool",
           ...(proposal.params.limit ? { limit: proposal.params.limit } : {}),
           ...(context.traceId ? { agentTraceId: context.traceId } : {})
         });
@@ -115,6 +135,86 @@ export function createStickerToolImplementations(
   };
 }
 
+export function withStickerRecommendations(input: {
+  service: StickerService;
+  config: StickerRecommendationConfig;
+  implementations: ToolImplementations;
+}): ToolImplementations {
+  if (input.config.probability === 0) {
+    return input.implementations;
+  }
+  const defaults = createConnectorToolImplementations();
+  const sendGroupMessage =
+    input.implementations.send_group_message ?? defaults.send_group_message;
+  const sendDm = input.implementations.send_dm ?? defaults.send_dm;
+  return {
+    ...input.implementations,
+    ...(sendGroupMessage
+      ? {
+          send_group_message: withTextSendRecommendations(
+            sendGroupMessage,
+            input.service,
+            input.config
+          )
+        }
+      : {}),
+    ...(sendDm
+      ? {
+          send_dm: withTextSendRecommendations(
+            sendDm,
+            input.service,
+            input.config
+          )
+        }
+      : {})
+  };
+}
+
+export function readStickerRecommendationConfig(
+  config: GestaltConfig
+): StickerRecommendationConfig {
+  const probabilityValue =
+    config.flatValues.sticker_recommendation_probability;
+  const probability =
+    probabilityValue === undefined
+      ? DEFAULT_STICKER_RECOMMENDATION_PROBABILITY
+      : probabilityValue;
+  if (
+    typeof probability !== "number" ||
+    !Number.isFinite(probability) ||
+    probability < 0 ||
+    probability > 1
+  ) {
+    throw new Error(
+      "sticker_recommendation_probability must be a number between 0 and 1."
+    );
+  }
+
+  const limitValue = config.flatValues.sticker_recommendation_limit;
+  const limit =
+    limitValue === undefined ? DEFAULT_STICKER_RECOMMENDATION_LIMIT : limitValue;
+  if (!Number.isInteger(limit) || Number(limit) < 1 || Number(limit) > 20) {
+    throw new Error(
+      "sticker_recommendation_limit must be an integer between 1 and 20."
+    );
+  }
+  return { probability, limit: Number(limit) };
+}
+
+export function sampleStickerRecommendation(
+  proposal: Pick<ActionProposal, "id" | "toolName">
+): number {
+  const digest = createHash("sha256")
+    .update(
+      [STICKER_RECOMMENDATION_SAMPLE_DOMAIN, proposal.toolName, proposal.id].join(
+        "\0"
+      )
+    )
+    .digest();
+  const sampleBits = digest.readBigUInt64BE(0) >> 11n;
+  return Number(sampleBits) / SAMPLE_DENOMINATOR;
+}
+
 export function readStickerScrapingEnabled(config: GestaltConfig): boolean {
   const value = config.flatValues.sticker_scraping_enabled;
   if (value === undefined) {
@@ -124,6 +224,89 @@ export function readStickerScrapingEnabled(config: GestaltConfig): boolean {
     throw new Error("sticker_scraping_enabled must be a boolean.");
   }
   return value;
+}
+
+function withTextSendRecommendations(
+  implementation: ToolImplementation,
+  service: StickerService,
+  config: StickerRecommendationConfig
+): ToolImplementation {
+  return async (proposal, context) => {
+    const result = await implementation(proposal, context);
+    if (
+      result.status !== "executed" ||
+      result.result?.ok !== true ||
+      sampleStickerRecommendation(proposal) >= config.probability
+    ) {
+      return result;
+    }
+    const query = textSendRecommendationQuery(proposal);
+    if (!query) {
+      return result;
+    }
+    try {
+      const stickers = await service.search({
+        query,
+        limit: config.limit,
+        source: "recommendation",
+        ...(context.traceId ? { agentTraceId: context.traceId } : {})
+      });
+      return attachStickerRecommendations(
+        result,
+        stickers.map((sticker) => ({
+          sticker_id: sticker.stickerId,
+          desc: sticker.desc
+        }))
+      );
+    } catch {
+      // Sending already succeeded. Recommendation is best-effort and the
+      // sticker service records its own typed search failure.
+      return result;
+    }
+  };
+}
+
+function textSendRecommendationQuery(proposal: ActionProposal): string {
+  if (
+    proposal.toolName !== "send_group_message" &&
+    proposal.toolName !== "send_dm"
+  ) {
+    return "";
+  }
+  return proposal.params.text
+    .replace(/\[CQ:[A-Za-z0-9_-]+(?:,[^\]]*)?\]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 1000);
+}
+
+function attachStickerRecommendations(
+  result: ToolHandlerResult,
+  recommendations: Array<{ sticker_id: string; desc: string }>
+): ToolHandlerResult {
+  if (!result.result) {
+    return result;
+  }
+  const existingData = result.result.data;
+  const data = isRecord(existingData)
+    ? { ...existingData, recommended_stickers: recommendations }
+    : existingData === undefined
+      ? { recommended_stickers: recommendations }
+      : {
+          connector_data: existingData,
+          recommended_stickers: recommendations
+        };
+  return {
+    ...result,
+    result: {
+      ...result.result,
+      data
+    }
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 export function readStickerProcessingConcurrency(config: GestaltConfig): number {

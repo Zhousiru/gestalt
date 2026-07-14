@@ -87,6 +87,23 @@ export interface StickerManagementResponse {
   results: StickerManagementResult[];
 }
 
+export interface StickerRecallMatchView {
+  rank: number;
+  stickerId: string;
+  desc: string;
+  distance?: number;
+  affinity?: number;
+  thumbnailUrl: string;
+  contactSheetUrl?: string;
+}
+
+export interface StickerRecallResponse {
+  query: string;
+  limit: number;
+  returned: number;
+  results: StickerRecallMatchView[];
+}
+
 export interface RuntimeLiveEventEnvelope<T = unknown> {
   id: string | number;
   type: string;

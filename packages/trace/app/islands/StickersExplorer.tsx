@@ -41,11 +41,13 @@ import type {
   StickerJobView,
   StickerManagementAction,
   StickerManagementResponse,
+  StickerRecallResponse,
   StickerSnapshot,
 } from "../lib/types";
 
 type LoadState = "loading" | "ready" | "error";
 type LiveState = "connecting" | "live" | "offline";
+type RecallState = "idle" | "loading" | "ready" | "error";
 type StatusFilter = "all" | "ready" | "processing" | "failed";
 type SourceFilter = "all" | "mface" | "image-sticker";
 type Selection =
@@ -456,6 +458,7 @@ export default function StickersExplorer() {
               {error ? <RefreshWarning error={error} onRetry={() => void loadSnapshot()} /> : null}
               <div className="mx-auto grid min-w-0 w-full max-w-[1600px] grid-cols-[minmax(0,1fr)] items-start xl:grid-cols-[minmax(0,1fr)_380px]">
                 <div className="min-w-0 space-y-4 p-3 sm:p-5 lg:p-6">
+                  <RecallTestPanel embedding={snapshot.embedding} />
                   <JobsPanel
                     jobs={sortedJobs}
                     selectedId={selection?.kind === "job" ? selection.id : undefined}
@@ -639,6 +642,291 @@ function Metric({
       >
         {formatCount(value)}
       </dd>
+    </div>
+  );
+}
+
+function RecallTestPanel({
+  embedding,
+}: {
+  embedding: StickerSnapshot["embedding"];
+}) {
+  const [query, setQuery] = useState("");
+  const [limit, setLimit] = useState(3);
+  const [state, setState] = useState<RecallState>("idle");
+  const [response, setResponse] = useState<StickerRecallResponse>();
+  const [error, setError] = useState<string>();
+  const controllerRef = useRef<AbortController | undefined>(undefined);
+
+  useEffect(
+    () => () => {
+      controllerRef.current?.abort();
+    },
+    []
+  );
+
+  const runRecall = async () => {
+    const normalizedQuery = query.trim();
+    if (!normalizedQuery || state === "loading") {
+      return;
+    }
+    controllerRef.current?.abort();
+    const controller = new AbortController();
+    controllerRef.current = controller;
+    setState("loading");
+    setResponse(undefined);
+    setError(undefined);
+    try {
+      const recallResponse = await fetch("/api/live/stickers/recall", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ query: normalizedQuery, limit }),
+        signal: controller.signal,
+      });
+      const payload = (await recallResponse.json()) as
+        | StickerRecallResponse
+        | { error?: string };
+      if (!recallResponse.ok) {
+        throw new Error(
+          "error" in payload && payload.error
+            ? payload.error
+            : `Sticker recall request failed with ${recallResponse.status}`
+        );
+      }
+      setResponse(payload as StickerRecallResponse);
+      setState("ready");
+    } catch (recallError) {
+      if (controller.signal.aborted) {
+        return;
+      }
+      setError(
+        recallError instanceof Error ? recallError.message : String(recallError)
+      );
+      setState("error");
+    } finally {
+      if (controllerRef.current === controller) {
+        controllerRef.current = undefined;
+      }
+    }
+  };
+
+  return (
+    <section className="overflow-hidden rounded-lg bg-white ring-1 ring-neutral-200">
+      <header className="flex flex-wrap items-start justify-between gap-3 border-b border-neutral-200 px-4 py-3">
+        <div>
+          <h2 className="text-sm font-semibold">Recall test</h2>
+          <p className="mt-0.5 text-xs leading-5 text-neutral-500">
+            Embed text against the live LanceDB catalog. This test never sends a sticker.
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <StatusPill tone={indexTone(embedding.indexState)}>
+            index {embedding.indexState}
+          </StatusPill>
+          {embedding.dimensions ? (
+            <span className="text-xs text-neutral-500">
+              {embedding.dimensions}d
+            </span>
+          ) : null}
+        </div>
+      </header>
+
+      <form
+        className="grid items-end gap-3 p-4 sm:grid-cols-[minmax(0,1fr)_104px_auto]"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void runRecall();
+        }}
+      >
+        <label className="min-w-0">
+          <span className="mb-1.5 block text-xs font-medium text-neutral-700">
+            Query text
+          </span>
+          <textarea
+            className={cn(
+              "min-h-20 w-full resize-y rounded-md bg-white px-3 py-2 text-sm leading-5 text-neutral-900 ring-1 ring-inset ring-neutral-300 outline-none placeholder:text-neutral-500 hover:ring-neutral-400 focus:ring-2 focus:ring-[var(--trace-accent)] disabled:cursor-not-allowed disabled:opacity-50"
+            )}
+            disabled={state === "loading"}
+            maxLength={1000}
+            onChange={(event) => setQuery(event.currentTarget.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                event.preventDefault();
+                event.currentTarget.form?.requestSubmit();
+              }
+            }}
+            placeholder="e.g. celebrate a small win"
+            rows={2}
+            value={query}
+          />
+          <span className="mt-1 block text-[11px] text-neutral-500">
+            Ctrl/⌘ + Enter to run
+          </span>
+        </label>
+        <label>
+          <span className="mb-1.5 block text-xs font-medium text-neutral-700">
+            Results
+          </span>
+          <select
+            className={cn(fieldClass, "w-full")}
+            disabled={state === "loading"}
+            onChange={(event) => setLimit(Number(event.currentTarget.value))}
+            value={limit}
+          >
+            {[3, 5, 10, 20].map((value) => (
+              <option key={value} value={value}>
+                Top {value}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button
+          className={cn(
+            "inline-flex h-9 items-center justify-center gap-2 rounded-md bg-neutral-950 px-4 text-sm font-medium text-white hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-40",
+            focusClass
+          )}
+          disabled={!query.trim() || state === "loading"}
+          type="submit"
+        >
+          {state === "loading" ? (
+            <Loader2
+              aria-hidden="true"
+              className="animate-spin motion-reduce:animate-none"
+              size={15}
+            />
+          ) : (
+            <Search aria-hidden="true" size={15} />
+          )}
+          {state === "loading" ? "Embedding…" : "Run recall"}
+        </button>
+      </form>
+
+      <div aria-live="polite">
+        {state === "loading" ? <RecallLoadingRows /> : null}
+        {state === "error" && error ? (
+          <div className="border-t border-red-200 bg-red-50 px-4 py-3 text-xs text-red-800" role="alert">
+            <span className="flex items-center gap-2 font-semibold">
+              <AlertCircle aria-hidden="true" size={14} />
+              Recall failed
+            </span>
+            <p className="mt-1.5 leading-5">{error}</p>
+          </div>
+        ) : null}
+        {state === "ready" && response ? (
+          <RecallResults response={response} />
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+function RecallLoadingRows() {
+  return (
+    <div className="border-t border-neutral-200" role="status">
+      <span className="sr-only">Generating embedding and searching stickers</span>
+      {[0, 1, 2].map((row) => (
+        <div
+          className="grid grid-cols-[24px_56px_minmax(0,1fr)] gap-3 border-b border-neutral-100 px-4 py-3 last:border-b-0"
+          key={row}
+        >
+          <div className="mt-1 h-3 rounded bg-neutral-100" />
+          <div className="h-14 rounded-md bg-neutral-100" />
+          <div className="space-y-2 py-1">
+            <div className="h-3 w-2/3 rounded bg-neutral-200" />
+            <div className="h-3 w-full rounded bg-neutral-100" />
+            <div className="h-3 w-1/3 rounded bg-neutral-100" />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function RecallResults({ response }: { response: StickerRecallResponse }) {
+  return (
+    <div className="border-t border-neutral-200">
+      <div className="flex flex-wrap items-center justify-between gap-2 bg-neutral-50 px-4 py-2 text-xs text-neutral-600">
+        <span>
+          <strong className="font-medium text-neutral-900">
+            {formatCount(response.returned)}
+          </strong>{" "}
+          {response.returned === 1 ? "match" : "matches"} for “{response.query}”
+        </span>
+        <span title="Affinity = 1 / (1 + max(0, distance)); it is a diagnostic transform, not model confidence.">
+          Affinity is derived from vector distance
+        </span>
+      </div>
+      {response.results.length ? (
+        <ol className="divide-y divide-neutral-100">
+          {response.results.map((result) => (
+            <li
+              className="grid grid-cols-[24px_56px_minmax(0,1fr)] items-start gap-3 px-4 py-3 sm:grid-cols-[24px_64px_minmax(0,1fr)_160px]"
+              key={result.stickerId}
+            >
+              <span className="pt-1 text-xs font-semibold tabular-nums text-neutral-500">
+                {result.rank}
+              </span>
+              <StickerMedia
+                alt="Retrieved sticker preview"
+                className="h-14 w-14 sm:h-16 sm:w-16"
+                src={result.contactSheetUrl ?? result.thumbnailUrl}
+              />
+              <div className="min-w-0">
+                <p className="text-sm leading-5 text-neutral-900">{result.desc}</p>
+                <div className="mt-2 flex min-w-0 items-center gap-1.5 text-xs text-neutral-500">
+                  <span className="truncate font-mono" title={result.stickerId}>
+                    {shortId(result.stickerId)}
+                  </span>
+                  <CopyButton value={result.stickerId} />
+                  {result.contactSheetUrl ? (
+                    <StatusPill tone="info">animated</StatusPill>
+                  ) : null}
+                </div>
+              </div>
+              <div className="col-span-2 col-start-2 min-w-0 sm:col-span-1 sm:col-start-auto sm:text-right">
+                {result.affinity !== undefined ? (
+                  <>
+                    <div className="flex items-baseline justify-between gap-2 sm:justify-end">
+                      <span className="text-xs text-neutral-500">Affinity</span>
+                      <strong className="text-sm font-semibold tabular-nums text-neutral-900">
+                        {formatAffinity(result.affinity)}
+                      </strong>
+                    </div>
+                    <div
+                      aria-label={`${formatAffinity(result.affinity)} affinity`}
+                      aria-valuemax={100}
+                      aria-valuemin={0}
+                      aria-valuenow={Math.round(result.affinity * 100)}
+                      className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-neutral-200"
+                      role="meter"
+                    >
+                      <div
+                        className="h-full rounded-full bg-[var(--trace-accent)]"
+                        style={{
+                          width: `${Math.max(0, Math.min(100, result.affinity * 100))}%`,
+                        }}
+                      />
+                    </div>
+                  </>
+                ) : (
+                  <span className="text-xs text-neutral-500">Affinity unavailable</span>
+                )}
+                <p className="mt-1.5 text-[11px] tabular-nums text-neutral-500">
+                  {result.distance !== undefined
+                    ? `distance ${formatDistance(result.distance)} · lower is closer`
+                    : "distance not reported"}
+                </p>
+              </div>
+            </li>
+          ))}
+        </ol>
+      ) : (
+        <CompactEmpty
+          icon={<Search />}
+          title="No ready stickers recalled"
+          body="The index returned no catalog-valid matches for this query."
+        />
+      )}
     </div>
   );
 }
@@ -1985,6 +2273,19 @@ function shortId(value: string) {
 
 function formatCount(value: number) {
   return new Intl.NumberFormat().format(value);
+}
+
+function formatAffinity(value: number) {
+  return new Intl.NumberFormat(undefined, {
+    style: "percent",
+    maximumFractionDigits: 1,
+  }).format(value);
+}
+
+function formatDistance(value: number) {
+  return new Intl.NumberFormat(undefined, {
+    maximumFractionDigits: 4,
+  }).format(value);
 }
 
 function formatDateTime(value: string) {

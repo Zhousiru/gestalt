@@ -121,6 +121,12 @@ const StickerManagementRequestSchema = z
       .max(MAX_STICKER_MANAGEMENT_BATCH)
   })
   .strict();
+const StickerRecallRequestSchema = z
+  .object({
+    query: z.string().trim().min(1).max(1000),
+    limit: z.number().int().min(1).max(20).default(3)
+  })
+  .strict();
 
 export async function startLiveDebugServer(
   options: StartLiveDebugServerOptions
@@ -248,6 +254,64 @@ async function handleRequest(
       return;
     }
     sendJson(response, 200, await options.runtime.stickers.manage(parsed.data));
+    return;
+  }
+
+  if (pathname === "/api/live/stickers/recall") {
+    if (request.method !== "POST") {
+      sendJson(response, 405, { error: "Method not allowed" });
+      return;
+    }
+    if (!options.runtime.stickers) {
+      sendJson(response, 503, {
+        error: "Sticker subsystem is not configured"
+      });
+      return;
+    }
+    const parsed = StickerRecallRequestSchema.safeParse(
+      await readJsonRequest(request)
+    );
+    if (!parsed.success) {
+      sendJson(response, 400, { error: "Invalid sticker recall request" });
+      return;
+    }
+    const matches = await options.runtime.stickers.search({
+      query: parsed.data.query,
+      limit: parsed.data.limit,
+      source: "recall_test"
+    });
+    const results = await Promise.all(
+      matches.map(async (match, index) => {
+        const contactSheet = await options.runtime.stickers?.resolveAssetPath(
+          match.stickerId,
+          "contact-sheet"
+        );
+        const stickerId = encodeURIComponent(match.stickerId);
+        return {
+          rank: index + 1,
+          stickerId: match.stickerId,
+          desc: match.desc,
+          ...(match.distance !== undefined && Number.isFinite(match.distance)
+            ? {
+                distance: match.distance,
+                affinity: stickerDistanceAffinity(match.distance)
+              }
+            : {}),
+          thumbnailUrl: `/api/live/stickers/assets/${stickerId}/original`,
+          ...(contactSheet
+            ? {
+                contactSheetUrl: `/api/live/stickers/assets/${stickerId}/contact-sheet`
+              }
+            : {})
+        };
+      })
+    );
+    sendJson(response, 200, {
+      query: parsed.data.query,
+      limit: parsed.data.limit,
+      returned: results.length,
+      results
+    });
     return;
   }
 
@@ -386,6 +450,13 @@ async function handleRequest(
     error: "Not found",
     hint: "Live UI assets are missing from the application distribution."
   });
+}
+
+function stickerDistanceAffinity(distance: number): number {
+  if (!Number.isFinite(distance)) {
+    return 0;
+  }
+  return 1 / (1 + Math.max(0, distance));
 }
 
 async function createOverview(

@@ -164,7 +164,47 @@ mface delivery and falls back to the cached bytes as
 `[CQ:image,file=base64://...,sub_type=1]`; custom image stickers use the same
 portable path so Gestalt and OneBot do not need a shared filesystem.
 
-Sticker frequency remains persona behavior rather than a runtime probability.
+## Send-Result Recommendations
+
+Successful `send_group_message` and `send_dm` tool results may expose passive
+sticker candidates for the model's next step:
+
+```toml
+sticker_recommendation_probability = 0.25
+sticker_recommendation_limit = 3
+```
+
+The probability is between `0` and `1`; the default is `0`, which disables the
+feature and performs no recommendation embedding call. The result limit is an
+integer from `1` through `20` and defaults to `3`. Admission uses a stable hash
+of the action proposal rather than process randomness, so replaying the same
+proposal makes the same decision.
+
+After a text send succeeds and is admitted, the runtime removes OneBot CQ
+control markup from the sent text, embeds up to 1000 characters, and searches
+the same bot-wide LanceDB catalog used by `search_sticker`. The model-visible
+tool result gains:
+
+```json
+{
+  "data": {
+    "recommended_stickers": [
+      { "sticker_id": "stk_...", "desc": "..." }
+    ]
+  }
+}
+```
+
+Recommendations never send a sticker automatically. The model may use a
+returned id with `send_sticker` or ignore every candidate. Retrieval is
+best-effort: an embedding/index failure is logged by the sticker search path but
+does not change an already successful message send into a failed tool result.
+Search lifecycle entries identify recommendation retrieval separately from an
+explicit `search_sticker` call while retaining the same agent trace id.
+
+Sticker sending frequency remains persona behavior rather than this retrieval
+probability. The probability only controls whether candidates are added to a
+successful text-send result.
 Put the desired rhythm, common situations, and taboo cases in a persona Markdown
 fragment such as `persona/6-stickers.md`, for example:
 
@@ -235,6 +275,15 @@ rows. `POST /api/live/stickers/manage` accepts at most 100 unique sticker ids pe
 request and returns a result for every id. Records still in `processing` are
 reported as busy instead of racing the background worker.
 
+The page includes a read-only recall test for diagnosing the active embedding
+space and LanceDB index. `POST /api/live/stickers/recall` accepts a trimmed text
+query of at most 1000 characters and a result limit from 1 through 20 (default
+3). It uses the same catalog-validating vector search as the runtime, tagged as
+`recall_test` in sticker lifecycle logs, and never sends a sticker or mutates the
+catalog. Results expose rank, id, description, protected preview URLs, raw vector
+distance, and `affinity = 1 / (1 + max(0, distance))`. Affinity is only a
+monotonic operator aid; it is not model confidence or a calibrated probability.
+
 Rebuild reads the saved original media, applies the current static/contact-sheet
 analysis preparation, calls the current sub model for a new `desc`, and upserts a
 fresh embedding before replacing the record. A failed rebuild leaves the prior
@@ -280,7 +329,8 @@ exact orphan-row pruning, invalid-neighbor search exhaustion, bot-wide search
 and send behavior, intermediate-stage restart recovery, config-default restoration,
 partial observation persistence, logger/Live failure isolation,
 bounded worker self-recovery, native/image/fallback sends, trace-correlated
-logs, authorization, and the no-model command boundary.
+logs, text-send recommendation output, configurable Top-N, probability-zero
+embedding suppression, authorization, and the no-model command boundary.
 
 The focused media fixture additionally proves segment-index/identity selection,
 direct inbound HTTPS fetching without `get_image`, rejection of inbound paths
@@ -294,8 +344,9 @@ artifact is under
 The Live UI fixture exercises a populated catalog through the real HTTP server,
 including queue/failed/ready states, catalog pagination/filtering and limit
 clamping, current versus last-failed stages, protected media assets, an SSE
-catalog update, batch description/index rebuild, single deletion with index and
-media cleanup, management request validation, Live-boundary privacy redaction,
+catalog update, real embedding/LanceDB recall with ranked distance and affinity,
+batch description/index rebuild, single deletion with index and media cleanup,
+management and recall request validation, Live-boundary privacy redaction,
 all-interface binding, and cross-origin rejection. Its API evidence and responsive browser QA screenshots are exported
 under `harness/artifacts/live-stickers-ui/`; screenshots are manual visual-QA
 artifacts and should be refreshed when an in-app browser instance is available.
