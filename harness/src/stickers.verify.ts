@@ -350,6 +350,12 @@ try {
     agentTraceId: "agent-trace-blue-b"
   });
   assert.equal(searchBlueInB[0]?.stickerId, animatedStickerId);
+  assert.equal(searchBlueInB[0]?.distance, 0);
+  assert.equal(
+    searchBlueInB[1]?.distance,
+    1,
+    "Orthogonal fixture vectors must use cosine distance rather than default L2."
+  );
   const searchBlueInA = await service.search({
     query: "蓝色跳舞庆祝",
     limit: 5,
@@ -479,6 +485,14 @@ try {
   ]) {
     assert.ok(logTypes.has(expectedType), `Missing sticker log ${expectedType}.`);
   }
+  assert.ok(
+    logEntries.some(
+      (entry) =>
+        entry.type === "sticker.search_completed" &&
+        asRecord(entry.data)?.distanceMetric === "cosine"
+    ),
+    "Sticker search logs must identify the cosine distance metric."
+  );
   assert.ok(
     logEntries.some(
       (entry) =>
@@ -1825,7 +1839,8 @@ async function verifyRuntimeCommands(root: string): Promise<Record<string, unkno
         },
         embedding: {
           rowCount: 0,
-          indexState: "empty"
+          indexState: "empty",
+          distanceMetric: "cosine"
         },
         jobs: [],
         catalog: {

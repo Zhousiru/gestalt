@@ -9,7 +9,11 @@ import {
   extractIgnoredStickerSegments,
   extractStickerObservations
 } from "./extract";
-import type { StickerVectorIndex, StickerSearchResult } from "./lance";
+import {
+  STICKER_DISTANCE_METRIC,
+  type StickerVectorIndex,
+  type StickerSearchResult
+} from "./lance";
 import type { StickerLogger } from "./logger";
 import type { StickerMediaResolver } from "./media";
 import type { StickerAnalyzer, StickerEmbedder } from "./models";
@@ -75,6 +79,7 @@ export interface StickerRuntimeSnapshot {
     model?: string;
     dimensions?: number;
     id?: string;
+    distanceMetric: typeof STICKER_DISTANCE_METRIC;
     rowCount: number;
     indexState: "empty" | "ready" | "rebuilding" | "error";
     error?: string;
@@ -1008,6 +1013,7 @@ export function createStickerService(
             startedAt,
             embeddingModel: input.embedder.model,
             embeddingId: input.embedder.id,
+            distanceMetric: STICKER_DISTANCE_METRIC,
             dimensions: embedding.vector.length
           }
         });
@@ -1202,6 +1208,7 @@ export function createStickerService(
             ? { dimensions: index.dimensions ?? input.embedder.configuredDimensions }
             : {}),
           id: input.embedder.id,
+          distanceMetric: index.distanceMetric,
           rowCount: index.rowCount,
           indexState: rebuildingIndex
             ? "rebuilding"

@@ -55,6 +55,7 @@ import type {
   SessionEventRecord,
   SessionTurnRecord
 } from "../session/schemas";
+import { STICKER_DISTANCE_METRIC } from "../stickers/lance";
 import {
   MAX_STICKER_MANAGEMENT_BATCH,
   normalizeStickerCatalogQuery,
@@ -294,7 +295,7 @@ async function handleRequest(
           ...(match.distance !== undefined && Number.isFinite(match.distance)
             ? {
                 distance: match.distance,
-                affinity: stickerDistanceAffinity(match.distance)
+                similarity: cosineSimilarity(match.distance)
               }
             : {}),
           thumbnailUrl: `/api/live/stickers/assets/${stickerId}/original`,
@@ -310,6 +311,7 @@ async function handleRequest(
       query: parsed.data.query,
       limit: parsed.data.limit,
       returned: results.length,
+      metric: STICKER_DISTANCE_METRIC,
       results
     });
     return;
@@ -452,11 +454,8 @@ async function handleRequest(
   });
 }
 
-function stickerDistanceAffinity(distance: number): number {
-  if (!Number.isFinite(distance)) {
-    return 0;
-  }
-  return 1 / (1 + Math.max(0, distance));
+function cosineSimilarity(distance: number): number {
+  return Math.max(-1, Math.min(1, 1 - distance));
 }
 
 async function createOverview(
@@ -2134,7 +2133,11 @@ function emptyStickerSnapshot(
       ready: 0,
       duplicates: 0
     },
-    embedding: { rowCount: 0, indexState: "empty" },
+    embedding: {
+      rowCount: 0,
+      indexState: "empty",
+      distanceMetric: STICKER_DISTANCE_METRIC
+    },
     jobs: [],
     catalog: { offset: catalog.offset, limit: catalog.limit, total: 0 },
     stickers: []

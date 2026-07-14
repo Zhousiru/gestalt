@@ -18,6 +18,7 @@ export interface StickerEmbeddingView {
   model?: string;
   dimensions?: number;
   id?: string;
+  distanceMetric: "cosine";
   rowCount: number;
   indexState: "empty" | "ready" | "rebuilding" | "error";
   error?: string;
@@ -92,7 +93,7 @@ export interface StickerRecallMatchView {
   stickerId: string;
   desc: string;
   distance?: number;
-  affinity?: number;
+  similarity?: number;
   thumbnailUrl: string;
   contactSheetUrl?: string;
 }
@@ -101,6 +102,7 @@ export interface StickerRecallResponse {
   query: string;
   limit: number;
   returned: number;
+  metric: "cosine";
   results: StickerRecallMatchView[];
 }
 

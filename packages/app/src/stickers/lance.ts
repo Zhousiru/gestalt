@@ -19,6 +19,7 @@ export interface StickerVectorIndexSnapshot {
   indexState: "empty" | "ready" | "error";
   dimensions?: number;
   id: string;
+  distanceMetric: typeof STICKER_DISTANCE_METRIC;
 }
 
 export interface StickerVectorIndex {
@@ -35,6 +36,7 @@ export interface StickerVectorIndex {
 
 const TABLE_PREFIX = "sticker_vectors_global_";
 const TABLE_SUFFIX_HEX_LENGTH = 40;
+export const STICKER_DISTANCE_METRIC = "cosine" as const;
 
 export async function createStickerVectorIndex(input: {
   directory: string;
@@ -82,6 +84,7 @@ export async function createStickerVectorIndex(input: {
       validateVector(searchInput.vector, dimensions);
       const query = table
         .vectorSearch(searchInput.vector)
+        .distanceType(STICKER_DISTANCE_METRIC)
         .select(["sticker_id", "desc", "_distance"])
         .limit(searchInput.limit);
       if (searchInput.offset) {
@@ -133,6 +136,7 @@ export async function createStickerVectorIndex(input: {
             rowCount: 0,
             indexState: "empty",
             id: input.embeddingId,
+            distanceMetric: STICKER_DISTANCE_METRIC,
             ...(dimensions ? { dimensions } : {})
           };
         }
@@ -144,6 +148,7 @@ export async function createStickerVectorIndex(input: {
           rowCount: await table.countRows(),
           indexState: "ready",
           id: input.embeddingId,
+          distanceMetric: STICKER_DISTANCE_METRIC,
           ...(dimensions ? { dimensions } : {})
         };
       } catch {
@@ -151,6 +156,7 @@ export async function createStickerVectorIndex(input: {
           rowCount: 0,
           indexState: "error",
           id: input.embeddingId,
+          distanceMetric: STICKER_DISTANCE_METRIC,
           ...(dimensions ? { dimensions } : {})
         };
       }

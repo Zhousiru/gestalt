@@ -343,12 +343,13 @@ try {
       query: string;
       limit: number;
       returned: number;
+      metric: "cosine";
       results: Array<{
         rank: number;
         stickerId: string;
         desc: string;
         distance?: number;
-        affinity?: number;
+        similarity?: number;
         thumbnailUrl: string;
         contactSheetUrl?: string;
       }>;
@@ -356,6 +357,7 @@ try {
     assert.equal(recall.query, "庆祝");
     assert.equal(recall.limit, 2);
     assert.equal(recall.returned, 2);
+    assert.equal(recall.metric, "cosine");
     assert.deepEqual(
       recall.results.map((result) => result.rank),
       [1, 2]
@@ -363,14 +365,14 @@ try {
     assert.equal(recall.results[0]?.stickerId, animated.id);
     assert.match(recall.results[0]?.desc ?? "", /blue character/);
     assert.equal(recall.results[0]?.distance, 0);
-    assert.equal(recall.results[0]?.affinity, 1);
+    assert.equal(recall.results[0]?.similarity, 1);
     assert.ok(recall.results[0]?.contactSheetUrl);
     assert.match(
       recall.results[0]?.thumbnailUrl ?? "",
       /^\/api\/live\/stickers\/assets\/[^/]+\/original$/
     );
-    assert.ok((recall.results[1]?.distance ?? 0) > 0);
-    assert.ok((recall.results[1]?.affinity ?? 1) < 1);
+    assert.equal(recall.results[1]?.distance, 1);
+    assert.equal(recall.results[1]?.similarity, 0);
     assert.equal(
       (await service.snapshot()).embedding.rowCount,
       rowCountBeforeRecall
@@ -589,7 +591,8 @@ try {
         returned: recall.returned,
         topStickerId: recall.results[0]?.stickerId,
         topDistance: recall.results[0]?.distance,
-        topAffinity: recall.results[0]?.affinity,
+        metric: recall.metric,
+        topSimilarity: recall.results[0]?.similarity,
         rowCountUnchanged: true,
         invalidRequestRejected: true,
         crossOriginRequestRejected: true

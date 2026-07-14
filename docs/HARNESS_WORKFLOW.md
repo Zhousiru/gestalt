@@ -662,8 +662,8 @@ sampled frames are also never enlarged. Read
 `verify:stickers-ui` starts the real Live HTTP server over a populated sticker
 fixture. It verifies ready/queued/failed overview state, paginated and filtered
 catalog responses, the 100-item service limit, retry-stage semantics, protected
-media assets, real text embedding and LanceDB recall ranking without catalog
-mutation, batch description/index rebuild, single catalog deletion with
+media assets, real text embedding and explicit cosine-distance LanceDB recall
+ranking without catalog mutation, batch description/index rebuild, single catalog deletion with
 LanceDB and blob cleanup, management validation and same-origin enforcement,
 original CQ preservation in Live/SSE session messages, structured transport
 redaction, SSE catalog updates, and the

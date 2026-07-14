@@ -142,7 +142,10 @@ schema-version field.
 
 LanceDB is a rebuildable vector projection of `desc` with exactly one row per
 sticker id. Each row contains only `row_id`, `sticker_id`, `desc`, `vector`, and
-`created_at`. All conversations search the same catalog. The explicit
+`created_at`. Searches explicitly use cosine distance rather than LanceDB's L2
+default, matching the directional semantics of text embeddings. Cosine distance
+is `1 - cosine_similarity`, so lower distance ranks first. All conversations
+search the same catalog. The explicit
 `embedding_model_id` selects its table and is stored with each record as the
 vector-space compatibility identity; provider and model remain operational log
 and Live overview metadata. Startup audit removes ids outside the exact ready
@@ -280,9 +283,10 @@ space and LanceDB index. `POST /api/live/stickers/recall` accepts a trimmed text
 query of at most 1000 characters and a result limit from 1 through 20 (default
 3). It uses the same catalog-validating vector search as the runtime, tagged as
 `recall_test` in sticker lifecycle logs, and never sends a sticker or mutates the
-catalog. Results expose rank, id, description, protected preview URLs, raw vector
-distance, and `affinity = 1 / (1 + max(0, distance))`. Affinity is only a
-monotonic operator aid; it is not model confidence or a calibrated probability.
+catalog. Results expose rank, id, description, protected preview URLs, raw
+cosine distance, and `cosine_similarity = 1 - distance`. Similarity is displayed
+as a decimal from `-1` through `1`; it is vector similarity, not model confidence
+or a calibrated probability.
 
 Rebuild reads the saved original media, applies the current static/contact-sheet
 analysis preparation, calls the current sub model for a new `desc`, and upserts a
@@ -344,7 +348,8 @@ artifact is under
 The Live UI fixture exercises a populated catalog through the real HTTP server,
 including queue/failed/ready states, catalog pagination/filtering and limit
 clamping, current versus last-failed stages, protected media assets, an SSE
-catalog update, real embedding/LanceDB recall with ranked distance and affinity,
+catalog update, real embedding/LanceDB recall with ranked cosine distance and
+similarity,
 batch description/index rebuild, single deletion with index and media cleanup,
 management and recall request validation, Live-boundary privacy redaction,
 all-interface binding, and cross-origin rejection. Its API evidence and responsive browser QA screenshots are exported

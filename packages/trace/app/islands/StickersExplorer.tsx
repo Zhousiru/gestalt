@@ -601,6 +601,7 @@ function Overview({ snapshot }: { snapshot: StickerSnapshot }) {
             {[embedding.provider, embedding.model].filter(Boolean).join(" / ") || "model not reported"}
           </span>
           <span>{embedding.dimensions ? `${embedding.dimensions} dimensions` : "dimensions unknown"}</span>
+          <span>{embedding.distanceMetric} distance</span>
           {embedding.id ? (
             <span className="font-mono" title={embedding.id}>
               space {shortId(embedding.id)}
@@ -725,7 +726,7 @@ function RecallTestPanel({
           </StatusPill>
           {embedding.dimensions ? (
             <span className="text-xs text-neutral-500">
-              {embedding.dimensions}d
+              {embedding.distanceMetric} · {embedding.dimensions}d
             </span>
           ) : null}
         </div>
@@ -852,8 +853,8 @@ function RecallResults({ response }: { response: StickerRecallResponse }) {
           </strong>{" "}
           {response.returned === 1 ? "match" : "matches"} for “{response.query}”
         </span>
-        <span title="Affinity = 1 / (1 + max(0, distance)); it is a diagnostic transform, not model confidence.">
-          Affinity is derived from vector distance
+        <span title="Cosine similarity is vector similarity, not calibrated model confidence.">
+          Cosine similarity = 1 − distance
         </span>
       </div>
       {response.results.length ? (
@@ -884,37 +885,24 @@ function RecallResults({ response }: { response: StickerRecallResponse }) {
                 </div>
               </div>
               <div className="col-span-2 col-start-2 min-w-0 sm:col-span-1 sm:col-start-auto sm:text-right">
-                {result.affinity !== undefined ? (
-                  <>
-                    <div className="flex items-baseline justify-between gap-2 sm:justify-end">
-                      <span className="text-xs text-neutral-500">Affinity</span>
-                      <strong className="text-sm font-semibold tabular-nums text-neutral-900">
-                        {formatAffinity(result.affinity)}
-                      </strong>
-                    </div>
-                    <div
-                      aria-label={`${formatAffinity(result.affinity)} affinity`}
-                      aria-valuemax={100}
-                      aria-valuemin={0}
-                      aria-valuenow={Math.round(result.affinity * 100)}
-                      className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-neutral-200"
-                      role="meter"
-                    >
-                      <div
-                        className="h-full rounded-full bg-[var(--trace-accent)]"
-                        style={{
-                          width: `${Math.max(0, Math.min(100, result.affinity * 100))}%`,
-                        }}
-                      />
-                    </div>
-                  </>
+                {result.similarity !== undefined ? (
+                  <div className="flex items-baseline justify-between gap-2 sm:justify-end">
+                    <span className="text-xs text-neutral-500">
+                      Cosine similarity
+                    </span>
+                    <strong className="text-sm font-semibold tabular-nums text-neutral-900">
+                      {formatCosineSimilarity(result.similarity)}
+                    </strong>
+                  </div>
                 ) : (
-                  <span className="text-xs text-neutral-500">Affinity unavailable</span>
+                  <span className="text-xs text-neutral-500">
+                    Similarity unavailable
+                  </span>
                 )}
                 <p className="mt-1.5 text-[11px] tabular-nums text-neutral-500">
                   {result.distance !== undefined
-                    ? `distance ${formatDistance(result.distance)} · lower is closer`
-                    : "distance not reported"}
+                    ? `cosine distance ${formatDistance(result.distance)} · lower is closer`
+                    : `${response.metric} distance not reported`}
                 </p>
               </div>
             </li>
@@ -2275,10 +2263,10 @@ function formatCount(value: number) {
   return new Intl.NumberFormat().format(value);
 }
 
-function formatAffinity(value: number) {
+function formatCosineSimilarity(value: number) {
   return new Intl.NumberFormat(undefined, {
-    style: "percent",
-    maximumFractionDigits: 1,
+    minimumFractionDigits: 3,
+    maximumFractionDigits: 3,
   }).format(value);
 }
 
