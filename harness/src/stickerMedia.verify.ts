@@ -43,6 +43,11 @@ async function main(): Promise<void> {
   const target = Buffer.from("target-mface-media");
   const decoy = Buffer.from("wrong-first-media");
   const fetchedConnector = createMockConnector();
+  let fetchedReadImageCalls = 0;
+  fetchedConnector.readImage = async () => {
+    fetchedReadImageCalls += 1;
+    return { ok: false, error: "sticker resolver must not call get_image" };
+  };
   const fetchedSegments: ConnectorFetchedSegment[] = [
     fetchedMface(0, "emoji-decoy", "https://media.example/decoy"),
     fetchedMface(1, "emoji-target", "https://media.example/target")
@@ -57,6 +62,9 @@ async function main(): Promise<void> {
     fetch: async (request) => {
       const url = String(request);
       fetchedUrls.push(url);
+      if (url.endsWith("/expired")) {
+        return new Response("expired", { status: 404 });
+      }
       return new Response(url.endsWith("/target") ? target : decoy, {
         status: 200
       });
@@ -71,13 +79,18 @@ async function main(): Promise<void> {
         data: {
           emoji_id: "emoji-target",
           emoji_package_id: "package-a",
-          key: "target-key"
+          key: "target-key",
+          url: "https://media.example/expired"
         }
       }
     })
   );
   assert.deepEqual(Buffer.from(selected), target);
-  assert.deepEqual(fetchedUrls, ["https://media.example/target"]);
+  assert.deepEqual(fetchedUrls, [
+    "https://media.example/expired",
+    "https://media.example/target"
+  ]);
+  assert.equal(fetchedReadImageCalls, 0);
 
   const reorderedConnector = createMockConnector();
   reorderedConnector.fetchMessage = async () => ({
@@ -114,14 +127,42 @@ async function main(): Promise<void> {
   );
   assert.deepEqual(reorderedUrls, ["https://media.example/reordered-target"]);
 
-  const unsafeConnector = createMockConnector();
-  unsafeConnector.readImage = async (input) => ({
-    ok: true,
-    data: {
-      file: input.file,
-      url: "https://untrusted-inbound.example/secret"
+  const directConnector = createMockConnector();
+  const directUrls: string[] = [];
+  const directResolver = createStickerMediaResolver({
+    connector: directConnector,
+    fetch: async (request) => {
+      directUrls.push(String(request));
+      return new Response(target, { status: 200 });
     }
   });
+  assert.deepEqual(
+    Buffer.from(await directResolver.resolve(
+      stickerJob({
+        sourceKind: "mface",
+        segmentIndex: 0,
+        segment: {
+          type: "mface",
+          data: {
+            emoji_id: "emoji-direct",
+            emoji_package_id: "package-direct",
+            file: "opaque-mface.gif",
+            url: "https://gxh.vip.qq.com/direct.gif"
+          }
+        }
+      })
+    )),
+    target
+  );
+  assert.deepEqual(directUrls, ["https://gxh.vip.qq.com/direct.gif"]);
+  assert.deepEqual(directConnector.calls, []);
+
+  const unsafeConnector = createMockConnector();
+  let unsafeReadImageCalls = 0;
+  unsafeConnector.readImage = async () => {
+    unsafeReadImageCalls += 1;
+    return { ok: false, error: "sticker resolver must not call get_image" };
+  };
   unsafeConnector.fetchMessage = async () => ({ ok: false });
   let unsafeFetchCalls = 0;
   const unsafeResolver = createStickerMediaResolver({
@@ -140,7 +181,7 @@ async function main(): Promise<void> {
           data: {
             file: path.resolve("private-host-file.png"),
             path: path.resolve("private-host-file.png"),
-            url: "https://untrusted-inbound.example/secret",
+            url: "http://untrusted-inbound.example/secret",
             sub_type: 1
           }
         }
@@ -149,32 +190,9 @@ async function main(): Promise<void> {
     /could not be resolved/
   );
   assert.equal(unsafeFetchCalls, 0);
-
-  const trustedConnector = createMockConnector();
-  trustedConnector.readImage = async () => ({
-    ok: true,
-    media: {
-      source: "connector-action",
-      kind: "https-url",
-      value: "https://198.18.0.1/sticker"
-    }
-  });
-  let trustedFetchCalls = 0;
-  const trustedResolver = createStickerMediaResolver({
-    connector: trustedConnector,
-    fetch: async () => {
-      trustedFetchCalls += 1;
-      return new Response(target, { status: 200 });
-    }
-  });
-  assert.deepEqual(
-    Buffer.from(await trustedResolver.resolve(opaqueImageJob())),
-    target
-  );
-  assert.equal(trustedFetchCalls, 1);
+  assert.equal(unsafeReadImageCalls, 0);
 
   const oversizedConnector = createMockConnector();
-  oversizedConnector.readImage = trustedConnector.readImage;
   const nineMiB = new Uint8Array(9 * 1024 * 1024);
   const oversizedResolver = createStickerMediaResolver({
     connector: oversizedConnector,
@@ -191,9 +209,38 @@ async function main(): Promise<void> {
       )
   });
   await assert.rejects(
-    oversizedResolver.resolve(opaqueImageJob()),
+    oversizedResolver.resolve(
+      httpsImageJob("https://media.example/oversized")
+    ),
     /exceeds 16777216 bytes/
   );
+  assert.deepEqual(oversizedConnector.calls, []);
+
+  const largeStaticSource = { width: 2_048, height: 512 };
+  const largeStatic = await prepareStickerMedia(
+    await createStaticPng(largeStaticSource.width, largeStaticSource.height)
+  );
+  const largeStaticAnalysisMetadata = await sharp(
+    largeStatic.analysisImage
+  ).metadata();
+  assert.equal(
+    largeStaticAnalysisMetadata.width,
+    STICKER_MEDIA_LIMITS.maxAnalysisDimension
+  );
+  assert.equal(largeStaticAnalysisMetadata.height, 256);
+
+  const smallStaticSource = { width: 64, height: 32 };
+  const smallStaticBytes = await createStaticPng(
+    smallStaticSource.width,
+    smallStaticSource.height
+  );
+  const smallStatic = await prepareStickerMedia(smallStaticBytes);
+  const smallStaticAnalysisMetadata = await sharp(
+    smallStatic.analysisImage
+  ).metadata();
+  assert.equal(smallStaticAnalysisMetadata.width, smallStaticSource.width);
+  assert.equal(smallStaticAnalysisMetadata.height, smallStaticSource.height);
+  assert.deepEqual(Buffer.from(smallStatic.analysisImage), smallStaticBytes);
 
   const oversizedDimensionError = await rejectionMessage(
     prepareStickerMedia(
@@ -261,6 +308,18 @@ async function main(): Promise<void> {
   ).metadata();
   assert.equal(validContactSheetMetadata.width, 1_024);
   assert.equal(validContactSheetMetadata.height, 1_024);
+  const firstCellCorner = await readRgbaPixel(
+    validAnimation.contactSheet,
+    0,
+    0
+  );
+  const firstCellCenter = await readRgbaPixel(
+    validAnimation.contactSheet,
+    128,
+    128
+  );
+  assert.deepEqual(firstCellCorner, [250, 250, 250, 255]);
+  assert.notDeepEqual(firstCellCenter, firstCellCorner);
 
   const observations = extractStickerObservations(multiSegmentEvent());
   assert.deepEqual(
@@ -325,13 +384,38 @@ async function main(): Promise<void> {
   const summary = {
     inlineBytes: inline.byteLength,
     segmentIndices: observations.map((observation) => observation.segmentIndex),
-    selectedUrl: fetchedUrls[0],
+    directFailureFallbackUrls: fetchedUrls,
+    selectedUrl: fetchedUrls.at(-1),
     reorderedFallbackUrl: reorderedUrls[0],
-    unsafeInboundFetchCalls: unsafeFetchCalls,
-    trustedConnectorFetchCalls: trustedFetchCalls,
+    directHttpsUrl: directUrls[0],
+    nonHttpsInboundFetchCalls: unsafeFetchCalls,
+    stickerReadImageCalls: fetchedReadImageCalls + unsafeReadImageCalls,
     streamLimitBytes: 16 * 1024 * 1024,
     connectorMediaKind: actionMessage.segments?.[1]?.media?.kind,
     mediaLimits: STICKER_MEDIA_LIMITS,
+    modelInputSizing: {
+      staticDownscale: {
+        source: largeStaticSource,
+        analysis: {
+          width: largeStaticAnalysisMetadata.width,
+          height: largeStaticAnalysisMetadata.height
+        }
+      },
+      staticWithoutEnlargement: {
+        source: smallStaticSource,
+        analysis: {
+          width: smallStaticAnalysisMetadata.width,
+          height: smallStaticAnalysisMetadata.height
+        },
+        originalBytesReused: true
+      },
+      animatedWithoutFrameEnlargement: {
+        sourceFrame: { width: 64, height: 64 },
+        cell: { width: 256, height: 256 },
+        cornerPixel: firstCellCorner,
+        centerPixel: firstCellCenter
+      }
+    },
     decodeBudgetRejections: {
       dimensions: {
         width: oversizedDimensionError,
@@ -377,12 +461,12 @@ function fetchedMface(
   };
 }
 
-function opaqueImageJob(): StickerJob {
+function httpsImageJob(url: string): StickerJob {
   return stickerJob({
     segmentIndex: 0,
     segment: {
       type: "image",
-      data: { file: "opaque-image-token", sub_type: 1 }
+      data: { file: "opaque-image-token", url, sub_type: 1 }
     }
   });
 }
@@ -456,6 +540,20 @@ async function createStaticPng(width: number, height: number): Promise<Buffer> {
   })
     .png()
     .toBuffer();
+}
+
+async function readRgbaPixel(
+  image: Uint8Array,
+  left: number,
+  top: number
+): Promise<number[]> {
+  return Array.from(
+    await sharp(image)
+      .extract({ left, top, width: 1, height: 1 })
+      .ensureAlpha()
+      .raw()
+      .toBuffer()
+  );
 }
 
 async function createAnimatedGif(

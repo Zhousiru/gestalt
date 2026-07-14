@@ -650,16 +650,21 @@ For GestaltHome behavior, verify:
 
 `verify:sticker-media` is the focused media-boundary regression fixture. It
 verifies persisted segment indices, identity-checked selection in multi-sticker
-messages, rejection of untrusted inbound paths/URLs, connector-action media
-marking, direct trusted URL fetching, the streamed 16 MiB cap, pre-decode
-dimension/frame/total-pixel budgets, and the valid 16-sample 4x4 path. Read
+messages, direct inbound HTTPS fetching without `get_image`, rejection of
+inbound paths and non-HTTPS URLs, connector-action media fallback, the streamed
+16 MiB cap, pre-decode
+dimension/frame/total-pixel budgets, static model-input downscaling to a
+1024x1024 boundary without enlargement, and the valid 16-sample 4x4 path whose
+sampled frames are also never enlarged. Read
 `harness/artifacts/sticker-media-security/summary.json` after running it.
 
 `verify:stickers-ui` starts the real Live HTTP server over a populated sticker
 fixture. It verifies ready/queued/failed overview state, paginated and filtered
 catalog responses, the 100-item service limit, retry-stage semantics, protected
-media assets, original CQ preservation in Live/SSE session messages, structured
-transport redaction, SSE catalog updates, and the
+media assets, batch description/index rebuild, single catalog deletion with
+LanceDB and blob cleanup, management validation and same-origin enforcement,
+original CQ preservation in Live/SSE session messages, structured transport
+redaction, SSE catalog updates, and the
 all-interface binding plus same-origin browser guards. Responsive browser QA artifacts live under
 `harness/artifacts/live-stickers-ui/`.
 

@@ -199,6 +199,9 @@ function createObservationBarrier(expected: number): {
       async send() {
         throw new Error("The session-pin verifier does not send stickers.");
       },
+      async manage() {
+        throw new Error("The session-pin verifier does not manage stickers.");
+      },
       async snapshot() {
         throw new Error("The session-pin verifier does not read stickers.");
       },

@@ -3,10 +3,12 @@ import sharp from "sharp";
 const GRID_COLUMNS = 4;
 const GRID_ROWS = 4;
 const SAMPLE_COUNT = GRID_COLUMNS * GRID_ROWS;
-const CELL_SIZE = 256;
+const ANALYSIS_MAX_DIMENSION = 1_024;
+const CELL_SIZE = ANALYSIS_MAX_DIMENSION / GRID_COLUMNS;
 const SUPPORTED_FORMATS = new Set(["png", "jpeg", "jpg", "gif", "webp"]);
 
 export const STICKER_MEDIA_LIMITS = Object.freeze({
+  maxAnalysisDimension: ANALYSIS_MAX_DIMENSION,
   maxDimension: 4_096,
   maxFramePixels: 8 * 1_024 * 1_024,
   maxFrameCount: 256,
@@ -66,9 +68,10 @@ export async function prepareStickerMedia(
   };
 
   if (frameCount === 1) {
+    const analysisImage = await prepareStaticAnalysisImage(bytes, width, height);
     return {
       ...base,
-      analysisImage: bytes
+      analysisImage
     };
   }
 
@@ -88,6 +91,7 @@ export async function prepareStickerMedia(
           width: CELL_SIZE,
           height: CELL_SIZE,
           fit: "contain",
+          withoutEnlargement: true,
           background: { r: 250, g: 250, b: 250, alpha: 1 }
         })
         .png()
@@ -120,6 +124,30 @@ export async function prepareStickerMedia(
     analysisImage: contactSheet,
     contactSheet
   };
+}
+
+async function prepareStaticAnalysisImage(
+  bytes: Uint8Array,
+  width: number,
+  height: number
+): Promise<Uint8Array> {
+  if (
+    width <= STICKER_MEDIA_LIMITS.maxAnalysisDimension &&
+    height <= STICKER_MEDIA_LIMITS.maxAnalysisDimension
+  ) {
+    return bytes;
+  }
+
+  return sharp(bytes, GUARDED_SHARP_INPUT)
+    .timeout({ seconds: STICKER_MEDIA_LIMITS.sharpTimeoutSeconds })
+    .autoOrient()
+    .resize({
+      width: STICKER_MEDIA_LIMITS.maxAnalysisDimension,
+      height: STICKER_MEDIA_LIMITS.maxAnalysisDimension,
+      fit: "inside",
+      withoutEnlargement: true
+    })
+    .toBuffer();
 }
 
 function validateStickerGeometry(metadata: {

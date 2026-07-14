@@ -28,10 +28,9 @@ export function createStickerMediaResolver(input: {
         return inline;
       }
 
-      const direct = await resolveOpaqueFile(
-        input.connector,
-        fetchImplementation,
-        job.segment.data
+      const direct = await resolveHttpsUrl(
+        job.segment.data,
+        fetchImplementation
       );
       if (direct) {
         return direct;
@@ -44,7 +43,6 @@ export function createStickerMediaResolver(input: {
         const segment = selectFetchedSegment(job, fetched.segments);
         if (segment) {
           const resolved = await resolveFetchedSegment(
-            input.connector,
             fetchImplementation,
             segment
           );
@@ -59,7 +57,6 @@ export function createStickerMediaResolver(input: {
 }
 
 async function resolveFetchedSegment(
-  connector: Connector,
   fetchImplementation: typeof fetch,
   segment: ConnectorFetchedSegment
 ): Promise<Uint8Array | undefined> {
@@ -67,30 +64,25 @@ async function resolveFetchedSegment(
   if (inline) {
     return inline;
   }
+  const direct = await resolveHttpsUrl(segment.data, fetchImplementation);
+  if (direct) {
+    return direct;
+  }
   if (segment.media) {
     return readTrustedMediaReference(segment.media, fetchImplementation);
   }
-  return resolveOpaqueFile(
-    connector,
-    fetchImplementation,
-    segment.data
-  );
+  return undefined;
 }
 
-async function resolveOpaqueFile(
-  connector: Connector,
+async function resolveHttpsUrl(
+  data: Record<string, unknown>,
   fetchImplementation: typeof fetch,
-  data: Record<string, unknown>
 ): Promise<Uint8Array | undefined> {
-  const file = readString(data.file);
-  if (!file || file === "marketface" || isBase64Reference(file)) {
+  const url = readString(data.url);
+  if (!url || !isHttpsReference(url)) {
     return undefined;
   }
-  const image = await connector.readImage({ file });
-  if (!image.ok || !image.media) {
-    return undefined;
-  }
-  return readTrustedMediaReference(image.media, fetchImplementation);
+  return downloadUrl(url, fetchImplementation);
 }
 
 function selectFetchedSegment(
@@ -324,6 +316,14 @@ function checkedBytes(bytes: Uint8Array): Uint8Array {
 
 function isBase64Reference(value: string): boolean {
   return value.startsWith("base64://") || /^data:image\/[a-z0-9.+-]+;base64,/i.test(value);
+}
+
+function isHttpsReference(value: string): boolean {
+  try {
+    return new URL(value).protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 function readString(value: unknown): string | undefined {

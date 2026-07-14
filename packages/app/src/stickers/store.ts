@@ -6,6 +6,7 @@ import {
   readdir,
   rename,
   stat,
+  unlink,
   writeFile
 } from "node:fs/promises";
 import type { GestaltHome } from "../home/resolveGestaltHome";
@@ -36,7 +37,9 @@ export interface StickerStore {
   readRecord(id: string): Promise<StickerRecord | undefined>;
   findRecordBySha256(sha256: string): Promise<StickerRecord | undefined>;
   saveRecord(record: StickerRecord): Promise<void>;
+  deleteRecord(id: string): Promise<StickerRecord | undefined>;
   saveBlob(sha256: string, extension: string, bytes: Uint8Array): Promise<string>;
+  deleteBlob(relativePath: string): Promise<boolean>;
   absolutePath(relativePath: string): string;
 }
 
@@ -208,6 +211,24 @@ export function createStickerStore(home: GestaltHome): StickerStore {
       sortedRecords = undefined;
     },
 
+    async deleteRecord(id) {
+      await ensureAllRecordsLoaded();
+      const current = recordsById.get(id);
+      if (!current) {
+        return undefined;
+      }
+      try {
+        await unlink(recordPath(home, id));
+      } catch (error) {
+        if (!isNodeError(error) || error.code !== "ENOENT") {
+          throw error;
+        }
+      }
+      recordsById.delete(id);
+      sortedRecords = undefined;
+      return current;
+    },
+
     async saveBlob(sha256, extension, bytes) {
       const safeExtension = extension.replace(/[^a-z0-9]/gi, "").toLowerCase() || "bin";
       const absolute = path.join(home.stickerBlobsDir, `${sha256}.${safeExtension}`);
@@ -228,13 +249,21 @@ export function createStickerStore(home: GestaltHome): StickerStore {
       return toRelative(home, absolute);
     },
 
-    absolutePath(relativePath) {
-      const absolute = path.resolve(home.root, relativePath);
-      const within = path.relative(home.root, absolute);
-      if (within.startsWith("..") || path.isAbsolute(within)) {
-        throw new Error("Sticker path escapes GestaltHome.");
+    async deleteBlob(relativePath) {
+      const absolute = resolveAbsolutePath(home, relativePath);
+      try {
+        await unlink(absolute);
+        return true;
+      } catch (error) {
+        if (isNodeError(error) && error.code === "ENOENT") {
+          return false;
+        }
+        throw error;
       }
-      return absolute;
+    },
+
+    absolutePath(relativePath) {
+      return resolveAbsolutePath(home, relativePath);
     }
   };
 }
@@ -304,6 +333,15 @@ function safeId(id: string): string {
 
 function toRelative(home: GestaltHome, absolute: string): string {
   return path.relative(home.root, absolute).split(path.sep).join("/");
+}
+
+function resolveAbsolutePath(home: GestaltHome, relativePath: string): string {
+  const absolute = path.resolve(home.root, relativePath);
+  const within = path.relative(home.root, absolute);
+  if (within.startsWith("..") || path.isAbsolute(within)) {
+    throw new Error("Sticker path escapes GestaltHome.");
+  }
+  return absolute;
 }
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {

@@ -18,7 +18,8 @@ import {
   startLiveDebugServer,
   type MessageReceivedEvent,
   type StickerAnalyzer,
-  type StickerEmbedder
+  type StickerEmbedder,
+  type StickerManagementResponse
 } from "@gestalt/app";
 import sharp from "sharp";
 import { writeArtifactJson } from "./artifactBinary";
@@ -50,6 +51,7 @@ try {
   const runStore = createLiveRunStore(bus);
   const store = createStickerStore(home);
   const connector = createMockConnector({ now });
+  let analyzerCallCount = 0;
   const embedder: StickerEmbedder = {
     provider: "fixture-embedding",
     model: "fixture-embedding-v1",
@@ -63,16 +65,21 @@ try {
   };
   const analyzer: StickerAnalyzer = {
     async describe(input) {
+      analyzerCallCount += 1;
       return {
         desc: input.animated
-          ? "An excited blue character dances in a loop to celebrate. blue character, dancing, excited, celebration"
-          : "A friendly red cat waves hello. red cat, waving, greeting, friendly",
+          ? `An excited blue character dances in a loop to celebrate. blue character, dancing, excited, celebration, revision-${analyzerCallCount}`
+          : `A friendly red cat waves hello. red cat, waving, greeting, friendly, revision-${analyzerCallCount}`,
         provider: "fixture-sub",
         model: "fixture-vision-v1",
         promptHash: "live-stickers-prompt-v1"
       };
     }
   };
+  const vectorIndex = await createStickerVectorIndex({
+    directory: home.stickerLanceDbDir,
+    embeddingId: embedder.id
+  });
   const service = createStickerService({
     home,
     connector,
@@ -86,10 +93,7 @@ try {
     },
     analyzer,
     embedder,
-    vectorIndex: await createStickerVectorIndex({
-      directory: home.stickerLanceDbDir,
-      embeddingId: embedder.id
-    }),
+    vectorIndex,
     configuredEnabled: true,
     liveEvents: bus,
     now
@@ -198,6 +202,21 @@ try {
       headers: { origin: "https://attacker.example" }
     });
     assert.equal(crossOriginResponse.status, 403);
+    const crossOriginMutationResponse = await fetch(
+      `${server.url}/api/live/stickers/manage`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          origin: "https://attacker.example"
+        },
+        body: JSON.stringify({
+          action: "delete",
+          stickerIds: ["stk_cross_origin_probe"]
+        })
+      }
+    );
+    assert.equal(crossOriginMutationResponse.status, 403);
     const legacySnapshotResponse = await fetch(
       `${server.url}/api/live/snapshot`
     );
@@ -217,6 +236,7 @@ try {
     const snapshot = JSON.parse(snapshotText) as {
       available: boolean;
       processing: { queued: number; failed: number; ready: number };
+      embedding: { rowCount: number };
       catalog: { offset: number; limit: number; total: number };
       jobs: Array<{
         id: string;
@@ -225,6 +245,8 @@ try {
       }>;
       stickers: Array<{
         id: string;
+        desc: string;
+        thumbnailUrl: string;
         contactSheetUrl?: string;
       }>;
     };
@@ -276,6 +298,53 @@ try {
       /sandbox/
     );
     assert.ok((await assetResponse.arrayBuffer()).byteLength > 0);
+
+    const managementMethodResponse = await fetch(
+      `${server.url}/api/live/stickers/manage`
+    );
+    assert.equal(managementMethodResponse.status, 405);
+    const invalidManagementResponse = await fetch(
+      `${server.url}/api/live/stickers/manage`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "delete", stickerIds: [] })
+      }
+    );
+    assert.equal(invalidManagementResponse.status, 400);
+
+    const stickerIds = snapshot.stickers.map((sticker) => sticker.id);
+    const descriptionsBeforeRebuild = new Map(
+      snapshot.stickers.map((sticker) => [sticker.id, sticker.desc])
+    );
+    const rebuildResponse = await fetch(
+      `${server.url}/api/live/stickers/manage`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "rebuild", stickerIds })
+      }
+    );
+    assert.equal(rebuildResponse.status, 200);
+    const rebuildResult =
+      (await rebuildResponse.json()) as StickerManagementResponse;
+    assert.equal(rebuildResult.action, "rebuild");
+    assert.equal(rebuildResult.requested, 2);
+    assert.equal(rebuildResult.succeeded, 2);
+    assert.equal(rebuildResult.failed, 0);
+    assert.ok(rebuildResult.results.every((result) => result.outcome === "rebuilt"));
+    assert.equal(analyzerCallCount, 4);
+    const rebuiltSnapshot = (await fetch(
+      `${server.url}/api/live/stickers/snapshot`
+    ).then((response) => response.json())) as typeof snapshot;
+    assert.equal(rebuiltSnapshot.embedding.rowCount, 2);
+    assert.ok(
+      rebuiltSnapshot.stickers.every(
+        (sticker) =>
+          sticker.desc !== descriptionsBeforeRebuild.get(sticker.id) &&
+          sticker.desc.includes("revision-")
+      )
+    );
 
     const sseController = new AbortController();
     const sseResponse = await fetch(`${server.url}/api/live/events`, {
@@ -365,6 +434,58 @@ try {
     await reader.cancel();
     sseController.abort();
 
+    const deleteTarget = rebuiltSnapshot.stickers.find(
+      (sticker) => sticker.id === animated.id
+    );
+    assert.ok(deleteTarget);
+    assert.ok(deleteTarget.contactSheetUrl);
+    const deleteResponse = await fetch(
+      `${server.url}/api/live/stickers/manage`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "delete",
+          stickerIds: [deleteTarget.id]
+        })
+      }
+    );
+    assert.equal(deleteResponse.status, 200);
+    const deleteResult =
+      (await deleteResponse.json()) as StickerManagementResponse;
+    assert.deepEqual(
+      {
+        action: deleteResult.action,
+        requested: deleteResult.requested,
+        succeeded: deleteResult.succeeded,
+        failed: deleteResult.failed,
+        outcome: deleteResult.results[0]?.outcome
+      },
+      {
+        action: "delete",
+        requested: 1,
+        succeeded: 1,
+        failed: 0,
+        outcome: "deleted"
+      }
+    );
+    const snapshotAfterDelete = (await fetch(
+      `${server.url}/api/live/stickers/snapshot`
+    ).then((response) => response.json())) as typeof snapshot;
+    assert.equal(snapshotAfterDelete.catalog.total, 1);
+    assert.equal(snapshotAfterDelete.processing.ready, 1);
+    assert.equal(snapshotAfterDelete.embedding.rowCount, 1);
+    assert.equal(await store.readRecord(deleteTarget.id), undefined);
+    assert.equal((await vectorIndex.listStickerIds()).includes(deleteTarget.id), false);
+    assert.equal(
+      (await fetch(`${server.url}${deleteTarget.thumbnailUrl}`)).status,
+      404
+    );
+    assert.equal(
+      (await fetch(`${server.url}${deleteTarget.contactSheetUrl}`)).status,
+      404
+    );
+
     const artifact = {
       ok: true,
       url: server.url,
@@ -385,6 +506,24 @@ try {
       },
       sseCatalogUpdateObserved: true,
       sseSummaryOnlyObserved: true,
+      management: {
+        batchRebuild: {
+          requested: rebuildResult.requested,
+          succeeded: rebuildResult.succeeded,
+          analyzerCallCount,
+          descriptionsChanged: true,
+          rowCount: rebuiltSnapshot.embedding.rowCount
+        },
+        singleDelete: {
+          stickerId: deleteTarget.id,
+          outcome: deleteResult.results[0]?.outcome,
+          catalogTotal: snapshotAfterDelete.catalog.total,
+          rowCount: snapshotAfterDelete.embedding.rowCount,
+          mediaRemoved: true
+        },
+        invalidRequestRejected: true,
+        crossOriginMutationRejected: true
+      },
       legacySnapshotRemoved: true,
       allInterfacesBindingAllowed: true,
       crossOriginRejected: true
@@ -394,6 +533,10 @@ try {
     console.log(JSON.stringify({ ...artifact, hold }, null, 2));
 
     if (hold) {
+      await service.observe(
+        stickerEvent("live-restored-animated", "mface", animatedImage, "mface")
+      );
+      await service.whenIdle();
       await waitForShutdown();
     }
   } finally {

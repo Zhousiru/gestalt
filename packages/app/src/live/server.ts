@@ -4,6 +4,7 @@ import { open, stat } from "node:fs/promises";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { z } from "zod";
 import {
   ConversationTimelinePageSchema,
   ConversationsPageSchema,
@@ -55,6 +56,7 @@ import type {
   SessionTurnRecord
 } from "../session/schemas";
 import {
+  MAX_STICKER_MANAGEMENT_BATCH,
   normalizeStickerCatalogQuery,
   type StickerCatalogQuery
 } from "../stickers/service";
@@ -109,6 +111,16 @@ const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 3000;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const EMPTY_SIGNALS: SignalCounts = { info: 0, warning: 0, error: 0 };
+const MAX_LIVE_JSON_BODY_BYTES = 64 * 1024;
+const StickerManagementRequestSchema = z
+  .object({
+    action: z.enum(["delete", "rebuild"]),
+    stickerIds: z
+      .array(z.string().min(1).max(128).regex(/^[a-zA-Z0-9_-]+$/))
+      .min(1)
+      .max(MAX_STICKER_MANAGEMENT_BATCH)
+  })
+  .strict();
 
 export async function startLiveDebugServer(
   options: StartLiveDebugServerOptions
@@ -204,10 +216,6 @@ async function handleRequest(
   response: ServerResponse,
   options: ResolvedLiveDebugServerOptions
 ): Promise<void> {
-  if (request.method !== "GET") {
-    sendJson(response, 405, { error: "Method not allowed" });
-    return;
-  }
   if (!isAllowedRequest(request)) {
     sendJson(response, 403, {
       error: "Live debug server rejected the request origin"
@@ -220,6 +228,33 @@ async function handleRequest(
     `http://${request.headers.host ?? "localhost"}`
   );
   const pathname = url.pathname;
+
+  if (pathname === "/api/live/stickers/manage") {
+    if (request.method !== "POST") {
+      sendJson(response, 405, { error: "Method not allowed" });
+      return;
+    }
+    if (!options.runtime.stickers) {
+      sendJson(response, 503, {
+        error: "Sticker subsystem is not configured"
+      });
+      return;
+    }
+    const parsed = StickerManagementRequestSchema.safeParse(
+      await readJsonRequest(request)
+    );
+    if (!parsed.success) {
+      sendJson(response, 400, { error: "Invalid sticker management request" });
+      return;
+    }
+    sendJson(response, 200, await options.runtime.stickers.manage(parsed.data));
+    return;
+  }
+
+  if (request.method !== "GET") {
+    sendJson(response, 405, { error: "Method not allowed" });
+    return;
+  }
 
   if (pathname === "/api/live/health") {
     sendJson(response, 200, {
@@ -1663,6 +1698,34 @@ function sendJson(response: ServerResponse, status: number, value: unknown): voi
     "X-Content-Type-Options": "nosniff"
   });
   response.end(JSON.stringify(sanitizeUntrustedValue(value)));
+}
+
+async function readJsonRequest(request: IncomingMessage): Promise<unknown> {
+  const contentLength = Number(request.headers["content-length"]);
+  if (
+    Number.isFinite(contentLength) &&
+    contentLength > MAX_LIVE_JSON_BODY_BYTES
+  ) {
+    throw new HttpError(413, "Live API request body is too large.");
+  }
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of request) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += bytes.byteLength;
+    if (total > MAX_LIVE_JSON_BODY_BYTES) {
+      throw new HttpError(413, "Live API request body is too large.");
+    }
+    chunks.push(bytes);
+  }
+  if (total === 0) {
+    throw new HttpError(400, "Live API request body is required.");
+  }
+  try {
+    return JSON.parse(Buffer.concat(chunks, total).toString("utf8"));
+  } catch (error) {
+    throw new HttpError(400, "Live API request body must be valid JSON.", error);
+  }
 }
 
 function writeSse(response: ServerResponse, event: LiveEventEnvelope): boolean {

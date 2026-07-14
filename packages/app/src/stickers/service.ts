@@ -13,6 +13,7 @@ import type { StickerVectorIndex, StickerSearchResult } from "./lance";
 import type { StickerLogger } from "./logger";
 import type { StickerMediaResolver } from "./media";
 import type { StickerAnalyzer, StickerEmbedder } from "./models";
+import { prepareStickerMedia } from "./contactSheet";
 import { embedAndIndex, processStickerJob } from "./processor";
 import type { StickerJob, StickerJobStatus, StickerRecord } from "./schemas";
 import type { StickerStore } from "./store";
@@ -26,6 +27,7 @@ const STICKER_DELIVERY_ERROR = "Sticker delivery failed.";
 
 export const DEFAULT_STICKER_CATALOG_LIMIT = 48;
 export const MAX_STICKER_CATALOG_LIMIT = 100;
+export const MAX_STICKER_MANAGEMENT_BATCH = 100;
 
 export type StickerCatalogStatusFilter =
   | "all"
@@ -117,6 +119,29 @@ export interface StickerView {
   lastError?: string;
 }
 
+export type StickerManagementAction = "delete" | "rebuild";
+export type StickerManagementOutcome =
+  | "deleted"
+  | "rebuilt"
+  | "not_found"
+  | "busy"
+  | "failed";
+
+export interface StickerManagementResult {
+  stickerId: string;
+  ok: boolean;
+  outcome: StickerManagementOutcome;
+  error?: string;
+}
+
+export interface StickerManagementResponse {
+  action: StickerManagementAction;
+  requested: number;
+  succeeded: number;
+  failed: number;
+  results: StickerManagementResult[];
+}
+
 export interface StickerService {
   readonly configuredEnabled: boolean;
   isScrapingEnabled(): boolean;
@@ -139,6 +164,10 @@ export interface StickerService {
     replyToMessageId?: string;
     agentTraceId?: string;
   }): Promise<ConnectorCallResult>;
+  manage(input: {
+    action: StickerManagementAction;
+    stickerIds: readonly string[];
+  }): Promise<StickerManagementResponse>;
   snapshot(query?: StickerCatalogQuery): Promise<StickerRuntimeSnapshot>;
   resolveAssetPath(
     stickerId: string,
@@ -176,6 +205,7 @@ export function createStickerService(
   let needsIndexAudit = true;
   let rebuildingIndex = false;
   let indexAuditError: string | undefined;
+  let managementQueue: Promise<void> = Promise.resolve();
 
   const publish = (
     type: Parameters<LiveEventSink["publish"]>[0],
@@ -564,6 +594,244 @@ export function createStickerService(
       });
   };
 
+  const enqueueManagement = <T>(operation: () => Promise<T>): Promise<T> => {
+    const result = managementQueue.then(operation);
+    managementQueue = result.then(
+      () => undefined,
+      () => undefined
+    );
+    return result;
+  };
+
+  const deleteStickers = async (
+    stickerIds: readonly string[]
+  ): Promise<StickerManagementResponse> => {
+    const results: StickerManagementResult[] = [];
+    const deletedRecords: StickerRecord[] = [];
+
+    for (const stickerId of stickerIds) {
+      try {
+        const record = await input.store.readRecord(stickerId);
+        if (!record) {
+          results.push({
+            stickerId,
+            ok: false,
+            outcome: "not_found",
+            error: "Sticker record was not found."
+          });
+          continue;
+        }
+        if (record.status === "processing") {
+          results.push({
+            stickerId,
+            ok: false,
+            outcome: "busy",
+            error: "Sticker is still processing."
+          });
+          continue;
+        }
+        const deleted = await input.store.deleteRecord(stickerId);
+        if (!deleted) {
+          results.push({
+            stickerId,
+            ok: false,
+            outcome: "not_found",
+            error: "Sticker record was not found."
+          });
+          continue;
+        }
+        deletedRecords.push(deleted);
+        results.push({ stickerId, ok: true, outcome: "deleted" });
+      } catch (error) {
+        results.push({
+          stickerId,
+          ok: false,
+          outcome: "failed",
+          error: errorMessage(error)
+        });
+      }
+    }
+
+    if (deletedRecords.length > 0) {
+      const deletedIds = deletedRecords.map((record) => record.id);
+      const at = now().toISOString();
+      try {
+        const deletedRows = await input.vectorIndex.deleteStickerIds(deletedIds);
+        await log("sticker.management_delete_completed", {
+          at,
+          data: {
+            stickerIds: deletedIds,
+            deletedRecords: deletedIds.length,
+            deletedRows
+          }
+        });
+        publish(
+          "sticker.index.updated",
+          {
+            state: indexAuditError ? "error" : "ready",
+            ...(indexAuditError ? { error: indexAuditError } : {}),
+            deletedRows,
+            stickerIds: deletedIds
+          },
+          at
+        );
+      } catch (error) {
+        needsIndexAudit = true;
+        indexAuditError = errorMessage(error);
+        await log("sticker.management_delete_cleanup_failed", {
+          at,
+          data: { stickerIds: deletedIds, error: indexAuditError }
+        });
+        publish(
+          "sticker.index.updated",
+          { state: "error", error: indexAuditError, stickerIds: deletedIds },
+          at
+        );
+        kickWorker();
+      }
+
+      const remainingRecords = await input.store.listRecords();
+      const referencedPaths = new Set(
+        remainingRecords.flatMap((record) => stickerAssetPaths(record))
+      );
+      const deletedPaths = new Set(
+        deletedRecords.flatMap((record) => stickerAssetPaths(record))
+      );
+      for (const relativePath of deletedPaths) {
+        if (referencedPaths.has(relativePath)) {
+          continue;
+        }
+        try {
+          await input.store.deleteBlob(relativePath);
+        } catch (error) {
+          await log("sticker.management_delete_cleanup_failed", {
+            at,
+            data: {
+              stickerIds: deletedIds,
+              cleanup: "blob",
+              error: errorMessage(error)
+            }
+          });
+        }
+      }
+      publish(
+        "sticker.catalog.updated",
+        { action: "delete", stickerIds: deletedIds },
+        at
+      );
+    }
+
+    return managementResponse("delete", results);
+  };
+
+  const rebuildStickers = async (
+    stickerIds: readonly string[]
+  ): Promise<StickerManagementResponse> => {
+    const jobs = await input.store.listJobs();
+    const results = await mapWithConcurrency(
+      stickerIds,
+      processingConcurrency,
+      async (stickerId): Promise<StickerManagementResult> => {
+        const startedAt = now().toISOString();
+        try {
+          const record = await input.store.readRecord(stickerId);
+          if (!record) {
+            return {
+              stickerId,
+              ok: false,
+              outcome: "not_found",
+              error: "Sticker record was not found."
+            };
+          }
+          if (record.status === "processing") {
+            return {
+              stickerId,
+              ok: false,
+              outcome: "busy",
+              error: "Sticker is still processing."
+            };
+          }
+          await log("sticker.management_rebuild_started", {
+            at: startedAt,
+            stickerId
+          });
+          const bytes = await readFile(
+            input.store.absolutePath(record.asset.relativePath)
+          );
+          const prepared = await prepareStickerMedia(bytes);
+          const sourceJob = latestJobForSticker(jobs, stickerId);
+          const platformSummary =
+            record.mface?.summary ??
+            (sourceJob ? stickerJobPlatformSummary(sourceJob) : undefined);
+          const description = await input.analyzer.describe({
+            image: prepared.analysisImage,
+            mime: prepared.contactSheet ? "image/png" : prepared.mime,
+            animated: prepared.animated,
+            frameCount: prepared.frameCount,
+            ...(platformSummary ? { platformSummary } : {})
+          });
+          const desc = description.desc.trim();
+          if (!desc) {
+            throw new Error("Sticker analyzer returned an empty description.");
+          }
+          const { lastError: _lastError, ...recordWithoutError } = record;
+          const indexed = await embedAndIndex(
+            {
+              ...recordWithoutError,
+              status: "processing",
+              desc,
+              analysis: {
+                provider: description.provider,
+                model: description.model,
+                promptHash: description.promptHash,
+                analyzedAt: now().toISOString()
+              },
+              updatedAt: now().toISOString()
+            },
+            {
+              embedder: input.embedder,
+              vectorIndex: input.vectorIndex,
+              now
+            }
+          );
+          await input.store.saveRecord(indexed);
+          const completedAt = now().toISOString();
+          await log("sticker.management_rebuild_completed", {
+            at: completedAt,
+            stickerId,
+            data: {
+              provider: description.provider,
+              model: description.model,
+              promptHash: description.promptHash,
+              embeddingId: input.embedder.id,
+              dimensions: indexed.embedding?.dimensions
+            }
+          });
+          publish(
+            "sticker.catalog.updated",
+            { action: "rebuild", stickerId },
+            completedAt
+          );
+          return { stickerId, ok: true, outcome: "rebuilt" };
+        } catch (error) {
+          const message = errorMessage(error);
+          await log("sticker.management_rebuild_failed", {
+            at: now().toISOString(),
+            stickerId,
+            data: { error: message }
+          });
+          return {
+            stickerId,
+            ok: false,
+            outcome: "failed",
+            error: message
+          };
+        }
+      }
+    );
+    return managementResponse("rebuild", results);
+  };
+
   const service: StickerService = {
     configuredEnabled: input.configuredEnabled,
 
@@ -873,6 +1141,20 @@ export function createStickerService(
       }
     },
 
+    async manage(managementInput) {
+      const stickerIds = normalizeStickerManagementIds(
+        managementInput.stickerIds
+      );
+      return enqueueManagement(async () => {
+        while (workerPromise) {
+          await workerPromise;
+        }
+        return managementInput.action === "delete"
+          ? deleteStickers(stickerIds)
+          : rebuildStickers(stickerIds);
+      });
+    },
+
     async snapshot(catalogInput = {}) {
       const [jobs, records, index] = await Promise.all([
         input.store.listJobs(),
@@ -1120,6 +1402,89 @@ function stageLogType(status: StickerJobStatus): string {
     failed: "sticker.failed"
   };
   return names[status];
+}
+
+function normalizeStickerManagementIds(
+  stickerIds: readonly string[]
+): string[] {
+  const uniqueIds = [...new Set(stickerIds)];
+  if (uniqueIds.length === 0) {
+    throw new Error("At least one sticker id is required.");
+  }
+  if (uniqueIds.length > MAX_STICKER_MANAGEMENT_BATCH) {
+    throw new Error(
+      `Sticker management is limited to ${MAX_STICKER_MANAGEMENT_BATCH} records per request.`
+    );
+  }
+  if (uniqueIds.some((stickerId) => !/^[a-zA-Z0-9_-]+$/.test(stickerId))) {
+    throw new Error("Sticker management received an invalid sticker id.");
+  }
+  return uniqueIds;
+}
+
+function managementResponse(
+  action: StickerManagementAction,
+  results: StickerManagementResult[]
+): StickerManagementResponse {
+  const succeeded = results.filter((result) => result.ok).length;
+  return {
+    action,
+    requested: results.length,
+    succeeded,
+    failed: results.length - succeeded,
+    results
+  };
+}
+
+function stickerAssetPaths(record: StickerRecord): string[] {
+  return [
+    record.asset.relativePath,
+    ...(record.asset.contactSheetRelativePath
+      ? [record.asset.contactSheetRelativePath]
+      : [])
+  ];
+}
+
+function latestJobForSticker(
+  jobs: readonly StickerJob[],
+  stickerId: string
+): StickerJob | undefined {
+  return jobs
+    .filter((job) => job.stickerId === stickerId)
+    .sort(
+      (left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt)
+    )[0];
+}
+
+function stickerJobPlatformSummary(job: StickerJob): string | undefined {
+  const summary = job.segment.data.summary;
+  return summary === undefined || summary === null || String(summary).length === 0
+    ? undefined
+    : String(summary);
+}
+
+async function mapWithConcurrency<Input, Output>(
+  values: readonly Input[],
+  concurrency: number,
+  mapper: (value: Input) => Promise<Output>
+): Promise<Output[]> {
+  const results = new Array<Output>(values.length);
+  let nextIndex = 0;
+  const workers = Array.from(
+    { length: Math.min(concurrency, values.length) },
+    async () => {
+      while (nextIndex < values.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        const value = values[index];
+        if (value !== undefined) {
+          results[index] = await mapper(value);
+        }
+      }
+    }
+  );
+  await Promise.all(workers);
+  return results;
 }
 
 function errorMessage(error: unknown): string {

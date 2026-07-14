@@ -83,11 +83,13 @@ re-fetched, the resolver first checks that index and cross-validates stable
 identity fields (`emoji_id`, package/key, image file id or digest); it never
 silently substitutes the first image in a multi-image message.
 
-Incoming `path` and HTTP fields are untrusted. The resolver accepts bounded
-inline base64, otherwise treats `file` only as an opaque token for the
-connector's explicit `read_image` action. Only media references minted by an
-explicit connector action may be downloaded or read. Connector-returned URLs
-are trusted and fetched directly, with a 30-second timeout and streamed 16 MiB
+Incoming filesystem paths, opaque `file` references, and non-HTTPS URLs remain
+untrusted. The resolver accepts bounded inline base64 and directly downloads the
+`url` on an already classified OneBot sticker segment when it is valid HTTPS.
+The sticker pipeline never calls `get_image`; `file` is used only for segment
+identity. If the direct URL is absent or unavailable, the resolver calls
+`get_msg`, identity-selects the original segment, and consumes its connector
+media reference. HTTPS downloads have a 30-second timeout and streamed 16 MiB
 limit. Connector-returned absolute local files are explicitly marked, must be
 regular non-symlink files, and are also size-limited. That local-file option
 assumes the configured connector/action caller is trusted; deployments that do
@@ -101,13 +103,17 @@ native pixel guard, and each frame render and contact sheet composition has a
 native 10-second terminating timeout. The implementation does not use a
 JavaScript-only timeout that would leave decoding active in the background.
 
-Static stickers are sent to the sub model directly. GIF, APNG, and animated
-WebP media are sampled at 16 evenly spaced timestamps over one playback loop.
-The composited frames are arranged left-to-right and top-to-bottom in a 4x4,
-1024x1024 PNG. Frame delays participate in sampling, so long-held animation
-frames may correctly appear more than once. The animation prompt asks the sub
-model to infer the most likely complete action from temporal changes and
-describe one coherent motion instead of listing individual frames.
+Every model-facing analysis image fits within a 1024x1024 boundary while
+preserving aspect ratio. Static stickers larger than that boundary are
+downscaled before analysis; smaller static stickers reuse their original bytes
+and are never enlarged. GIF, APNG, and animated WebP media are sampled at 16
+evenly spaced timestamps over one playback loop. Each sampled frame is fitted
+without enlargement into its 256x256 cell, and the cells are arranged
+left-to-right and top-to-bottom in a 4x4, 1024x1024 PNG. Frame delays participate
+in sampling, so long-held animation frames may correctly appear more than once.
+The animation prompt asks the sub model to infer the most likely complete action
+from temporal changes and describe one coherent motion instead of listing
+individual frames.
 
 The sub model emits one English `desc`: a short sentence followed by an ASCII
 period and 3–8 unlabeled English search keywords. See
@@ -222,6 +228,21 @@ the browser reconnects. Queue DTOs keep the current `stage` separate from
 `lastFailedStage`, so a retry is visibly queued rather than appearing stuck in
 its previous failed stage.
 
+The Live `Stickers` page also provides lightweight catalog management. Operators
+may select one sticker, select the visible page, or keep a selection across
+catalog pages, then delete the selection or rebuild its descriptions and vector
+rows. `POST /api/live/stickers/manage` accepts at most 100 unique sticker ids per
+request and returns a result for every id. Records still in `processing` are
+reported as busy instead of racing the background worker.
+
+Rebuild reads the saved original media, applies the current static/contact-sheet
+analysis preparation, calls the current sub model for a new `desc`, and upserts a
+fresh embedding before replacing the record. A failed rebuild leaves the prior
+record available. Delete removes the catalog record and LanceDB row, then removes
+original/contact-sheet blobs only when no remaining record references them.
+Durable observation jobs and lifecycle logs are retained as provenance. The UI
+requires explicit confirmation for deletion and reports partial batch failures.
+
 The page shows the effective scrape switch, queue stages, ready/failed/
 deduplicated counts, embedding/LanceDB state, descriptions, source types, and
 errors.
@@ -262,16 +283,20 @@ bounded worker self-recovery, native/image/fallback sends, trace-correlated
 logs, authorization, and the no-model command boundary.
 
 The focused media fixture additionally proves segment-index/identity selection,
-untrusted inbound reference rejection, direct connector-action URL fetching,
-the streamed 16 MiB cap, dimension/frame/decoded-pixel rejection, and a valid
-16-sample 4x4 animation path. Its artifact is under
+direct inbound HTTPS fetching without `get_image`, rejection of inbound paths
+and non-HTTPS URLs, connector-action media fallback, the streamed 16 MiB cap,
+dimension/frame/decoded-pixel rejection, static
+downscaling to the 1024x1024 analysis boundary without enlargement, and a valid
+16-sample 4x4 animation path whose sampled frames are also never enlarged. Its
+artifact is under
 `harness/artifacts/sticker-media-security/`.
 
 The Live UI fixture exercises a populated catalog through the real HTTP server,
 including queue/failed/ready states, catalog pagination/filtering and limit
 clamping, current versus last-failed stages, protected media assets, an SSE
-catalog update, Live-boundary privacy redaction, all-interface binding, and
-cross-origin rejection. Its API evidence and responsive browser QA screenshots are exported
+catalog update, batch description/index rebuild, single deletion with index and
+media cleanup, management request validation, Live-boundary privacy redaction,
+all-interface binding, and cross-origin rejection. Its API evidence and responsive browser QA screenshots are exported
 under `harness/artifacts/live-stickers-ui/`; screenshots are manual visual-QA
 artifacts and should be refreshed when an in-app browser instance is available.
 

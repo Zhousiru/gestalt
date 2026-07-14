@@ -70,6 +70,23 @@ export interface StickerSnapshot {
   stickers: StickerCatalogItemView[];
 }
 
+export type StickerManagementAction = "delete" | "rebuild";
+
+export interface StickerManagementResult {
+  stickerId: string;
+  ok: boolean;
+  outcome: "deleted" | "rebuilt" | "not_found" | "busy" | "failed";
+  error?: string;
+}
+
+export interface StickerManagementResponse {
+  action: StickerManagementAction;
+  requested: number;
+  succeeded: number;
+  failed: number;
+  results: StickerManagementResult[];
+}
+
 export interface RuntimeLiveEventEnvelope<T = unknown> {
   id: string | number;
   type: string;

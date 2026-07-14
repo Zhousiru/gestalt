@@ -15,6 +15,7 @@ import {
   Radio,
   RefreshCw,
   Search,
+  Trash2,
   X,
 } from "lucide-react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
@@ -38,6 +39,8 @@ import type {
   RuntimeLiveEventEnvelope,
   StickerCatalogItemView,
   StickerJobView,
+  StickerManagementAction,
+  StickerManagementResponse,
   StickerSnapshot,
 } from "../lib/types";
 
@@ -74,6 +77,16 @@ export default function StickersExplorer() {
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>("all");
   const [catalogPage, setCatalogPage] = useState(0);
   const [selection, setSelection] = useState<Selection>();
+  const [checkedStickerIds, setCheckedStickerIds] = useState<Set<string>>(
+    () => new Set()
+  );
+  const [managementAction, setManagementAction] =
+    useState<StickerManagementAction>();
+  const [managementNotice, setManagementNotice] = useState<{
+    tone: "ok" | "error";
+    message: string;
+  }>();
+  const [deleteCandidateIds, setDeleteCandidateIds] = useState<string[]>([]);
   const [selectedStickerCache, setSelectedStickerCache] =
     useState<StickerCatalogItemView>();
   const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
@@ -309,6 +322,99 @@ export default function StickersExplorer() {
     }
   };
 
+  const toggleStickerChecked = (stickerId: string, checked: boolean) => {
+    setCheckedStickerIds((current) => {
+      const next = new Set(current);
+      if (checked) {
+        next.add(stickerId);
+      } else {
+        next.delete(stickerId);
+      }
+      return next;
+    });
+  };
+
+  const toggleVisibleStickers = (checked: boolean) => {
+    setCheckedStickerIds((current) => {
+      const next = new Set(current);
+      for (const sticker of visibleStickers) {
+        if (checked) {
+          next.add(sticker.id);
+        } else {
+          next.delete(sticker.id);
+        }
+      }
+      return next;
+    });
+  };
+
+  const runManagement = async (
+    action: StickerManagementAction,
+    stickerIds: readonly string[]
+  ) => {
+    const uniqueIds = [...new Set(stickerIds)];
+    if (uniqueIds.length === 0 || managementAction) {
+      return;
+    }
+    setManagementAction(action);
+    setManagementNotice(undefined);
+    try {
+      const response = await fetch("/api/live/stickers/manage", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action, stickerIds: uniqueIds }),
+      });
+      const payload = (await response.json()) as StickerManagementResponse & {
+        error?: string;
+      };
+      if (!response.ok) {
+        throw new Error(payload.error || `Sticker ${action} failed with ${response.status}`);
+      }
+      const succeededIds = new Set(
+        payload.results.filter((result) => result.ok).map((result) => result.stickerId)
+      );
+      if (action === "delete" && succeededIds.size > 0) {
+        setCheckedStickerIds((current) => {
+          const next = new Set(current);
+          for (const stickerId of succeededIds) {
+            next.delete(stickerId);
+          }
+          return next;
+        });
+        setSelection((current) =>
+          current?.kind === "sticker" && succeededIds.has(current.id)
+            ? undefined
+            : current
+        );
+        setSelectedStickerCache((current) =>
+          current && succeededIds.has(current.id) ? undefined : current
+        );
+        setMobileDetailOpen(false);
+      }
+      const firstFailure = payload.results.find((result) => !result.ok);
+      const verb = action === "delete" ? "Deleted" : "Rebuilt";
+      setManagementNotice({
+        tone: payload.failed > 0 ? "error" : "ok",
+        message:
+          payload.failed > 0
+            ? `${verb} ${payload.succeeded} of ${payload.requested}. ${payload.failed} failed${firstFailure?.error ? `: ${firstFailure.error}` : "."}`
+            : `${verb} ${payload.succeeded} ${payload.succeeded === 1 ? "sticker" : "stickers"}.`,
+      });
+      await loadSnapshot();
+    } catch (managementError) {
+      setManagementNotice({
+        tone: "error",
+        message:
+          managementError instanceof Error
+            ? managementError.message
+            : String(managementError),
+      });
+    } finally {
+      setManagementAction(undefined);
+      setDeleteCandidateIds([]);
+    }
+  };
+
   return (
     <TooltipProvider>
       <main className="grid h-screen grid-rows-[auto_minmax(0,1fr)] bg-[var(--trace-bg)] text-neutral-950">
@@ -365,6 +471,9 @@ export default function StickersExplorer() {
                     statusFilter={statusFilter}
                     stickers={visibleStickers}
                     selectedId={selection?.kind === "sticker" ? selection.id : undefined}
+                    checkedIds={checkedStickerIds}
+                    managementAction={managementAction}
+                    managementNotice={managementNotice}
                     onQueryChange={setQuery}
                     onSourceFilterChange={setSourceFilter}
                     onStatusFilterChange={setStatusFilter}
@@ -374,19 +483,50 @@ export default function StickersExplorer() {
                       setSourceFilter("all");
                     }}
                     onPageChange={setCatalogPage}
+                    onClearChecked={() => setCheckedStickerIds(new Set())}
+                    onDeleteChecked={() =>
+                      setDeleteCandidateIds([...checkedStickerIds])
+                    }
+                    onRebuildChecked={() =>
+                      void runManagement("rebuild", [...checkedStickerIds])
+                    }
+                    onToggleChecked={toggleStickerChecked}
+                    onToggleVisible={toggleVisibleStickers}
                     page={catalogPage}
                     onSelect={(id) =>
                       selectForInspection({ kind: "sticker", id })
                     }
                   />
                 </div>
-                <DetailPanel sticker={selectedSticker} job={selectedJob} />
+                <DetailPanel
+                  sticker={selectedSticker}
+                  job={selectedJob}
+                  managementAction={managementAction}
+                  onDelete={(stickerId) => setDeleteCandidateIds([stickerId])}
+                  onRebuild={(stickerId) =>
+                    void runManagement("rebuild", [stickerId])
+                  }
+                />
               </div>
               <MobileDetailDrawer
                 job={selectedJob}
+                managementAction={managementAction}
                 open={mobileDetailOpen}
                 sticker={selectedSticker}
+                onDelete={(stickerId) => setDeleteCandidateIds([stickerId])}
                 onOpenChange={setMobileDetailOpen}
+                onRebuild={(stickerId) =>
+                  void runManagement("rebuild", [stickerId])
+                }
+              />
+              <DeleteConfirmationDialog
+                busy={managementAction === "delete"}
+                count={deleteCandidateIds.length}
+                open={deleteCandidateIds.length > 0}
+                onCancel={() => setDeleteCandidateIds([])}
+                onConfirm={() =>
+                  void runManagement("delete", deleteCandidateIds)
+                }
               />
             </>
           ) : snapshot ? (
@@ -590,7 +730,10 @@ function JobsPanel({
 
 function CatalogPanel({
   catalog,
+  checkedIds,
   filtersActive,
+  managementAction,
+  managementNotice,
   page,
   query,
   sourceFilter,
@@ -602,10 +745,18 @@ function CatalogPanel({
   onStatusFilterChange,
   onReset,
   onPageChange,
+  onClearChecked,
+  onDeleteChecked,
+  onRebuildChecked,
   onSelect,
+  onToggleChecked,
+  onToggleVisible,
 }: {
   catalog: StickerSnapshot["catalog"];
+  checkedIds: ReadonlySet<string>;
   filtersActive: boolean;
+  managementAction: StickerManagementAction | undefined;
+  managementNotice: { tone: "ok" | "error"; message: string } | undefined;
   page: number;
   query: string;
   sourceFilter: SourceFilter;
@@ -617,11 +768,21 @@ function CatalogPanel({
   onStatusFilterChange: (value: StatusFilter) => void;
   onReset: () => void;
   onPageChange: (page: number) => void;
+  onClearChecked: () => void;
+  onDeleteChecked: () => void;
+  onRebuildChecked: () => void;
   onSelect: (id: string) => void;
+  onToggleChecked: (id: string, checked: boolean) => void;
+  onToggleVisible: (checked: boolean) => void;
 }) {
   const firstItem = catalog.total === 0 ? 0 : catalog.offset + 1;
   const lastItem = Math.min(catalog.total, catalog.offset + stickers.length);
   const pageCount = Math.max(1, Math.ceil(catalog.total / catalog.limit));
+  const visibleCheckedCount = stickers.filter((sticker) =>
+    checkedIds.has(sticker.id)
+  ).length;
+  const allVisibleChecked =
+    stickers.length > 0 && visibleCheckedCount === stickers.length;
   return (
     <section className="overflow-hidden rounded-lg bg-white ring-1 ring-neutral-200">
       <header className="border-b border-neutral-200 px-4 py-3">
@@ -679,6 +840,84 @@ function CatalogPanel({
             </button>
           ))}
         </div>
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-neutral-200 pt-3">
+          <div className="flex min-w-0 flex-wrap items-center gap-3">
+            <SelectionCheckbox
+              checked={allVisibleChecked}
+              indeterminate={visibleCheckedCount > 0 && !allVisibleChecked}
+              disabled={stickers.length === 0 || Boolean(managementAction)}
+              label="Select this page"
+              onChange={onToggleVisible}
+            />
+            {checkedIds.size > 0 ? (
+              <span className="text-xs font-medium tabular-nums text-neutral-700">
+                {formatCount(checkedIds.size)} selected
+              </span>
+            ) : (
+              <span className="text-xs text-neutral-500">
+                Select one or more stickers to manage them
+              </span>
+            )}
+          </div>
+          {checkedIds.size > 0 ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                className={cn(
+                  "h-8 rounded-md px-2.5 text-xs font-medium text-neutral-600 hover:bg-neutral-100 hover:text-neutral-950 disabled:cursor-not-allowed disabled:opacity-40",
+                  focusClass
+                )}
+                disabled={Boolean(managementAction)}
+                onClick={onClearChecked}
+                type="button"
+              >
+                Clear
+              </button>
+              <button
+                className={cn(
+                  "inline-flex h-8 items-center gap-1.5 rounded-md bg-neutral-950 px-3 text-xs font-medium text-white hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-40",
+                  focusClass
+                )}
+                disabled={Boolean(managementAction)}
+                onClick={onRebuildChecked}
+                type="button"
+              >
+                <RefreshCw
+                  aria-hidden="true"
+                  className={managementAction === "rebuild" ? "animate-spin" : undefined}
+                  size={13}
+                />
+                Rebuild desc + index
+              </button>
+              <button
+                className={cn(
+                  "inline-flex h-8 items-center gap-1.5 rounded-md bg-red-600 px-3 text-xs font-medium text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-40",
+                  focusClass
+                )}
+                disabled={Boolean(managementAction)}
+                onClick={onDeleteChecked}
+                type="button"
+              >
+                <Trash2 aria-hidden="true" size={13} />
+                Delete
+              </button>
+            </div>
+          ) : null}
+        </div>
+        {managementNotice ? (
+          <div
+            aria-live="polite"
+            className={cn(
+              "mt-3 rounded-md px-3 py-2 text-xs leading-5 ring-1 ring-inset",
+              managementNotice.tone === "ok" &&
+                "bg-emerald-50 text-emerald-800 ring-emerald-200",
+              managementNotice.tone === "error" &&
+                "bg-red-50 text-red-800 ring-red-200"
+            )}
+            role={managementNotice.tone === "error" ? "alert" : "status"}
+          >
+            {managementNotice.message}
+          </div>
+        ) : null}
       </header>
 
       {stickers.length ? (
@@ -686,10 +925,15 @@ function CatalogPanel({
           <div>
             {stickers.map((sticker) => (
               <StickerRow
+                checked={checkedIds.has(sticker.id)}
                 key={sticker.id}
-                selected={selectedId === sticker.id}
+                inspected={selectedId === sticker.id}
                 sticker={sticker}
                 onSelect={() => onSelect(sticker.id)}
+                onToggleChecked={(checked) =>
+                  onToggleChecked(sticker.id, checked)
+                }
+                selectionDisabled={Boolean(managementAction)}
               />
             ))}
           </div>
@@ -761,73 +1005,148 @@ function CatalogPanel({
   );
 }
 
-function StickerRow({
-  sticker,
-  selected,
-  onSelect,
+function SelectionCheckbox({
+  checked,
+  disabled,
+  indeterminate,
+  label,
+  onChange,
 }: {
+  checked: boolean;
+  disabled?: boolean;
+  indeterminate: boolean;
+  label: string;
+  onChange: (checked: boolean) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (inputRef.current) {
+      inputRef.current.indeterminate = indeterminate;
+    }
+  }, [indeterminate]);
+  return (
+    <label className="inline-flex min-h-8 cursor-pointer items-center gap-2 text-xs font-medium text-neutral-700 has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-50">
+      <input
+        ref={inputRef}
+        checked={checked}
+        className="h-4 w-4 rounded border-neutral-300 accent-[var(--trace-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--trace-accent)] focus-visible:ring-offset-1"
+        disabled={disabled}
+        onChange={(event) => onChange(event.currentTarget.checked)}
+        type="checkbox"
+      />
+      {label}
+    </label>
+  );
+}
+
+function StickerRow({
+  checked,
+  sticker,
+  inspected,
+  onSelect,
+  onToggleChecked,
+  selectionDisabled,
+}: {
+  checked: boolean;
   sticker: StickerCatalogItemView;
-  selected: boolean;
+  inspected: boolean;
   onSelect: () => void;
+  onToggleChecked: (checked: boolean) => void;
+  selectionDisabled: boolean;
 }) {
   return (
-    <button
-      aria-pressed={selected}
+    <div
       className={cn(
-        "grid w-full grid-cols-[64px_minmax(0,1fr)] gap-3 border-b border-neutral-100 px-3 py-3 text-left last:border-b-0 hover:bg-neutral-50 sm:grid-cols-[64px_minmax(0,1fr)_160px] sm:px-4",
-        focusClass,
-        selected && "bg-[var(--trace-accent-soft)] hover:bg-[var(--trace-accent-soft)]"
+        "grid w-full grid-cols-[32px_minmax(0,1fr)] border-b border-neutral-100 last:border-b-0",
+        checked && "bg-neutral-50",
+        inspected && "bg-[var(--trace-accent-soft)]"
       )}
-      onClick={onSelect}
-      type="button"
     >
-      <div className="relative">
-        <StickerMedia
-          alt={sticker.desc ? `Preview: ${sticker.desc}` : "Sticker preview"}
-          className="h-16 w-16"
-          src={staticStickerPreview(sticker)}
+      <div className="grid place-items-center pl-3 sm:pl-4">
+        <input
+          aria-label={`Select sticker ${sticker.id}`}
+          checked={checked}
+          className="h-4 w-4 rounded border-neutral-300 accent-[var(--trace-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--trace-accent)] focus-visible:ring-offset-1"
+          disabled={selectionDisabled}
+          onChange={(event) => onToggleChecked(event.currentTarget.checked)}
+          type="checkbox"
         />
-        {sticker.animated ? (
-          <span className="absolute bottom-1 right-1 rounded bg-neutral-950/80 px-1 py-0.5 text-[9px] font-semibold text-white">
-            GIF
-          </span>
-        ) : null}
       </div>
-      <div className="min-w-0 self-center">
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <span className="font-mono text-xs text-neutral-600">{shortId(sticker.id)}</span>
-          <StatusPill tone={statusTone(sticker.status)}>{statusLabel(sticker.status)}</StatusPill>
-          <StatusPill tone={statusTone(sticker.embeddingStatus)}>
-            vector {statusLabel(sticker.embeddingStatus)}
-          </StatusPill>
+      <button
+        aria-current={inspected ? "true" : undefined}
+        className={cn(
+          "grid min-w-0 grid-cols-[64px_minmax(0,1fr)] gap-3 px-3 py-3 text-left hover:bg-neutral-50 sm:grid-cols-[64px_minmax(0,1fr)_160px] sm:px-4",
+          focusClass,
+          inspected && "hover:bg-[var(--trace-accent-soft)]"
+        )}
+        onClick={onSelect}
+        type="button"
+      >
+        <div className="relative">
+          <StickerMedia
+            alt={sticker.desc ? `Preview: ${sticker.desc}` : "Sticker preview"}
+            className="h-16 w-16"
+            src={staticStickerPreview(sticker)}
+          />
+          {sticker.animated ? (
+            <span className="absolute bottom-1 right-1 rounded bg-neutral-950/80 px-1 py-0.5 text-[9px] font-semibold text-white">
+              GIF
+            </span>
+          ) : null}
         </div>
-        <p className="mt-1.5 line-clamp-2 text-sm leading-5 text-neutral-900">
-          {sticker.desc || "Description pending"}
-        </p>
-        <p className="mt-1 truncate text-xs text-neutral-500 sm:hidden">
-          {sourceLabel(sticker.sourceKind)} · {formatRelativeTime(sticker.updatedAt)}
-        </p>
-      </div>
-      <div className="hidden self-center text-right text-xs text-neutral-500 sm:block">
-        <p className="font-medium text-neutral-700">{sourceLabel(sticker.sourceKind)}</p>
-        <time className="mt-1 block" dateTime={sticker.updatedAt}>
-          {formatRelativeTime(sticker.updatedAt)}
-        </time>
-      </div>
-    </button>
+        <div className="min-w-0 self-center">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <span className="font-mono text-xs text-neutral-600">{shortId(sticker.id)}</span>
+            <StatusPill tone={statusTone(sticker.status)}>{statusLabel(sticker.status)}</StatusPill>
+            <StatusPill tone={statusTone(sticker.embeddingStatus)}>
+              vector {statusLabel(sticker.embeddingStatus)}
+            </StatusPill>
+          </div>
+          <p className="mt-1.5 line-clamp-2 text-sm leading-5 text-neutral-900">
+            {sticker.desc || "Description pending"}
+          </p>
+          <p className="mt-1 truncate text-xs text-neutral-500 sm:hidden">
+            {sourceLabel(sticker.sourceKind)} · {formatRelativeTime(sticker.updatedAt)}
+          </p>
+        </div>
+        <div className="hidden self-center text-right text-xs text-neutral-500 sm:block">
+          <p className="font-medium text-neutral-700">{sourceLabel(sticker.sourceKind)}</p>
+          <time className="mt-1 block" dateTime={sticker.updatedAt}>
+            {formatRelativeTime(sticker.updatedAt)}
+          </time>
+        </div>
+      </button>
+    </div>
   );
 }
 
 function DetailPanel({
   sticker,
   job,
+  managementAction,
+  onDelete,
+  onRebuild,
 }: {
   sticker: StickerCatalogItemView | undefined;
   job: StickerJobView | undefined;
+  managementAction: StickerManagementAction | undefined;
+  onDelete: (stickerId: string) => void;
+  onRebuild: (stickerId: string) => void;
 }) {
   return (
     <aside className="hidden min-h-[420px] border-l border-neutral-200 bg-white xl:sticky xl:top-0 xl:block xl:min-h-[calc(100vh-4rem)]">
-      {sticker ? <StickerDetail sticker={sticker} /> : job ? <JobDetail job={job} /> : <DetailEmpty />}
+      {sticker ? (
+        <StickerDetail
+          managementAction={managementAction}
+          sticker={sticker}
+          onDelete={onDelete}
+          onRebuild={onRebuild}
+        />
+      ) : job ? (
+        <JobDetail job={job} />
+      ) : (
+        <DetailEmpty />
+      )}
     </aside>
   );
 }
@@ -835,13 +1154,19 @@ function DetailPanel({
 function MobileDetailDrawer({
   sticker,
   job,
+  managementAction,
   open,
+  onDelete,
   onOpenChange,
+  onRebuild,
 }: {
   sticker: StickerCatalogItemView | undefined;
   job: StickerJobView | undefined;
+  managementAction: StickerManagementAction | undefined;
   open: boolean;
+  onDelete: (stickerId: string) => void;
   onOpenChange: (open: boolean) => void;
+  onRebuild: (stickerId: string) => void;
 }) {
   const title = sticker ? `Sticker ${shortId(sticker.id)}` : job ? `Job ${shortId(job.id)}` : "Sticker details";
   return (
@@ -865,7 +1190,16 @@ function MobileDetailDrawer({
             </DialogPrimitive.Close>
           </header>
           <div className="min-h-0 overflow-y-auto overscroll-contain">
-            {sticker ? <StickerDetail sticker={sticker} /> : job ? <JobDetail job={job} /> : null}
+            {sticker ? (
+              <StickerDetail
+                managementAction={managementAction}
+                sticker={sticker}
+                onDelete={onDelete}
+                onRebuild={onRebuild}
+              />
+            ) : job ? (
+              <JobDetail job={job} />
+            ) : null}
           </div>
         </DialogPrimitive.Content>
       </DialogPrimitive.Portal>
@@ -873,7 +1207,97 @@ function MobileDetailDrawer({
   );
 }
 
-function StickerDetail({ sticker }: { sticker: StickerCatalogItemView }) {
+function DeleteConfirmationDialog({
+  busy,
+  count,
+  open,
+  onCancel,
+  onConfirm,
+}: {
+  busy: boolean;
+  count: number;
+  open: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <DialogPrimitive.Root
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen && !busy) {
+          onCancel();
+        }
+      }}
+    >
+      <DialogPrimitive.Portal>
+        <DialogPrimitive.Overlay className="fixed inset-0 z-40 bg-neutral-950/35" />
+        <DialogPrimitive.Content
+          className="fixed left-1/2 top-1/2 z-50 w-[calc(100vw-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 rounded-lg bg-white p-5 shadow-[var(--trace-shadow-md)] focus:outline-none"
+          onEscapeKeyDown={(event) => {
+            if (busy) event.preventDefault();
+          }}
+          onPointerDownOutside={(event) => {
+            if (busy) event.preventDefault();
+          }}
+        >
+          <div className="flex items-start gap-3">
+            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-md bg-red-50 text-red-700">
+              <Trash2 aria-hidden="true" size={17} />
+            </span>
+            <div className="min-w-0">
+              <DialogPrimitive.Title className="text-sm font-semibold text-neutral-950">
+                Delete {formatCount(count)} {count === 1 ? "sticker" : "stickers"}?
+              </DialogPrimitive.Title>
+              <DialogPrimitive.Description className="mt-1.5 text-sm leading-6 text-neutral-600">
+                This removes the catalog record, vector index row, and unreferenced media.
+                Processing history and logs remain available for audit.
+              </DialogPrimitive.Description>
+            </div>
+          </div>
+          <div className="mt-5 flex justify-end gap-2">
+            <button
+              className={cn(
+                "h-9 rounded-md bg-white px-3 text-sm font-medium text-neutral-700 ring-1 ring-inset ring-neutral-300 hover:bg-neutral-50 disabled:cursor-not-allowed disabled:opacity-40",
+                focusClass
+              )}
+              disabled={busy}
+              onClick={onCancel}
+              type="button"
+            >
+              Cancel
+            </button>
+            <button
+              className={cn(
+                "inline-flex h-9 items-center gap-1.5 rounded-md bg-red-600 px-3 text-sm font-medium text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50",
+                focusClass
+              )}
+              disabled={busy}
+              onClick={onConfirm}
+              type="button"
+            >
+              {busy ? <Loader2 aria-hidden="true" className="animate-spin" size={14} /> : null}
+              {busy ? "Deleting…" : "Delete"}
+            </button>
+          </div>
+        </DialogPrimitive.Content>
+      </DialogPrimitive.Portal>
+    </DialogPrimitive.Root>
+  );
+}
+
+function StickerDetail({
+  managementAction,
+  sticker,
+  onDelete,
+  onRebuild,
+}: {
+  managementAction: StickerManagementAction | undefined;
+  sticker: StickerCatalogItemView;
+  onDelete: (stickerId: string) => void;
+  onRebuild: (stickerId: string) => void;
+}) {
+  const busy = Boolean(managementAction);
+  const processing = normalizeStatus(sticker.status) === "processing";
   return (
     <div className="p-4 sm:p-5">
       <div className="flex items-start justify-between gap-3">
@@ -887,6 +1311,37 @@ function StickerDetail({ sticker }: { sticker: StickerCatalogItemView }) {
           </h2>
         </div>
         <CopyButton value={sticker.id} />
+      </div>
+
+      <div className="mt-4 grid grid-cols-2 gap-2">
+        <button
+          className={cn(
+            "inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md bg-neutral-950 px-3 text-xs font-medium text-white hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-40",
+            focusClass
+          )}
+          disabled={busy || processing}
+          onClick={() => onRebuild(sticker.id)}
+          type="button"
+        >
+          <RefreshCw
+            aria-hidden="true"
+            className={managementAction === "rebuild" ? "animate-spin" : undefined}
+            size={13}
+          />
+          Rebuild desc + index
+        </button>
+        <button
+          className={cn(
+            "inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md bg-white px-3 text-xs font-medium text-red-700 ring-1 ring-inset ring-red-300 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40",
+            focusClass
+          )}
+          disabled={busy || processing}
+          onClick={() => onDelete(sticker.id)}
+          type="button"
+        >
+          <Trash2 aria-hidden="true" size={13} />
+          Delete
+        </button>
       </div>
 
       <div className="mt-5">

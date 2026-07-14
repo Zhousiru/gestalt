@@ -1681,6 +1681,9 @@ async function verifyRuntimeCommands(root: string): Promise<Record<string, unkno
     async send() {
       return { ok: false, error: "unused command fixture" };
     },
+    async manage() {
+      throw new Error("The command fixture does not manage stickers.");
+    },
     async snapshot() {
       return {
         available: true,
