@@ -954,7 +954,9 @@ export function createStickerService(
       const limit = Math.min(20, Math.max(1, searchInput.limit ?? 8));
       const startedAt = now().toISOString();
       try {
-        const embedding = await input.embedder.embed(searchInput.query);
+        const embedding = await input.embedder.embed(searchInput.query, {
+          inputType: "query"
+        });
         const results: StickerSearchResult[] = [];
         const seen = new Set<string>();
         const pageSize = Math.min(100, Math.max(32, limit * 4));

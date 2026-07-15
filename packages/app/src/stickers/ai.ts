@@ -103,10 +103,13 @@ export function createAiStickerEmbedder(
     model: client.modelName,
     id,
     ...(client.dimensions ? { configuredDimensions: client.dimensions } : {}),
-    async embed(text) {
+    async embed(text, embedOptions) {
       return {
         vector: await client.embed(text, {
-          signal: AbortSignal.timeout(STICKER_MODEL_TIMEOUT_MS)
+          signal: AbortSignal.timeout(STICKER_MODEL_TIMEOUT_MS),
+          ...(embedOptions?.inputType
+            ? { inputType: embedOptions.inputType }
+            : {})
         })
       };
     }

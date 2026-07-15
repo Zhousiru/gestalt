@@ -13,13 +13,17 @@ export interface EmbeddingClient {
   embed(text: string, options?: EmbedTextOptions): Promise<number[]>;
 }
 
+export type EmbeddingInputType = "document" | "query";
+
 export interface EmbedTextOptions {
   signal?: AbortSignal;
+  inputType?: EmbeddingInputType;
 }
 
 export interface EmbeddingRequestSnapshot {
   provider: string;
   model: string;
+  inputType: EmbeddingInputType;
   inputLength: number;
   requestedDimensions?: number;
 }
@@ -54,9 +58,15 @@ export function createEmbeddingClient(
   options: CreateEmbeddingClientFromConfigOptions = {}
 ): EmbeddingClient {
   const apiKeyEnv = options.apiKeyEnvOverride ?? config.apiKeyEnv;
-  const apiKey = process.env[apiKeyEnv];
+  const apiKey = options.apiKeyEnvOverride
+    ? process.env[options.apiKeyEnvOverride]
+    : config.apiKey ?? (apiKeyEnv ? process.env[apiKeyEnv] : undefined);
   if (!apiKey) {
-    throw new Error(`Missing ${apiKeyEnv}.`);
+    throw new Error(
+      apiKeyEnv
+        ? `Missing ${apiKeyEnv}.`
+        : "Missing embedding model API key."
+    );
   }
 
   const provider = createOpenAICompatible({
@@ -90,10 +100,15 @@ export function createEmbeddingClient(
       if (!text.trim()) {
         throw new Error("Embedding input must not be empty.");
       }
+      const inputType = embedOptions.inputType ?? "document";
+      const requestText = inputType === "query"
+        ? `Instruct: Retrieve text matching the user's intended reaction\nQuery: ${text}`
+        : text;
       options.onRequest?.({
         provider: config.providerName,
         model: config.modelName,
-        inputLength: text.length,
+        inputType,
+        inputLength: requestText.length,
         ...(config.dimensions
           ? { requestedDimensions: config.dimensions }
           : {})
@@ -101,7 +116,7 @@ export function createEmbeddingClient(
 
       const result = await createEmbedding({
         model,
-        value: text,
+        value: requestText,
         ...(providerOptions ? { providerOptions } : {}),
         ...(options.maxRetries !== undefined
           ? { maxRetries: options.maxRetries }

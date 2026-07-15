@@ -104,18 +104,19 @@ Configured model scenarios read model settings from the fixture home `config.tom
 
 The current real-model baseline uses an AI SDK OpenAI-compatible model. Provider-specific request options stay in config, not in harness scripts:
 
-- `model_provider`: AI SDK provider name.
-- `model_base_url`: OpenAI-compatible API base URL.
-- `model_name`: model id.
-- `model_api_key_env`: environment variable containing the API key.
-- `model_temperature`: optional runtime model temperature used by the main action model, inspect agent, and dreaming agent.
-- `model_routing_order`: comma-separated provider routing preference.
-- `model_routing_allow_fallbacks`: whether the upstream router may use providers outside the routing order.
-- `model_thinking`: optional provider thinking mode value, such as `disabled`.
-- `model_tool_choice`: optional AI SDK tool-choice mode, `required`, `auto`, or `none`. When omitted, the runtime does not set a tool-choice value and leaves the default to AI SDK/provider behavior.
-- `model_max_steps`: maximum AI SDK tool-loop steps for one action turn.
-- `model_prompt_cache_enabled`: enables provider prompt caching for the active model session.
-- `model_prompt_cache_ttl`: OpenRouter cache TTL (`5m` or `1h`).
+- `main_model_provider`: AI SDK provider name.
+- `main_model_base_url`: OpenAI-compatible API base URL.
+- `main_model_name`: model id.
+- `main_model_api_key` or `main_model_api_key_env`: direct API key or the name
+  of the environment variable containing it; the two are mutually exclusive.
+- `main_model_temperature`: optional runtime model temperature used by the main action model, inspect agent, and dreaming agent.
+- `main_model_routing_order`: comma-separated provider routing preference.
+- `main_model_routing_allow_fallbacks`: whether the upstream router may use providers outside the routing order.
+- `main_model_thinking`: optional provider thinking mode value, such as `disabled`.
+- `main_model_tool_choice`: optional AI SDK tool-choice mode, `required`, `auto`, or `none`. When omitted, the runtime does not set a tool-choice value and leaves the default to AI SDK/provider behavior.
+- `main_model_max_steps`: maximum AI SDK tool-loop steps for one action turn.
+- `main_model_prompt_cache_enabled`: enables provider prompt caching for the active model session.
+- `main_model_prompt_cache_ttl`: provider cache TTL (`5m` or `1h`) when supported.
 - `context_recent_message_count`: how many previous messages from the same conversation are carried into compiled group context.
 - `session_recent_history_hours`: journal message-recovery horizon; defaults to 24 hours.
 - `trace_binary_capture_enabled`: production rollout blob capture; defaults to `false` and must never be enabled implicitly by the harness.

@@ -23,10 +23,17 @@ export interface StickerEmbeddingResult {
   usage?: unknown;
 }
 
+export interface StickerEmbeddingOptions {
+  inputType?: "document" | "query";
+}
+
 export interface StickerEmbedder {
   readonly provider: string;
   readonly model: string;
   readonly id: string;
   readonly configuredDimensions?: number;
-  embed(text: string): Promise<StickerEmbeddingResult>;
+  embed(
+    text: string,
+    options?: StickerEmbeddingOptions
+  ): Promise<StickerEmbeddingResult>;
 }

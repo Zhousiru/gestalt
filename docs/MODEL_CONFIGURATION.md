@@ -50,6 +50,7 @@ Both roles support these suffixes:
 provider
 base_url
 name
+api_key
 api_key_env
 temperature
 max_steps
@@ -62,9 +63,17 @@ prompt_cache_enabled
 prompt_cache_ttl
 ```
 
+For each language-model role, set at most one of `*_model_api_key` (a direct
+value in `config.toml`) or `*_model_api_key_env` (an environment-variable name).
+If neither is set for the main role, it defaults to `MODEL_API_KEY`. A sub role
+with neither key inherits the main role's complete credential source; setting
+either sub key overrides that source. Direct values make `config.toml`
+secret-bearing, so prefer the environment form when the GestaltHome may be
+shared.
+
 The public pure resolvers are `resolveMainModelConfig`,
 `resolveSubModelConfig`, and `resolveLanguageModelConfig`. They validate config
-without reading secrets. `createLanguageModelFromConfig` and
+without reading environment variables. `createLanguageModelFromConfig` and
 `createAiSdkModelFromConfig` create provider clients; both default to the main
 role and accept `role: "sub"` when an auxiliary caller needs it.
 
@@ -82,25 +91,31 @@ embedding_model_provider
 embedding_model_base_url
 embedding_model_name
 embedding_model_id
+embedding_model_api_key
 embedding_model_api_key_env
 embedding_model_dimensions
 embedding_model_routing_order
 embedding_model_routing_allow_fallbacks
 ```
 
-For example, the same OpenRouter account may still be configured as an
-independent embedding role:
+For example, a self-hosted OpenAI-compatible embedding endpoint can be
+configured independently from the language-model roles:
 
 ```toml
-embedding_model_provider = "openrouter"
-embedding_model_base_url = "https://openrouter.ai/api/v1"
-embedding_model_name = "openai/text-embedding-3-small"
-embedding_model_id = "text-embedding-3-small:1536"
-embedding_model_api_key_env = "OPENROUTER_API_KEY"
-embedding_model_dimensions = 1536
-embedding_model_routing_order = "siliconflow"
-embedding_model_routing_allow_fallbacks = false
+embedding_model_provider = "openai-compatible"
+embedding_model_base_url = "http://embedding-service:3000/v1"
+embedding_model_name = "harrier-0.6b-int8"
+embedding_model_id = "harrier-0.6b-int8:1024:reaction-v1"
+embedding_model_api_key_env = "EMBEDDING_MODEL_API_KEY"
+embedding_model_dimensions = 1024
 ```
+
+Set exactly one of `embedding_model_api_key` (a direct value in `config.toml`)
+or `embedding_model_api_key_env` (the name of an environment variable). If both
+are present, configuration fails. If neither is present, the environment name
+defaults to `EMBEDDING_MODEL_API_KEY`. Prefer the environment form when the
+GestaltHome or harness artifacts may be shared; a direct key makes
+`config.toml` itself secret-bearing.
 
 `embedding_model_dimensions` is optional. When present, it must be a positive
 integer and the embedding client rejects responses with a different vector
@@ -113,15 +128,20 @@ the model, dimensions, or provider behavior changes the vector space. The
 sticker index uses this id to select its LanceDB table and decide whether stored
 descriptions require re-embedding.
 
-For OpenRouter, `embedding_model_routing_order` is a comma-separated provider
-slug preference and `embedding_model_routing_allow_fallbacks` controls whether
-OpenRouter may use providers outside that list. Routing changes transport only;
-they do not change `embedding_model_id` when the vector space stays compatible.
+For routing services that accept OpenRouter-compatible provider selection,
+`embedding_model_routing_order` is a comma-separated provider slug preference
+and `embedding_model_routing_allow_fallbacks` controls whether providers outside
+that list may be used. Direct model endpoints should omit both settings. Routing
+changes transport only; they do not change `embedding_model_id` when the vector
+space stays compatible.
 
 Use `resolveEmbeddingModelConfig` for pure validation and
 `createEmbeddingClientFromConfig` for runtime calls. The returned client exposes
-provider/model metadata and a single `embed(text)` boundary, keeping vector
-consumers independent from the AI SDK provider implementation.
+provider/model metadata and an `embed(text, options?)` boundary, keeping vector
+consumers independent from the AI SDK provider implementation. Document inputs
+are sent unchanged. Query inputs use `inputType: "query"` and are sent as
+`Instruct: Retrieve text matching the user's intended reaction\nQuery: <text>`
+so asymmetric retrieval models receive their expected query instruction.
 
 ## Migration compatibility
 

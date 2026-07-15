@@ -728,9 +728,13 @@ export function createLanguageModelFromConfig(
     options.role ?? "main"
   );
   const apiKeyEnv = options.apiKeyEnvOverride ?? resolved.apiKeyEnv;
-  const apiKey = process.env[apiKeyEnv];
+  const apiKey = options.apiKeyEnvOverride
+    ? process.env[options.apiKeyEnvOverride]
+    : resolved.apiKey ?? (apiKeyEnv ? process.env[apiKeyEnv] : undefined);
   if (!apiKey) {
-    throw new Error(`Missing ${apiKeyEnv}.`);
+    throw new Error(
+      apiKeyEnv ? `Missing ${apiKeyEnv}.` : "Missing language model API key."
+    );
   }
   const provider = createOpenAICompatible({
     name: resolved.providerName,
@@ -743,7 +747,7 @@ export function createLanguageModelFromConfig(
   return {
     ...resolved,
     languageModel: provider.chatModel(resolved.modelName),
-    apiKeyEnv
+    ...(apiKeyEnv ? { apiKeyEnv } : {})
   };
 }
 

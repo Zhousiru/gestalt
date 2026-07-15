@@ -22,7 +22,8 @@ export interface ResolvedLanguageModelConfig {
   providerName: string;
   baseUrl: string;
   modelName: string;
-  apiKeyEnv: string;
+  apiKey?: string;
+  apiKeyEnv?: string;
   maxSteps: number;
   temperature: number;
   toolChoice?: ModelToolChoiceMode;
@@ -36,7 +37,8 @@ export interface ResolvedEmbeddingModelConfig {
   providerName: string;
   baseUrl: string;
   modelName: string;
-  apiKeyEnv: string;
+  apiKey?: string;
+  apiKeyEnv?: string;
   dimensions?: number;
   routing?: {
     order?: string[];
@@ -73,9 +75,7 @@ export function resolveLanguageModelConfig(
   const baseUrl = normalizeBaseUrl(
     requireLanguageString(config, role, "base_url")
   );
-  const apiKeyEnv =
-    readLanguageString(config, role, "api_key_env") ??
-    defaultLanguageModelApiKeyEnv;
+  const credential = readLanguageCredential(config, role);
   const temperature = readLanguageTemperature(config, role);
   const toolChoice = readLanguageToolChoice(config, role);
   const promptCacheTtl = readLanguagePromptCacheTtl(config, role);
@@ -90,7 +90,7 @@ export function resolveLanguageModelConfig(
     providerName,
     baseUrl,
     modelName,
-    apiKeyEnv,
+    ...credential,
     maxSteps: readLanguageMaxSteps(config, role),
     temperature,
     ...(toolChoice !== undefined ? { toolChoice } : {}),
@@ -104,6 +104,53 @@ export function resolveLanguageModelConfig(
   };
 }
 
+function readLanguageCredential(
+  config: GestaltConfig,
+  role: LanguageModelRole
+): Pick<ResolvedLanguageModelConfig, "apiKey" | "apiKeyEnv"> {
+  const rolePrefix = `${role}_model`;
+  if (hasCredentialKey(config, rolePrefix)) {
+    return readCredentialPair(config, rolePrefix);
+  }
+  if (role === "sub") {
+    return readLanguageCredential(config, "main");
+  }
+  const legacyApiKeyEnv = readOptionalConfigString(config, "model_api_key_env");
+  if (legacyApiKeyEnv) {
+    return { apiKeyEnv: legacyApiKeyEnv };
+  }
+  return { apiKeyEnv: defaultLanguageModelApiKeyEnv };
+}
+
+function hasCredentialKey(config: GestaltConfig, prefix: string): boolean {
+  return (
+    Object.hasOwn(config.flatValues, `${prefix}_api_key`) ||
+    Object.hasOwn(config.flatValues, `${prefix}_api_key_env`)
+  );
+}
+
+function readCredentialPair(
+  config: GestaltConfig,
+  prefix: string
+): Pick<ResolvedLanguageModelConfig, "apiKey" | "apiKeyEnv"> {
+  const apiKey = readOptionalConfigString(config, `${prefix}_api_key`);
+  const apiKeyEnv = readOptionalConfigString(config, `${prefix}_api_key_env`);
+  if (apiKey && apiKeyEnv) {
+    throw new Error(
+      `${prefix}_api_key and ${prefix}_api_key_env are mutually exclusive.`
+    );
+  }
+  if (apiKey) {
+    return { apiKey };
+  }
+  if (apiKeyEnv) {
+    return { apiKeyEnv };
+  }
+  throw new Error(
+    `${prefix}_api_key or ${prefix}_api_key_env must be a non-empty string.`
+  );
+}
+
 export function resolveEmbeddingModelConfig(
   config: GestaltConfig
 ): ResolvedEmbeddingModelConfig {
@@ -115,9 +162,19 @@ export function resolveEmbeddingModelConfig(
     requireConfigString(config, "embedding_model_base_url")
   );
   const modelName = requireConfigString(config, "embedding_model_name");
-  const apiKeyEnv =
-    readOptionalConfigString(config, "embedding_model_api_key_env") ??
-    defaultEmbeddingModelApiKeyEnv;
+  const apiKey = readOptionalConfigString(config, "embedding_model_api_key");
+  const configuredApiKeyEnv = readOptionalConfigString(
+    config,
+    "embedding_model_api_key_env"
+  );
+  if (apiKey && configuredApiKeyEnv) {
+    throw new Error(
+      "embedding_model_api_key and embedding_model_api_key_env are mutually exclusive."
+    );
+  }
+  const apiKeyEnv = apiKey
+    ? undefined
+    : configuredApiKeyEnv ?? defaultEmbeddingModelApiKeyEnv;
   const dimensions = readOptionalPositiveInteger(
     config,
     "embedding_model_dimensions"
@@ -129,7 +186,8 @@ export function resolveEmbeddingModelConfig(
     providerName,
     baseUrl,
     modelName,
-    apiKeyEnv,
+    ...(apiKey ? { apiKey } : {}),
+    ...(apiKeyEnv ? { apiKeyEnv } : {}),
     ...(dimensions !== undefined ? { dimensions } : {}),
     ...(routing ? { routing } : {})
   };

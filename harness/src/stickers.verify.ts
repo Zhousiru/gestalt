@@ -215,19 +215,25 @@ try {
       };
     }
   };
-  const embeddingRequests: string[] = [];
+  const embeddingRequests: Array<{
+    text: string;
+    inputType: "document" | "query";
+  }> = [];
   let failNextEmbedding = false;
   const embedder: StickerEmbedder = {
     provider: "fixture-embedding-provider",
     model: "fixture-embedding-model",
     id: "fixture-embedding",
     configuredDimensions: 3,
-    async embed(text): Promise<StickerEmbeddingResult> {
+    async embed(text, options): Promise<StickerEmbeddingResult> {
       if (failNextEmbedding) {
         failNextEmbedding = false;
         throw new Error("fixture embedding search failure");
       }
-      embeddingRequests.push(text);
+      embeddingRequests.push({
+        text,
+        inputType: options?.inputType ?? "document"
+      });
       return {
         vector: vectorFor(text)
       };
@@ -339,9 +345,13 @@ try {
   ]);
   assert.equal(analyzerRequests[1]?.mime, "image/png");
   assert.ok(
-    embeddingRequests.includes(DESCRIPTION_STATIC) &&
-      embeddingRequests.includes(DESCRIPTION_ANIMATED),
-    "Both generated descriptions must be embedded."
+    [DESCRIPTION_STATIC, DESCRIPTION_ANIMATED].every((description) =>
+      embeddingRequests.some(
+        (request) =>
+          request.text === description && request.inputType === "document"
+      )
+    ),
+    "Sticker descriptions must be embedded unchanged as documents."
   );
 
   const searchBlueInB = await service.search({
@@ -349,6 +359,13 @@ try {
     limit: 5,
     agentTraceId: "agent-trace-blue-b"
   });
+  assert.ok(
+    embeddingRequests.some(
+      (request) =>
+        request.text === "蓝色跳舞庆祝" && request.inputType === "query"
+    ),
+    "Sticker searches must identify their embedding input as a query."
+  );
   assert.equal(searchBlueInB[0]?.stickerId, animatedStickerId);
   assert.equal(searchBlueInB[0]?.distance, 0);
   assert.equal(
@@ -1101,9 +1118,9 @@ async function verifyGlobalDuplicateReuse(
   const baseEmbedder = createFixtureEmbedder("global-duplicate-config");
   const embedder: StickerEmbedder = {
     ...baseEmbedder,
-    async embed(text) {
+    async embed(text, options) {
       embeddingCalls += 1;
-      return baseEmbedder.embed(text);
+      return baseEmbedder.embed(text, options);
     }
   };
   const connector = createMockConnector();
@@ -1188,13 +1205,13 @@ async function verifyEmbeddingIdRebuild(
     let failuresRemaining = injectedFailures;
     const embedder: StickerEmbedder = {
       ...baseEmbedder,
-      async embed(text) {
+      async embed(text, options) {
         onEmbed?.();
         if (failuresRemaining > 0) {
           failuresRemaining -= 1;
           throw new Error("fixture index-audit embedding failure");
         }
-        return baseEmbedder.embed(text);
+        return baseEmbedder.embed(text, options);
       }
     };
     return createStickerService({

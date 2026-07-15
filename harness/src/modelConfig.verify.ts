@@ -100,6 +100,38 @@ const legacyMain = resolveMainModelConfig(
 assert.equal(legacyMain.modelName, "legacy/main");
 assert.equal(legacyMain.temperature, 0.5);
 
+const directMain = resolveMainModelConfig(
+  createConfig({
+    main_model_base_url: "https://models.example.test/v1",
+    main_model_name: "fixture/direct-main",
+    main_model_api_key: "fixture-inline-main-key"
+  })
+);
+assert.equal(directMain.apiKey, "fixture-inline-main-key");
+assert.equal(directMain.apiKeyEnv, undefined);
+const subCredentialOverride = resolveSubModelConfig(
+  createConfig({
+    main_model_base_url: "https://models.example.test/v1",
+    main_model_name: "fixture/main",
+    main_model_api_key: "fixture-inline-main-key",
+    sub_model_api_key_env: "FIXTURE_SUB_API_KEY"
+  })
+);
+assert.equal(subCredentialOverride.apiKey, undefined);
+assert.equal(subCredentialOverride.apiKeyEnv, "FIXTURE_SUB_API_KEY");
+assert.throws(
+  () =>
+    resolveMainModelConfig(
+      createConfig({
+        main_model_base_url: "https://models.example.test/v1",
+        main_model_name: "fixture/main",
+        main_model_api_key: "fixture-inline-main-key",
+        main_model_api_key_env: "FIXTURE_MAIN_API_KEY"
+      })
+    ),
+  /mutually exclusive/
+);
+
 assert.deepEqual(embeddingModel, {
   id: "fixture-embedding-space",
   providerName: "fixtureembedding",
@@ -145,6 +177,29 @@ assert.throws(
     ),
   /embedding_model_dimensions must be a positive integer/
 );
+const directEmbeddingModel = resolveEmbeddingModelConfig(
+  createConfig({
+    embedding_model_base_url: "https://embeddings.example.test/v1",
+    embedding_model_name: "fixture/embedding",
+    embedding_model_id: "fixture-direct-key-space",
+    embedding_model_api_key: "fixture-inline-key"
+  })
+);
+assert.equal(directEmbeddingModel.apiKey, "fixture-inline-key");
+assert.equal(directEmbeddingModel.apiKeyEnv, undefined);
+assert.throws(
+  () =>
+    resolveEmbeddingModelConfig(
+      createConfig({
+        embedding_model_base_url: "https://embeddings.example.test/v1",
+        embedding_model_name: "fixture/embedding",
+        embedding_model_id: "fixture-conflicting-key-space",
+        embedding_model_api_key: "fixture-inline-key",
+        embedding_model_api_key_env: "FIXTURE_EMBEDDING_API_KEY"
+      })
+    ),
+  /mutually exclusive/
+);
 
 const embeddingRequests: unknown[] = [];
 const previousMainKey = process.env.FIXTURE_MAIN_API_KEY;
@@ -160,15 +215,44 @@ try {
   assert.equal(subLanguageModel.modelName, "fixture/sub");
   assert.equal(subLanguageModel.apiKeyEnv, "FIXTURE_MAIN_API_KEY");
 
+  const directLanguageModel = createLanguageModelFromConfig(
+    createConfig({
+      main_model_base_url: "https://models.example.test/v1",
+      main_model_name: "fixture/direct-main",
+      main_model_api_key: "fixture-inline-main-key"
+    })
+  );
+  assert.equal(directLanguageModel.apiKey, "fixture-inline-main-key");
+  assert.equal(directLanguageModel.apiKeyEnv, undefined);
+
   const embeddingClient = createEmbeddingClientFromConfig(roleConfig, {
     maxRetries: 0,
     fetch: createEmbeddingFetch(embeddingRequests, [0.1, 0.2, 0.3])
   });
-  assert.deepEqual(await embeddingClient.embed("表情检索"), [0.1, 0.2, 0.3]);
+  assert.deepEqual(
+    await embeddingClient.embed("表情检索", { inputType: "query" }),
+    [0.1, 0.2, 0.3]
+  );
+  assert.deepEqual(
+    await embeddingClient.embed("A red cat waves hello."),
+    [0.1, 0.2, 0.3]
+  );
   assert.deepEqual(embeddingRequests, [
     {
       model: "fixture/embedding",
-      input: ["表情检索"],
+      input: [
+        "Instruct: Retrieve text matching the user's intended reaction\nQuery: 表情检索"
+      ],
+      encoding_format: "float",
+      dimensions: 3,
+      provider: {
+        order: ["siliconflow"],
+        allow_fallbacks: false
+      }
+    },
+    {
+      model: "fixture/embedding",
+      input: ["A red cat waves hello."],
       encoding_format: "float",
       dimensions: 3,
       provider: {
@@ -177,6 +261,29 @@ try {
       }
     }
   ]);
+
+  const directKeyRequests: unknown[] = [];
+  const directKeyClient = createEmbeddingClientFromConfig(
+    createConfig({
+      embedding_model_base_url: "https://embeddings.example.test/v1",
+      embedding_model_name: "fixture/embedding",
+      embedding_model_id: "fixture-direct-key-space",
+      embedding_model_api_key: "fixture-inline-key",
+      embedding_model_dimensions: 3
+    }),
+    {
+      maxRetries: 0,
+      fetch: createEmbeddingFetch(
+        directKeyRequests,
+        [0.1, 0.2, 0.3],
+        "Bearer fixture-inline-key"
+      )
+    }
+  );
+  assert.deepEqual(
+    await directKeyClient.embed("Direct key check"),
+    [0.1, 0.2, 0.3]
+  );
 
   const wrongDimensionsClient = createEmbeddingClientFromConfig(
     createConfig({
@@ -212,7 +319,7 @@ const artifact = {
   main: selectLanguageConfig(mainModel),
   sub: selectLanguageConfig(subModel),
   embedding: embeddingModel,
-  embeddingRequest: embeddingRequests[0],
+  embeddingRequests,
   legacyMain: selectLanguageConfig(legacyMain)
 };
 await writeArtifactJson(
@@ -229,7 +336,9 @@ await writeFile(
     `- Embedding: ${embeddingModel.providerName}/${embeddingModel.modelName}`,
     `- Dimensions: ${embeddingModel.dimensions}`,
     "- Sub inheritance: verified field-by-field",
+    "- Direct and environment API-key sources: verified for all model roles",
     "- Legacy main fallback: verified",
+    "- Query instruction and raw document embedding requests: verified",
     "- Embedding independence and dimension validation: verified",
     ""
   ].join("\n"),
@@ -271,9 +380,16 @@ function selectLanguageConfig(
 
 function createEmbeddingFetch(
   requests: unknown[],
-  vector: number[]
+  vector: number[],
+  expectedAuthorization?: string
 ): typeof fetch {
   return async (_input, init) => {
+    if (expectedAuthorization) {
+      assert.equal(
+        new Headers(init?.headers).get("authorization"),
+        expectedAuthorization
+      );
+    }
     requests.push(JSON.parse(String(init?.body ?? "{}")));
     return new Response(
       JSON.stringify({

@@ -42,6 +42,9 @@ function languageModelFields(
     [`${prefix}_provider`]: nonEmptyString.optional(),
     [`${prefix}_base_url`]: nonEmptyString.optional(),
     [`${prefix}_name`]: nonEmptyString.optional(),
+    ...(prefix === "model"
+      ? {}
+      : { [`${prefix}_api_key`]: nonEmptyString.optional() }),
     [`${prefix}_api_key_env`]: nonEmptyString.optional(),
     [`${prefix}_temperature`]: z.number().finite().nonnegative().optional(),
     [`${prefix}_max_steps`]: positiveInteger.optional(),
@@ -80,6 +83,7 @@ export const gestaltConfigSchema = z
     embedding_model_base_url: nonEmptyString.optional(),
     embedding_model_name: nonEmptyString.optional(),
     embedding_model_id: nonEmptyString.optional(),
+    embedding_model_api_key: nonEmptyString.optional(),
     embedding_model_api_key_env: nonEmptyString.optional(),
     embedding_model_dimensions: positiveInteger.optional(),
     embedding_model_routing_order: clearableString.optional(),
@@ -122,6 +126,21 @@ export const gestaltConfigSchema = z
     agent_loop_exit_idle_ms: positiveInteger.optional()
   })
   .superRefine((config, context) => {
+    for (const prefix of [
+      "main_model",
+      "sub_model",
+      "embedding_model"
+    ] as const) {
+      const apiKey = `${prefix}_api_key` as keyof typeof config;
+      const apiKeyEnv = `${prefix}_api_key_env` as keyof typeof config;
+      if (config[apiKey] !== undefined && config[apiKeyEnv] !== undefined) {
+        context.addIssue({
+          code: "custom",
+          path: [apiKey],
+          message: `cannot be used together with ${String(apiKeyEnv)}`
+        });
+      }
+    }
     const delay = config.agent_loop_aggregation_delay_ms;
     const maxDelay = config.agent_loop_aggregation_max_delay_ms;
     if (delay !== undefined && maxDelay !== undefined && maxDelay < delay) {

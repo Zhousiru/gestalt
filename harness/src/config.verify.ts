@@ -67,6 +67,22 @@ const invalidCases = {
     "[main_model]\nname = \"nested\"\n",
     /unknown key: main_model/
   ),
+  conflictingEmbeddingApiKeys: await loadInvalidConfig(
+    [
+      'embedding_model_api_key = "inline-key"',
+      'embedding_model_api_key_env = "EMBEDDING_MODEL_API_KEY"',
+      ""
+    ].join("\n"),
+    /cannot be used together/
+  ),
+  conflictingMainApiKeys: await loadInvalidConfig(
+    [
+      'main_model_api_key = "inline-key"',
+      'main_model_api_key_env = "MAIN_MODEL_API_KEY"',
+      ""
+    ].join("\n"),
+    /cannot be used together/
+  ),
   invalidAggregationRange: await loadInvalidConfig(
     [
       "agent_loop_aggregation_delay_ms = 5000",
@@ -103,6 +119,7 @@ await writeFile(
     "- Unknown keys and invalid value types: rejected",
     "- Nested TOML tables: rejected by the flat config schema",
     "- Invalid aggregation delay ranges: rejected",
+    "- Direct and environment API keys are mutually exclusive for every model role",
     "- Empty sub routing order clears inheritance: verified",
     ""
   ].join("\n"),

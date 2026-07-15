@@ -157,6 +157,13 @@ re-read and parse every JSON file on each SSE refresh; restart remains the
 authoritative cache rebuild boundary. This follows GestaltHome's existing
 single-process ownership assumption.
 
+Sticker `desc` text is embedded unchanged, without an instruction prefix.
+Search and recommendation queries are embedded as
+`Instruct: Retrieve text matching the user's intended reaction\nQuery: <query>`.
+This asymmetric format is part of the embedding-space contract; changing it
+requires a new `embedding_model_id` and a rebuild of stored vectors when the
+provider's vector space is affected.
+
 `search_sticker({ query, limit? })` embeds the query, performs global vector
 search, catalog-validates candidates, and continues through ranked result pages
 until it fills the requested limit or exhausts the table. Invalid nearest rows
