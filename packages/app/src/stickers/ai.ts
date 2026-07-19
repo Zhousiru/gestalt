@@ -28,6 +28,7 @@ export function createAiStickerAnalyzer(
 ): StickerAnalyzer {
   const resolved = createLanguageModelFromConfig(config, {
     role: "sub",
+    supportsStructuredOutputs: true,
     ...(options.fetch ? { fetch: options.fetch } : {}),
     ...(options.headers ? { headers: options.headers } : {})
   });

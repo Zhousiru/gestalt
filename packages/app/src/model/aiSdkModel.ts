@@ -721,6 +721,7 @@ export function createLanguageModelFromConfig(
     apiKeyEnvOverride?: string;
     fetch?: typeof fetch;
     headers?: Record<string, string>;
+    supportsStructuredOutputs?: boolean;
   } = {}
 ): ResolvedAiSdkLanguageModel {
   const resolved = resolveLanguageModelConfig(
@@ -740,6 +741,9 @@ export function createLanguageModelFromConfig(
     name: resolved.providerName,
     baseURL: resolved.baseUrl,
     apiKey,
+    ...(options.supportsStructuredOutputs !== undefined
+      ? { supportsStructuredOutputs: options.supportsStructuredOutputs }
+      : {}),
     ...(options.headers ? { headers: options.headers } : {}),
     ...(options.fetch ? { fetch: options.fetch } : {})
   });

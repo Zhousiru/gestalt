@@ -214,6 +214,22 @@ try {
   assert.equal(subLanguageModel.role, "sub");
   assert.equal(subLanguageModel.modelName, "fixture/sub");
   assert.equal(subLanguageModel.apiKeyEnv, "FIXTURE_MAIN_API_KEY");
+  assert.equal(
+    (subLanguageModel.languageModel as { supportsStructuredOutputs?: boolean })
+      .supportsStructuredOutputs,
+    false
+  );
+
+  const structuredSubLanguageModel = createLanguageModelFromConfig(roleConfig, {
+    role: "sub",
+    supportsStructuredOutputs: true
+  });
+  assert.equal(
+    (structuredSubLanguageModel.languageModel as {
+      supportsStructuredOutputs?: boolean;
+    }).supportsStructuredOutputs,
+    true
+  );
 
   const directLanguageModel = createLanguageModelFromConfig(
     createConfig({
@@ -336,6 +352,7 @@ await writeFile(
     `- Embedding: ${embeddingModel.providerName}/${embeddingModel.modelName}`,
     `- Dimensions: ${embeddingModel.dimensions}`,
     "- Sub inheritance: verified field-by-field",
+    "- Structured-output provider capability: opt-in verified",
     "- Direct and environment API-key sources: verified for all model roles",
     "- Legacy main fallback: verified",
     "- Query instruction and raw document embedding requests: verified",
