@@ -34,7 +34,7 @@ const personaPath = path.join(
   "fixtures",
   "personas",
   "sticker-social-eval",
-  "6-stickers.md"
+  "stickers.md"
 );
 
 for (const fileName of [".env", ".env.local"]) {
@@ -68,7 +68,16 @@ try {
     { recursive: true }
   );
   await mkdir(path.join(tempHome, "persona"), { recursive: true });
-  await cp(personaPath, path.join(tempHome, "persona", "6-stickers.md"));
+  const stylePath = path.join(tempHome, "persona", "2-voice.md");
+  const [stylePersona, stickerPersona] = await Promise.all([
+    readFile(stylePath, "utf8"),
+    readFile(personaPath, "utf8")
+  ]);
+  await writeFile(
+    stylePath,
+    `${stylePersona.trimEnd()}\n\n${stickerPersona.trim()}\n`,
+    "utf8"
+  );
   const home = await resolveGestaltHome({ homePath: tempHome, create: false });
   const config = await loadConfig(home);
   const connector = createMockConnector();

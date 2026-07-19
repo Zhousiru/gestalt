@@ -89,7 +89,7 @@ export function createEmbeddingClient(
     ...(config.dimensions ? { dimensions: config.dimensions } : {})
   };
   const providerOptions = Object.keys(requestOptions).length > 0
-    ? { [config.providerName]: requestOptions }
+    ? { openaiCompatible: requestOptions }
     : undefined;
 
   return {

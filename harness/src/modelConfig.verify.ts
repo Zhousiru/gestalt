@@ -26,7 +26,7 @@ const roleConfig = createConfig({
   main_model_prompt_cache_ttl: "1h",
   sub_model_name: "fixture/sub",
   sub_model_temperature: 0.2,
-  embedding_model_provider: "fixtureembedding",
+  embedding_model_provider: "openai-compatible",
   embedding_model_base_url: "https://embeddings.example.test/v1/",
   embedding_model_name: "fixture/embedding",
   embedding_model_id: "fixture-embedding-space",
@@ -134,7 +134,7 @@ assert.throws(
 
 assert.deepEqual(embeddingModel, {
   id: "fixture-embedding-space",
-  providerName: "fixtureembedding",
+  providerName: "openai-compatible",
   baseUrl: "https://embeddings.example.test/v1",
   modelName: "fixture/embedding",
   apiKeyEnv: "FIXTURE_EMBEDDING_API_KEY",

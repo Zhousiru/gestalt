@@ -246,8 +246,10 @@ explicit `search_sticker` call while retaining the same agent trace id.
 Sticker sending frequency remains persona behavior rather than this retrieval
 probability. The probability only controls whether candidates are added to a
 successful text-send result.
-Put the desired rhythm, common situations, and taboo cases in a persona Markdown
-fragment such as `persona/6-stickers.md`, for example:
+Put the desired rhythm, common situations, and taboo cases in an early persona
+Markdown fragment such as `persona/2-style.md`. Keeping sticker behavior beside
+the general chat style makes it visible before lower-priority interests,
+cognitive notes, and boundaries, for example:
 
 ```markdown
 - Use a sticker roughly once every four to six suitable playful turns, never as a quota.
