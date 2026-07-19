@@ -1,9 +1,10 @@
-import { generateText } from "ai";
+import { generateText, Output } from "ai";
 import type { GestaltConfig } from "../home/loadConfig";
 import { createLanguageModelFromConfig } from "../model/aiSdkModel";
 import { createEmbeddingClientFromConfig } from "../model/embeddingClient";
 import { resolveEmbeddingModelConfig } from "../model/modelConfig";
 import { renderStickerDescriptionPrompt } from "../prompts/stickers";
+import { StickerDescriptionSchema } from "./schemas";
 import type {
   StickerAnalyzer,
   StickerDescriptionInput,
@@ -45,6 +46,11 @@ export function createAiStickerAnalyzer(
       });
       const result = await generateText({
         model: resolved.languageModel,
+        output: Output.object({
+          schema: StickerDescriptionSchema,
+          name: "sticker_description",
+          description: "Objective visual description, emotion tags, and natural IM usage examples."
+        }),
         abortSignal: AbortSignal.timeout(STICKER_MODEL_TIMEOUT_MS),
         messages: [
           {
@@ -64,15 +70,15 @@ export function createAiStickerAnalyzer(
           : {}),
         maxRetries: 2
       });
-      const desc = normalizeDescription(result.text);
+      const description = normalizeDescription(result.output);
       options.onDescriptionResponse?.({
         provider: resolved.providerName,
         model: resolved.modelName,
-        desc,
+        description,
         usage: result.usage
       });
       return {
-        desc,
+        description,
         provider: resolved.providerName,
         model: resolved.modelName,
         promptHash: prompt.hash,
@@ -104,29 +110,53 @@ export function createAiStickerEmbedder(
     id,
     ...(client.dimensions ? { configuredDimensions: client.dimensions } : {}),
     async embed(text, embedOptions) {
+      const queryInstruction = embedOptions?.queryPurpose === "visual"
+        ? "Retrieve an objective sticker visual description matching the request"
+        : embedOptions?.queryPurpose === "tags"
+          ? "Retrieve sticker emotion and reaction tags matching the request"
+          : "Retrieve an IM message with the same conversational intent and reaction";
       return {
         vector: await client.embed(text, {
           signal: AbortSignal.timeout(STICKER_MODEL_TIMEOUT_MS),
           ...(embedOptions?.inputType
             ? { inputType: embedOptions.inputType }
-            : {})
+            : {}),
+          ...(embedOptions?.inputType === "query" ? { queryInstruction } : {})
         })
       };
     }
   };
 }
 
-function normalizeDescription(value: string): string {
-  const trimmed = value
-    .trim()
-    .replace(/^```(?:text)?\s*/i, "")
-    .replace(/\s*```$/, "")
-    .replace(/\s+/g, " ");
-  if (!trimmed) {
-    throw new Error("Sticker analyzer returned an empty description.");
+function normalizeDescription(
+  value: typeof StickerDescriptionSchema._output
+): typeof StickerDescriptionSchema._output {
+  const visual = value.visual.replace(/\s+/g, " ").trim();
+  const emotion = uniqueNormalized(value.emotion, (entry) =>
+    entry.toLowerCase().replace(/\s+/g, " ").trim()
+  );
+  const usage = uniqueNormalized(value.usage, (entry) =>
+    entry.replace(/\s+/g, " ").trim()
+  );
+  return StickerDescriptionSchema.parse({ visual, emotion, usage });
+}
+
+function uniqueNormalized(
+  values: readonly string[],
+  normalize: (value: string) => string
+): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const normalized = normalize(value);
+    const comparison = normalized
+      .toLowerCase()
+      .replace(/[\s，。！？!?、,.]+/g, "");
+    if (!normalized || !comparison || seen.has(comparison)) {
+      continue;
+    }
+    seen.add(comparison);
+    result.push(normalized);
   }
-  if (trimmed.length > 2000) {
-    throw new Error("Sticker analyzer returned a description longer than 2000 characters.");
-  }
-  return trimmed;
+  return result;
 }

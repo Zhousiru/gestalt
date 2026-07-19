@@ -28,6 +28,8 @@ import {
   resolveGestaltHome,
   sampleFrameIndices,
   stickerIdFromSha256,
+  stickerVectorIndexId,
+  stickerVectorRowId,
   withStickerRecommendations,
   type GestaltConfig,
   type LiveEventSink,
@@ -49,13 +51,35 @@ import { writeArtifactJson } from "./artifactBinary";
 import sharp from "sharp";
 
 const DESCRIPTION_STATIC =
-  "A happy red cat waves to greet someone. red cat, happy, waving, greeting, welcome";
+  "A red cat faces forward with one paw raised beside its head.";
 const DESCRIPTION_ANIMATED =
-  "An excited blue character dances repeatedly in celebration. blue character, dancing, excited, celebration, proud";
+  "A blue character repeatedly jumps with both arms raised.";
+const STATIC_USAGE = [
+  "你好呀", "欢迎欢迎", "来啦", "嗨", "见到你真好",
+  "最近怎么样", "好久不见", "欢迎回来", "在吗", "出来聊天"
+];
+const ANIMATED_USAGE = [
+  "太棒了", "好耶", "庆祝一下", "赢了", "值得庆祝",
+  "干得漂亮", "芜湖", "成功啦", "今天真开心", "起飞"
+];
 const BASE_TIME = Date.parse("2026-07-11T08:00:00.000Z");
 const repoRoot = path.resolve(import.meta.dirname, "../..");
 const artifactDir = path.join(repoRoot, "harness", "artifacts", "stickers");
 const tempRoot = await mkdtemp(path.join(os.tmpdir(), "gestalt-stickers-"));
+
+function fixtureDescription(animated: boolean) {
+  return animated
+    ? {
+        visual: DESCRIPTION_ANIMATED,
+        emotion: ["excited", "proud"],
+        usage: ANIMATED_USAGE
+      }
+    : {
+        visual: DESCRIPTION_STATIC,
+        emotion: ["happy", "welcoming"],
+        usage: STATIC_USAGE
+      };
+}
 
 await rm(artifactDir, { recursive: true, force: true });
 await mkdir(artifactDir, { recursive: true });
@@ -208,7 +232,7 @@ try {
         byteLength: input.image.byteLength
       });
       return {
-        desc: input.animated ? DESCRIPTION_ANIMATED : DESCRIPTION_STATIC,
+        description: fixtureDescription(input.animated),
         provider: "fixture-sub-provider",
         model: "fixture-sub-model",
         promptHash: "fixture-sticker-prompt"
@@ -218,6 +242,7 @@ try {
   const embeddingRequests: Array<{
     text: string;
     inputType: "document" | "query";
+    queryPurpose?: "visual" | "tags" | "usage";
   }> = [];
   let failNextEmbedding = false;
   const embedder: StickerEmbedder = {
@@ -232,7 +257,8 @@ try {
       }
       embeddingRequests.push({
         text,
-        inputType: options?.inputType ?? "document"
+        inputType: options?.inputType ?? "document",
+        ...(options?.queryPurpose ? { queryPurpose: options.queryPurpose } : {})
       });
       return {
         vector: vectorFor(text)
@@ -334,7 +360,7 @@ try {
   const animatedRecord = await store.readRecord(animatedStickerId);
   assert.ok(animatedRecord);
   assert.equal(animatedRecord.status, "ready");
-  assert.equal(animatedRecord.desc, DESCRIPTION_ANIMATED);
+  assert.deepEqual(animatedRecord.description, fixtureDescription(true));
   assert.equal(animatedRecord.asset.animated, true);
   assert.equal(animatedRecord.asset.frameCount, 20);
   assert.ok(animatedRecord.asset.contactSheetRelativePath);
@@ -351,7 +377,7 @@ try {
           request.text === description && request.inputType === "document"
       )
     ),
-    "Sticker descriptions must be embedded unchanged as documents."
+    "Sticker visual descriptions must be embedded unchanged as documents."
   );
 
   const searchBlueInB = await service.search({
@@ -366,31 +392,26 @@ try {
     ),
     "Sticker searches must identify their embedding input as a query."
   );
-  assert.equal(searchBlueInB[0]?.stickerId, animatedStickerId);
-  assert.equal(searchBlueInB[0]?.distance, 0);
-  assert.equal(
-    searchBlueInB[1]?.distance,
-    1,
-    "Orthogonal fixture vectors must use cosine distance rather than default L2."
-  );
+  assert.ok(searchBlueInB.some((result) => result.stickerId === animatedStickerId));
+  assert.ok(searchBlueInB.every((result) => result.channels.length > 0));
   const searchBlueInA = await service.search({
     query: "蓝色跳舞庆祝",
     limit: 5,
     agentTraceId: "agent-trace-blue-a"
   });
   assert.deepEqual(
-    searchBlueInA.map((result) => result.stickerId),
-    [animatedStickerId, staticStickerId],
+    new Set(searchBlueInA.map((result) => result.stickerId)),
+    new Set([animatedStickerId, staticStickerId]),
     "Every conversation must search the same bot-wide sticker catalog."
   );
   const searchUnknownConversation = await service.search({
     query: "红色开心欢迎"
   });
-  assert.equal(searchUnknownConversation[0]?.stickerId, staticStickerId);
+  assert.ok(searchUnknownConversation.some((result) => result.stickerId === staticStickerId));
   const searchSameIdPrivate = await service.search({
     query: "红色开心欢迎"
   });
-  assert.equal(searchSameIdPrivate[0]?.stickerId, staticStickerId);
+  assert.ok(searchSameIdPrivate.some((result) => result.stickerId === staticStickerId));
   failNextEmbedding = true;
   await assert.rejects(
     service.search({
@@ -438,7 +459,7 @@ try {
   );
   assert.deepEqual(asRecord(fallbackResult.data), {
     stickerId: staticStickerId,
-    desc: DESCRIPTION_STATIC
+    visual: DESCRIPTION_STATIC
   });
   const unknownSendResult = await service.send({
     conversation: { kind: "group", id: "group-b" },
@@ -466,7 +487,7 @@ try {
     ready: 2,
     duplicates: 1
   });
-  assert.equal(finalSnapshot.embedding.rowCount, 2);
+  assert.equal(finalSnapshot.embedding.rowCount, 24);
   assert.equal(finalSnapshot.embedding.indexState, "ready");
   assert.equal(finalSnapshot.embedding.dimensions, 3);
   assert.equal(finalSnapshot.stickers.length, 2);
@@ -625,6 +646,7 @@ try {
     tempRoot,
     staticFixture
   );
+  const structuredRetrieval = await verifyStructuredRetrievalPolicy(tempRoot);
   await writeJson("worker-wakeup.json", workerWakeup);
   await writeJson("processing-concurrency.json", processingConcurrency);
   await writeJson("intermediate-stage-recovery.json", intermediateStageRecovery);
@@ -638,6 +660,7 @@ try {
     embeddingIdRebuild
   );
   await writeJson("invalid-vector-rows.json", invalidVectorRows);
+  await writeJson("structured-retrieval.json", structuredRetrieval);
   await copyFile(logPath, path.join(artifactDir, "sticker-logs.jsonl"));
 
   const summary = {
@@ -690,6 +713,7 @@ try {
     globalDuplicateReuse,
     embeddingIdRebuild,
     invalidVectorRows,
+    structuredRetrieval,
     logs: {
       count: logEntries.length,
       types: [...logTypes].sort()
@@ -724,6 +748,215 @@ try {
   await rm(tempRoot, { recursive: true, force: true });
 }
 
+async function verifyStructuredRetrievalPolicy(
+  root: string
+): Promise<Record<string, unknown>> {
+  const home = await resolveGestaltHome({
+    homePath: path.join(root, "structured-retrieval-home")
+  });
+  const store = createStickerStore(home);
+  const embeddingId = "structured-retrieval-embedding";
+  const indexedAt = "2026-07-11T08:00:00.000Z";
+  const stickerIds = Array.from(
+    { length: 15 },
+    (_, index) => `stk_policy_${String(index).padStart(2, "0")}`
+  );
+  for (const [index, stickerId] of stickerIds.entries()) {
+    await store.saveRecord({
+      id: stickerId,
+      status: "ready",
+      description: {
+        visual: `Objective visual ${index}`,
+        emotion: index % 2 === 0 ? ["confused"] : ["suspicious"],
+        usage: Array.from(
+          { length: 10 },
+          (_, usageIndex) => `为什么 ${index}-${usageIndex}`
+        )
+      },
+      asset: {
+        sha256: index.toString(16).padStart(64, "0"),
+        mime: "image/png",
+        relativePath: `stickers/blobs/policy-${index}.png`,
+        byteLength: 1,
+        animated: false,
+        frameCount: 1
+      },
+      embedding: {
+        id: stickerVectorIndexId(embeddingId),
+        dimensions: 3,
+        units: { visual: 1, tags: 1, usage: 10 },
+        indexedAt
+      },
+      createdAt: indexedAt,
+      updatedAt: indexedAt
+    });
+  }
+
+  const allRows = stickerIds.flatMap((stickerId) => [
+    { rowId: stickerVectorRowId(stickerId, "visual", 0), stickerId },
+    { rowId: stickerVectorRowId(stickerId, "tags", 0), stickerId },
+    ...Array.from({ length: 10 }, (_, unitIndex) => ({
+      rowId: stickerVectorRowId(stickerId, "usage", unitIndex),
+      stickerId
+    }))
+  ]);
+  const searchCalls: Array<{
+    channel: "visual" | "tags" | "usage";
+    offset: number;
+    limit: number;
+  }> = [];
+  const rowsForChannel = (channel: "visual" | "tags" | "usage") =>
+    channel === "usage"
+      ? stickerIds.flatMap((stickerId, stickerIndex) =>
+          Array.from({ length: 10 }, (_, unitIndex) => ({
+            rowId: stickerVectorRowId(stickerId, channel, unitIndex),
+            stickerId,
+            channel,
+            unitIndex,
+            text: `为什么 ${stickerIndex}-${unitIndex}`,
+            distance: stickerIndex / 100 + unitIndex / 10_000
+          }))
+        )
+      : stickerIds.map((stickerId, index) => ({
+          rowId: stickerVectorRowId(stickerId, channel, 0),
+          stickerId,
+          channel,
+          unitIndex: 0,
+          text: channel === "visual" ? `Objective visual ${index}` : "confused",
+          distance: index / 100
+        }));
+  const vectorIndex: StickerVectorIndex = {
+    async upsert() {
+      throw new Error("Structured retrieval fixture should not reindex current rows.");
+    },
+    async search(searchInput) {
+      searchCalls.push({
+        channel: searchInput.channel,
+        offset: searchInput.offset ?? 0,
+        limit: searchInput.limit
+      });
+      return rowsForChannel(searchInput.channel).slice(
+        searchInput.offset ?? 0,
+        (searchInput.offset ?? 0) + searchInput.limit
+      );
+    },
+    async listRows() {
+      return allRows;
+    },
+    async listStickerIds() {
+      return allRows.map((row) => row.stickerId);
+    },
+    async deleteRowIds() {
+      return 0;
+    },
+    async deleteStickerIds() {
+      return 0;
+    },
+    async snapshot() {
+      return {
+        rowCount: allRows.length,
+        indexState: "ready",
+        dimensions: 3,
+        id: stickerVectorIndexId(embeddingId),
+        distanceMetric: "cosine"
+      };
+    }
+  };
+  const embeddingCalls: Array<{
+    inputType: "document" | "query";
+    queryPurpose?: "visual" | "tags" | "usage";
+  }> = [];
+  const embedder: StickerEmbedder = {
+    provider: "fixture",
+    model: "fixture",
+    id: embeddingId,
+    configuredDimensions: 3,
+    async embed(_text, options) {
+      embeddingCalls.push({
+        inputType: options?.inputType ?? "document",
+        ...(options?.queryPurpose ? { queryPurpose: options.queryPurpose } : {})
+      });
+      return { vector: [1, 0, 0] };
+    }
+  };
+  const service = createStickerService({
+    home,
+    connector: createMockConnector(),
+    store,
+    logger: createStickerLogger(home),
+    mediaResolver: { async resolve() { throw new Error("unused"); } },
+    analyzer: createFixtureAnalyzer(),
+    embedder,
+    vectorIndex,
+    configuredEnabled: false,
+    now: createClock()
+  });
+  await service.whenIdle();
+
+  const active = await service.search({
+    query: "为什么表情",
+    mode: "search",
+    seed: "active-seed",
+    limit: 5
+  });
+  assert.deepEqual(
+    new Set(embeddingCalls.map((call) => call.queryPurpose)),
+    new Set(["tags", "visual"])
+  );
+  assert.deepEqual(
+    new Set(searchCalls.map((call) => call.channel)),
+    new Set(["tags", "visual"])
+  );
+  assert.equal(active.length, 5);
+  assert.equal(new Set(active.map((result) => result.stickerId)).size, 5);
+
+  embeddingCalls.length = 0;
+  searchCalls.length = 0;
+  const recommendation = await service.search({
+    query: "为什么",
+    mode: "recommendation",
+    seed: "recommendation-seed",
+    limit: 5
+  });
+  const repeated = await service.search({
+    query: "为什么",
+    mode: "recommendation",
+    seed: "recommendation-seed",
+    limit: 5
+  });
+  const rotated = await service.search({
+    query: "为什么",
+    mode: "recommendation",
+    seed: "another-seed",
+    limit: 5
+  });
+  assert.deepEqual(
+    new Set(embeddingCalls.map((call) => call.queryPurpose)),
+    new Set(["usage"])
+  );
+  assert.deepEqual(new Set(searchCalls.map((call) => call.channel)), new Set(["usage"]));
+  assert.ok(searchCalls.some((call) => call.offset === 100));
+  assert.equal(new Set(recommendation.map((result) => result.stickerId)).size, 5);
+  assert.deepEqual(repeated, recommendation);
+  assert.notDeepEqual(
+    rotated.map((result) => result.stickerId),
+    recommendation.map((result) => result.stickerId)
+  );
+
+  return {
+    structuredFields: ["visual", "emotion", "usage"],
+    activeQueryPurposes: ["tags", "visual"],
+    activeChannels: ["tags", "visual"],
+    recommendationQueryPurposes: ["usage"],
+    recommendationChannels: ["usage"],
+    usageRowsScannedAcrossSecondPage: true,
+    uniqueRecommendationCount: recommendation.length,
+    deterministicForSameSeed: true,
+    rotatesForDifferentSeed: true,
+    modelVisibleFields: ["sticker_id", "visual"]
+  };
+}
+
 async function verifyWorkerWakeup(
   root: string,
   bytes: Uint8Array
@@ -742,14 +975,16 @@ async function verifyWorkerWakeup(
   const vectorIndex: StickerVectorIndex = {
     upsert: (entry) => baseIndex.upsert(entry),
     search: (input) => baseIndex.search(input),
-    async listStickerIds() {
+    async listRows() {
       if (holdInitialAudit) {
         holdInitialAudit = false;
         auditStarted.resolve();
         await releaseAudit.promise;
       }
-      return baseIndex.listStickerIds();
+      return baseIndex.listRows();
     },
+    listStickerIds: () => baseIndex.listStickerIds(),
+    deleteRowIds: (rowIds) => baseIndex.deleteRowIds(rowIds),
     deleteStickerIds: (stickerIds) => baseIndex.deleteStickerIds(stickerIds),
     snapshot: () => baseIndex.snapshot()
   };
@@ -826,7 +1061,7 @@ async function verifyProcessingConcurrency(
       await release.promise;
       active -= 1;
       return {
-        desc: DESCRIPTION_STATIC,
+        description: fixtureDescription(false),
         provider: "fixture-sub-provider",
         model: "fixture-sub-model",
         promptHash: "fixture-sticker-prompt"
@@ -1148,7 +1383,7 @@ async function verifyGlobalDuplicateReuse(
   const stickerId = stickerIdFor(bytes);
   const before = await store.readRecord(stickerId);
   assert.equal(before?.status, "ready");
-  assert.equal(embeddingCalls, 1);
+  assert.equal(embeddingCalls, 12);
 
   await service.observe(
     createStickerEvent({
@@ -1162,7 +1397,7 @@ async function verifyGlobalDuplicateReuse(
   const after = await store.readRecord(stickerId);
   assert.equal(after?.status, "ready");
   assert.equal(after?.mface?.emojiId, "emoji-red-cat");
-  assert.equal(embeddingCalls, 1, "A duplicate must reuse the global vector row.");
+  assert.equal(embeddingCalls, 12, "A duplicate must reuse all global retrieval units.");
   const duplicateJob = (await store.listJobs()).find(
     (job) => job.eventId === "duplicate-second-chat"
   );
@@ -1242,7 +1477,7 @@ async function verifyEmbeddingIdRebuild(
   await firstConfiguration.whenIdle();
   assert.equal(
     (await store.readRecord(stickerIdFor(bytes)))?.embedding?.id,
-    "index-config-a"
+    stickerVectorIndexId("index-config-a")
   );
 
   let rebuiltEmbeddings = 0;
@@ -1257,9 +1492,9 @@ async function verifyEmbeddingIdRebuild(
   const rebuilt = await store.readRecord(stickerIdFor(bytes));
   const snapshot = await secondConfiguration.snapshot();
   assert.equal(rebuilt?.status, "ready");
-  assert.equal(rebuilt?.embedding?.id, "index-config-b");
-  assert.equal(rebuiltEmbeddings, 3);
-  assert.equal(snapshot.embedding.rowCount, 1);
+  assert.equal(rebuilt?.embedding?.id, stickerVectorIndexId("index-config-b"));
+  assert.equal(rebuiltEmbeddings, 24);
+  assert.equal(snapshot.embedding.rowCount, 12);
   assert.equal(snapshot.embedding.indexState, "ready");
   return {
     fromId: "index-config-a",
@@ -1312,35 +1547,32 @@ async function verifyInvalidVectorRowIsolation(
   const readyRecord = await store.readRecord(readyStickerId);
   assert.ok(readyRecord);
   assert.equal(readyRecord.status, "ready");
-  assert.ok(readyRecord.desc);
-  await baseIndex.upsert({
-    stickerId: readyStickerId,
-    desc: readyRecord.desc,
-    vector: [0.8, 0.2, 0],
-    createdAt: readyRecord.createdAt
-  });
+  assert.ok(readyRecord.description);
 
   const invalidRows = 48;
   const failedRows = invalidRows / 2;
   for (let index = 0; index < invalidRows; index += 1) {
     const invalidStickerId = `stk_invalid_${String(index).padStart(3, "0")}`;
-    await baseIndex.upsert({
+    await baseIndex.upsert([{
+      rowId: stickerVectorRowId(invalidStickerId, "visual", 0),
       stickerId: invalidStickerId,
-      desc: `无效近邻 ${index}`,
+      channel: "visual",
+      unitIndex: 0,
+      text: `无效近邻 ${index}`,
       vector: [1, 0, 0],
       createdAt: readyRecord.createdAt
-    });
+    }]);
     if (index < failedRows) {
       await store.saveRecord({
         ...readyRecord,
         id: invalidStickerId,
         status: "failed",
-        desc: `已失败的无效近邻 ${index}`,
         lastError: "fixture failed catalog record"
       });
     }
   }
-  assert.equal((await baseIndex.listStickerIds()).length, invalidRows + 1);
+  const readyUnitCount = 2 + readyRecord.description.usage.length;
+  assert.equal((await baseIndex.listRows()).length, invalidRows + readyUnitCount);
 
   const auditStarted = deferred();
   const releaseAudit = deferred();
@@ -1348,14 +1580,16 @@ async function verifyInvalidVectorRowIsolation(
   const vectorIndex: StickerVectorIndex = {
     upsert: (entry) => baseIndex.upsert(entry),
     search: (input) => baseIndex.search(input),
-    async listStickerIds() {
+    async listRows() {
       if (holdAudit) {
         holdAudit = false;
         auditStarted.resolve();
         await releaseAudit.promise;
       }
-      return baseIndex.listStickerIds();
+      return baseIndex.listRows();
     },
+    listStickerIds: () => baseIndex.listStickerIds(),
+    deleteRowIds: (rowIds) => baseIndex.deleteRowIds(rowIds),
     deleteStickerIds: (stickerIds) => baseIndex.deleteStickerIds(stickerIds),
     snapshot: () => baseIndex.snapshot()
   };
@@ -1385,10 +1619,10 @@ async function verifyInvalidVectorRowIsolation(
 
   releaseAudit.resolve();
   await service.whenIdle();
-  const remainingStickerIds = await baseIndex.listStickerIds();
-  assert.deepEqual(remainingStickerIds, [readyStickerId]);
+  const remainingStickerIds = new Set(await baseIndex.listStickerIds());
+  assert.deepEqual([...remainingStickerIds], [readyStickerId]);
   const snapshot = await baseIndex.snapshot();
-  assert.equal(snapshot.rowCount, 1);
+  assert.equal(snapshot.rowCount, readyUnitCount);
   const logText = await readFile(
     path.join(home.stickerLogsDir, "2026-07-11.jsonl"),
     "utf8"
@@ -1407,13 +1641,13 @@ async function verifyInvalidVectorRowIsolation(
   assert.deepEqual(pruneLog?.data, {
     requestedRows: invalidRows,
     deletedRows: invalidRows,
-    id: embeddingId
+    id: stickerVectorIndexId(embeddingId)
   });
   return {
     invalidRows,
     failedRows,
     orphanRows: invalidRows - failedRows,
-    dirtyRowCount: invalidRows + 1,
+    dirtyRowCount: invalidRows + readyUnitCount,
     searchWhileDirty: searchWhileDirty.map((result) => result.stickerId),
     remainingStickerIds,
     prunedRows: pruneLog?.data?.deletedRows,
@@ -1425,7 +1659,7 @@ function createFixtureAnalyzer(): StickerAnalyzer {
   return {
     async describe() {
       return {
-        desc: DESCRIPTION_STATIC,
+        description: fixtureDescription(false),
         provider: "fixture-sub-provider",
         model: "fixture-sub-model",
         promptHash: "fixture-sticker-prompt"
@@ -1590,26 +1824,18 @@ async function verifyRuntimeStickerTranscript(input: {
   );
   assert.equal(searchToolResult?.status, "executed");
   assert.equal(recommendationToolResult?.status, "executed");
-  assert.deepEqual(recommendationToolResult?.result?.data, {
-    recommended_stickers: [
-      {
-        sticker_id: input.stickerId,
-        desc: DESCRIPTION_ANIMATED
-      }
-    ]
-  });
-  assert.deepEqual(searchToolResult?.result?.data, {
-    stickers: [
-      {
-        sticker_id: input.stickerId,
-        desc: DESCRIPTION_ANIMATED
-      },
-      {
-        sticker_id: input.staticStickerId,
-        desc: DESCRIPTION_STATIC
-      }
-    ]
-  });
+  const recommended = asRecord(recommendationToolResult?.result?.data)
+    ?.recommended_stickers as Array<{ sticker_id: string; visual: string }>;
+  assert.equal(recommended.length, 1);
+  assert.ok([input.stickerId, input.staticStickerId].includes(recommended[0]!.sticker_id));
+  assert.ok([DESCRIPTION_ANIMATED, DESCRIPTION_STATIC].includes(recommended[0]!.visual));
+  const searched = asRecord(searchToolResult?.result?.data)
+    ?.stickers as Array<{ sticker_id: string; visual: string }>;
+  assert.deepEqual(
+    new Set(searched.map((sticker) => sticker.sticker_id)),
+    new Set([input.stickerId, input.staticStickerId])
+  );
+  assert.ok(searched.every((sticker) => typeof sticker.visual === "string"));
   assert.equal(sendToolResult?.status, "executed");
   assert.equal(asRecord(sendToolResult?.result?.data)?.stickerId, input.stickerId);
   const selfSticker = conversation.events.find(
@@ -1621,7 +1847,7 @@ async function verifyRuntimeStickerTranscript(input: {
   assert.ok(selfSticker, "Successful send_sticker must be committed to transcript history.");
   assert.match(selfSticker.event.message.text, /^\[表情包 stk_/);
   assert.match(selfSticker.event.message.text, new RegExp(input.stickerId));
-  assert.match(selfSticker.event.message.text, /blue character dances repeatedly/);
+  assert.ok(selfSticker.event.message.text.includes(DESCRIPTION_ANIMATED));
   assert.equal(
     (selfSticker.event.raw as { stickerId?: unknown }).stickerId,
     input.stickerId

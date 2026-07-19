@@ -184,7 +184,7 @@ function stickerTranscriptText(
     !Array.isArray(result.result.data)
       ? (result.result.data as Record<string, unknown>)
       : undefined;
-  const description = typeof data?.desc === "string" ? data.desc : undefined;
+  const description = typeof data?.visual === "string" ? data.visual : undefined;
   return description
     ? `[表情包 ${proposal.params.stickerId}：${description}]`
     : `[表情包 ${proposal.params.stickerId}]`;

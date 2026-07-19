@@ -88,6 +88,8 @@ export function createStickerToolImplementations(
       try {
         const stickers = await service.search({
           query: proposal.params.query,
+          mode: "search",
+          seed: proposal.id,
           source: "tool",
           ...(proposal.params.limit ? { limit: proposal.params.limit } : {}),
           ...(context.traceId ? { agentTraceId: context.traceId } : {})
@@ -99,7 +101,7 @@ export function createStickerToolImplementations(
             data: {
               stickers: stickers.map((sticker) => ({
                 sticker_id: sticker.stickerId,
-                desc: sticker.desc
+                visual: sticker.visual
               }))
             }
           }
@@ -247,6 +249,8 @@ function withTextSendRecommendations(
     try {
       const stickers = await service.search({
         query,
+        mode: "recommendation",
+        seed: proposal.id,
         limit: config.limit,
         source: "recommendation",
         ...(context.traceId ? { agentTraceId: context.traceId } : {})
@@ -255,7 +259,7 @@ function withTextSendRecommendations(
         result,
         stickers.map((sticker) => ({
           sticker_id: sticker.stickerId,
-          desc: sticker.desc
+          visual: sticker.visual
         }))
       );
     } catch {
@@ -282,7 +286,7 @@ function textSendRecommendationQuery(proposal: ActionProposal): string {
 
 function attachStickerRecommendations(
   result: ToolHandlerResult,
-  recommendations: Array<{ sticker_id: string; desc: string }>
+  recommendations: Array<{ sticker_id: string; visual: string }>
 ): ToolHandlerResult {
   if (!result.result) {
     return result;

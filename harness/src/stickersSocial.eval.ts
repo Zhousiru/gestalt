@@ -90,7 +90,7 @@ try {
             stickers: [
               {
                 sticker_id: "stk_celebration_fixture",
-                desc: "An excited blue character dances to celebrate a success. blue character, excited, dancing, celebrating, success"
+                visual: "A blue character dances with both arms raised."
               }
             ]
           }
@@ -111,7 +111,7 @@ try {
           externalId: `eval-sticker-${randomUUID()}`,
           data: {
             stickerId: proposal.params.stickerId,
-            desc: "An excited blue character dances to celebrate a success. blue character, excited, dancing, celebrating, success"
+            visual: "A blue character dances with both arms raised."
           }
         }
       };

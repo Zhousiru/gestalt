@@ -18,6 +18,7 @@ export type EmbeddingInputType = "document" | "query";
 export interface EmbedTextOptions {
   signal?: AbortSignal;
   inputType?: EmbeddingInputType;
+  queryInstruction?: string;
 }
 
 export interface EmbeddingRequestSnapshot {
@@ -102,7 +103,7 @@ export function createEmbeddingClient(
       }
       const inputType = embedOptions.inputType ?? "document";
       const requestText = inputType === "query"
-        ? `Instruct: Retrieve text matching the user's intended reaction\nQuery: ${text}`
+        ? `Instruct: ${embedOptions.queryInstruction ?? "Retrieve text matching the user's intended reaction"}\nQuery: ${text}`
         : text;
       options.onRequest?.({
         provider: config.providerName,

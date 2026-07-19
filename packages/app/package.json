@@ -11,6 +11,7 @@
   "scripts": {
     "dev": "tsx src/main.ts",
     "build": "node scripts/build.mjs",
+    "rebuild:stickers": "tsx scripts/rebuild-stickers.ts",
     "verify:live-api": "tsx src/live/server.verify.ts",
     "verify:onebot-ingress": "tsx src/connectors/onebot/ingressQueue.verify.ts && tsx src/connectors/onebot/transport.verify.ts",
     "verify:session": "tsx src/session/sessionJournal.verify.ts && tsx src/runtime/runtimeSessionPin.verify.ts",

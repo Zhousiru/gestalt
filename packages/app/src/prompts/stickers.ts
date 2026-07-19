@@ -3,12 +3,11 @@ import { hashPromptContent } from "./hash";
 export const STICKER_DESCRIPTION_PROMPT_ID = "sticker-description";
 
 const stickerDescriptionPrompt = [
-  "Describe this chat sticker in one short English sentence without trailing punctuation, including its visible subject, action, readable text, emotion, and conversational meaning when apparent.",
-  "Then append an ASCII period, one space, and 3 to 8 concise English search keywords separated by commas.",
-  "When applicable, prefer consistent keywords such as happy, excited, smug, shy, hurt, sad, angry, disgusted, speechless, confused, shocked, scared, awkward, tired, giving up, mocking, comforting, agreeing, refusing, celebrating, or greeting.",
-  "Choose only keywords that directly match this sticker; never copy the candidate list wholesale.",
-  "Use only English in the entire output. Do not add a label such as keywords.",
-  "Output exactly one line and no JSON, Markdown, uncertainty commentary, or alternatives."
+  "Analyze this chat sticker into the requested structured fields.",
+  "visual: Write in English. Describe only objectively visible content: subjects, count, appearance, posture, physical action, objects, composition, readable text, and animation. Do not infer emotion, intent, conversational meaning, or a usage scenario. Prefer physical cues such as 'raised eyebrows' over interpretations such as 'looks confused'.",
+  "emotion: Return 1 to 8 concise canonical English emotion or reaction tags that are directly supported by the image, such as happy, excited, smug, shy, hurt, sad, angry, disgusted, speechless, confused, shocked, scared, awkward, tired, resigned, suspicious, or helpless. Do not include visual nouns or complete phrases.",
+  "usage: Return 10 to 20 distinct, natural, short Chinese IM messages that could accompany this sticker. Write messages ready to send, not explanations of when to use them. Cover genuinely different phrasings and intents; do not pad the list with punctuation-only or particle-only variants.",
+  "Keep readable text in the image verbatim inside visual. Do not mention uncertainty or provide alternatives outside the requested fields."
 ].join("\n");
 
 export function renderStickerDescriptionPrompt(input: {

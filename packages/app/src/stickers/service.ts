@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import type { Connector, ConnectorCallResult } from "../connectors/types";
 import { renderCqCode } from "../connectors/onebot/message";
 import type { MessageReceivedEvent } from "../events/schemas";
@@ -12,13 +13,20 @@ import {
 import {
   STICKER_DISTANCE_METRIC,
   type StickerVectorIndex,
-  type StickerSearchResult
+  stickerVectorIndexId,
+  stickerVectorRowId,
+  type StickerVectorChannel,
+  type StickerVectorSearchResult
 } from "./lance";
 import type { StickerLogger } from "./logger";
 import type { StickerMediaResolver } from "./media";
 import type { StickerAnalyzer, StickerEmbedder } from "./models";
 import { prepareStickerMedia } from "./contactSheet";
-import { embedAndIndex, processStickerJob } from "./processor";
+import {
+  embedAndIndex,
+  processStickerJob,
+  stickerVectorDocuments
+} from "./processor";
 import type { StickerJob, StickerJobStatus, StickerRecord } from "./schemas";
 import type { StickerStore } from "./store";
 
@@ -28,6 +36,15 @@ const WORKER_RETRY_BASE_MS = 25;
 const WORKER_RETRY_MAX_MS = 1_000;
 const STICKER_NOT_READY_ERROR = "Sticker is not ready.";
 const STICKER_DELIVERY_ERROR = "Sticker delivery failed.";
+const SEARCH_POOL_MULTIPLIER = 4;
+const SEARCH_MINIMUM_POOL = 12;
+const SEARCH_MAXIMUM_POOL = 40;
+const SEARCH_PAGE_SIZE = 100;
+const SEARCH_MAX_SCANNED_ROWS = 1_000;
+const SEARCH_RRF_K = 60;
+const SEARCH_TAGS_WEIGHT = 0.6;
+const SEARCH_VISUAL_WEIGHT = 0.4;
+const SEARCH_SAMPLING_EXPONENT = 1.5;
 
 export const DEFAULT_STICKER_CATALOG_LIMIT = 48;
 export const MAX_STICKER_CATALOG_LIMIT = 100;
@@ -107,12 +124,14 @@ export interface StickerJobView {
   error?: string;
   thumbnailUrl?: string;
   contactSheetUrl?: string;
-  desc?: string;
+  visual?: string;
 }
 
 export interface StickerView {
   id: string;
-  desc: string;
+  visual: string;
+  emotion: string[];
+  usage: string[];
   status: StickerRecord["status"];
   sourceKind: StickerJob["sourceKind"];
   animated: boolean;
@@ -153,6 +172,22 @@ export type StickerSearchSource =
   | "recall_test"
   | "runtime";
 
+export type StickerSearchMode = "search" | "recommendation";
+
+export interface StickerSearchResult {
+  stickerId: string;
+  visual: string;
+  originalRank: number;
+  sampledRank: number;
+  score: number;
+  channels: Array<{
+    channel: StickerVectorChannel;
+    rank: number;
+    distance?: number;
+    text: string;
+  }>;
+}
+
 export interface StickerService {
   readonly configuredEnabled: boolean;
   isScrapingEnabled(): boolean;
@@ -166,6 +201,8 @@ export interface StickerService {
   observe(event: MessageReceivedEvent): Promise<number>;
   search(input: {
     query: string;
+    mode?: StickerSearchMode;
+    seed?: string;
     limit?: number;
     agentTraceId?: string;
     source?: StickerSearchSource;
@@ -388,25 +425,37 @@ export function createStickerService(
     }
     needsIndexAudit = false;
     const records = (await input.store.listRecords()).filter(
-      (record) => record.status === "ready" && Boolean(record.desc)
+      (record) => record.status === "ready" && Boolean(record.description)
     );
-    const expectedStickerIds = new Set(records.map((record) => record.id));
-    const expectedRows = expectedStickerIds.size;
+    const expectedRowIds = new Set(
+      records.flatMap((record) =>
+        stickerVectorDocuments(record).map((unit) =>
+          stickerVectorRowId(record.id, unit.channel, unit.unitIndex)
+        )
+      )
+    );
+    const expectedRows = expectedRowIds.size;
     const indexSnapshot = await input.vectorIndex.snapshot();
-    const indexedStickerIds = new Set(await input.vectorIndex.listStickerIds());
-    const missingStickerIds = [...expectedStickerIds].filter(
-      (id) => !indexedStickerIds.has(id)
+    const indexedRows = await input.vectorIndex.listRows();
+    const indexedRowIds = new Set(indexedRows.map((row) => row.rowId));
+    const missingRowIds = [...expectedRowIds].filter(
+      (id) => !indexedRowIds.has(id)
     );
-    const orphanStickerIds = [...indexedStickerIds].filter(
-      (id) => !expectedStickerIds.has(id)
+    const orphanRowIds = [...indexedRowIds].filter(
+      (id) => !expectedRowIds.has(id)
+    );
+    const missingStickerIds = new Set(
+      missingRowIds.map((rowId) => rowId.split(":", 1)[0]!)
     );
     const stale = records.filter(
-      (record) => record.embedding?.id !== input.embedder.id
+      (record) =>
+        record.embedding?.id !== stickerVectorIndexId(input.embedder.id) ||
+        record.embedding?.units.usage !== record.description?.usage.length
     );
     if (
       stale.length === 0 &&
-      missingStickerIds.length === 0 &&
-      orphanStickerIds.length === 0
+      missingRowIds.length === 0 &&
+      orphanRowIds.length === 0
     ) {
       indexAuditError = undefined;
       return;
@@ -418,28 +467,25 @@ export function createStickerService(
         state: "rebuilding",
         expectedRows,
         currentRows: indexSnapshot.rowCount,
-        missingRows: missingStickerIds.length,
-        orphanRows: orphanStickerIds.length
+        missingRows: missingRowIds.length,
+        orphanRows: orphanRowIds.length
       },
       now().toISOString()
     );
-    if (orphanStickerIds.length > 0) {
-      const deletedRows = await input.vectorIndex.deleteStickerIds(
-        orphanStickerIds
-      );
+    if (orphanRowIds.length > 0) {
+      const deletedRows = await input.vectorIndex.deleteRowIds(orphanRowIds);
       await log("sticker.lancedb_pruned", {
         data: {
-          requestedRows: orphanStickerIds.length,
+          requestedRows: orphanRowIds.length,
           deletedRows,
-          id: input.embedder.id
+          id: stickerVectorIndexId(input.embedder.id)
         }
       });
     }
-    const missingIdSet = new Set(missingStickerIds);
     const staleIds = new Set(stale.map((record) => record.id));
     let pending = records.filter(
       (record) =>
-        staleIds.has(record.id) || missingIdSet.has(record.id)
+        staleIds.has(record.id) || missingStickerIds.has(record.id)
     );
     for (
       let attempt = 1;
@@ -782,16 +828,12 @@ export function createStickerService(
             frameCount: prepared.frameCount,
             ...(platformSummary ? { platformSummary } : {})
           });
-          const desc = description.desc.trim();
-          if (!desc) {
-            throw new Error("Sticker analyzer returned an empty description.");
-          }
           const { lastError: _lastError, ...recordWithoutError } = record;
           const indexed = await embedAndIndex(
             {
               ...recordWithoutError,
               status: "processing",
-              desc,
+              description: description.description,
               analysis: {
                 provider: description.provider,
                 model: description.model,
@@ -815,7 +857,7 @@ export function createStickerService(
               provider: description.provider,
               model: description.model,
               promptHash: description.promptHash,
-              embeddingId: input.embedder.id,
+              embeddingId: stickerVectorIndexId(input.embedder.id),
               dimensions: indexed.embedding?.dimensions
             }
           });
@@ -842,6 +884,157 @@ export function createStickerService(
       }
     );
     return managementResponse("rebuild", results);
+  };
+
+  interface RankedStickerCandidate {
+    stickerId: string;
+    record: StickerRecord;
+    score: number;
+    channels: StickerSearchResult["channels"];
+  }
+
+  const collectChannelCandidates = async (inputQuery: {
+    channel: StickerVectorChannel;
+    vector: number[];
+    uniqueTarget: number;
+  }): Promise<Array<{
+    stickerId: string;
+    record: StickerRecord;
+    match: StickerVectorSearchResult;
+  }>> => {
+    const bestBySticker = new Map<string, {
+      stickerId: string;
+      record: StickerRecord;
+      match: StickerVectorSearchResult;
+    }>();
+    let offset = 0;
+    while (
+      bestBySticker.size < inputQuery.uniqueTarget &&
+      offset < SEARCH_MAX_SCANNED_ROWS
+    ) {
+      const pageLimit = Math.min(
+        SEARCH_PAGE_SIZE,
+        SEARCH_MAX_SCANNED_ROWS - offset
+      );
+      const rows = await input.vectorIndex.search({
+        vector: inputQuery.vector,
+        channel: inputQuery.channel,
+        limit: pageLimit,
+        offset
+      });
+      for (const row of rows) {
+        if (bestBySticker.has(row.stickerId)) {
+          continue;
+        }
+        const record = await input.store.readRecord(row.stickerId);
+        if (
+          !record ||
+          record.status !== "ready" ||
+          !record.description ||
+          record.embedding?.id !== stickerVectorIndexId(input.embedder.id)
+        ) {
+          continue;
+        }
+        bestBySticker.set(row.stickerId, {
+          stickerId: row.stickerId,
+          record,
+          match: row
+        });
+      }
+      offset += rows.length;
+      if (rows.length < pageLimit) {
+        break;
+      }
+    }
+    return [...bestBySticker.values()];
+  };
+
+  const rankSearchCandidates = async (
+    query: string,
+    uniqueTarget: number
+  ): Promise<{ candidates: RankedStickerCandidate[]; dimensions: number[] }> => {
+    const [tagsEmbedding, visualEmbedding] = await Promise.all([
+      input.embedder.embed(query, { inputType: "query", queryPurpose: "tags" }),
+      input.embedder.embed(query, { inputType: "query", queryPurpose: "visual" })
+    ]);
+    const [tags, visual] = await Promise.all([
+      collectChannelCandidates({
+        channel: "tags",
+        vector: tagsEmbedding.vector,
+        uniqueTarget
+      }),
+      collectChannelCandidates({
+        channel: "visual",
+        vector: visualEmbedding.vector,
+        uniqueTarget
+      })
+    ]);
+    const candidatesBySticker = new Map<string, RankedStickerCandidate>();
+    for (const [channel, weight, matches] of [
+      ["tags", SEARCH_TAGS_WEIGHT, tags],
+      ["visual", SEARCH_VISUAL_WEIGHT, visual]
+    ] as const) {
+      matches.forEach((candidate, index) => {
+        const rank = index + 1;
+        const current = candidatesBySticker.get(candidate.stickerId) ?? {
+          stickerId: candidate.stickerId,
+          record: candidate.record,
+          score: 0,
+          channels: []
+        };
+        current.score += weight / (SEARCH_RRF_K + rank);
+        current.channels.push({
+          channel,
+          rank,
+          ...(candidate.match.distance !== undefined
+            ? { distance: candidate.match.distance }
+            : {}),
+          text: candidate.match.text
+        });
+        candidatesBySticker.set(candidate.stickerId, current);
+      });
+    }
+    return {
+      candidates: [...candidatesBySticker.values()]
+        .sort((left, right) => right.score - left.score)
+        .slice(0, uniqueTarget),
+      dimensions: [tagsEmbedding.vector.length, visualEmbedding.vector.length]
+    };
+  };
+
+  const rankRecommendationCandidates = async (
+    query: string,
+    uniqueTarget: number
+  ): Promise<{ candidates: RankedStickerCandidate[]; dimensions: number[] }> => {
+    const embedding = await input.embedder.embed(query, {
+      inputType: "query",
+      queryPurpose: "usage"
+    });
+    const matches = await collectChannelCandidates({
+      channel: "usage",
+      vector: embedding.vector,
+      uniqueTarget
+    });
+    return {
+      candidates: matches.map((candidate, index) => ({
+        stickerId: candidate.stickerId,
+        record: candidate.record,
+        score: candidate.match.distance === undefined
+          ? 1 / (index + 1)
+          : 1 - candidate.match.distance,
+        channels: [
+          {
+            channel: "usage",
+            rank: index + 1,
+            ...(candidate.match.distance !== undefined
+              ? { distance: candidate.match.distance }
+              : {}),
+            text: candidate.match.text
+          }
+        ]
+      })),
+      dimensions: [embedding.vector.length]
+    };
   };
 
   const service: StickerService = {
@@ -952,51 +1145,38 @@ export function createStickerService(
 
     async search(searchInput) {
       const limit = Math.min(20, Math.max(1, searchInput.limit ?? 8));
+      const mode: StickerSearchMode = searchInput.mode ??
+        (searchInput.source === "recommendation" ? "recommendation" : "search");
+      const uniqueTarget = Math.min(
+        SEARCH_MAXIMUM_POOL,
+        Math.max(SEARCH_MINIMUM_POOL, limit * SEARCH_POOL_MULTIPLIER)
+      );
       const startedAt = now().toISOString();
       try {
-        const embedding = await input.embedder.embed(searchInput.query, {
-          inputType: "query"
-        });
-        const results: StickerSearchResult[] = [];
-        const seen = new Set<string>();
-        const pageSize = Math.min(100, Math.max(32, limit * 4));
-        let offset = 0;
-        while (results.length < limit) {
-          const candidates = await input.vectorIndex.search({
-            vector: embedding.vector,
-            limit: pageSize,
-            offset
-          });
-          for (const candidate of candidates) {
-            if (seen.has(candidate.stickerId)) {
-              continue;
-            }
-            seen.add(candidate.stickerId);
-            const record = await input.store.readRecord(candidate.stickerId);
-            if (
-              !record ||
-              record.status !== "ready" ||
-              !record.desc ||
-              record.embedding?.id !== input.embedder.id
-            ) {
-              continue;
-            }
-            results.push({
-              stickerId: record.id,
-              desc: record.desc,
-              ...(candidate.distance !== undefined
-                ? { distance: candidate.distance }
-                : {})
-            });
-            if (results.length >= limit) {
-              break;
-            }
-          }
-          offset += candidates.length;
-          if (results.length >= limit || candidates.length < pageSize) {
-            break;
-          }
-        }
+        const ranked = mode === "search"
+          ? await rankSearchCandidates(searchInput.query, uniqueTarget)
+          : await rankRecommendationCandidates(searchInput.query, uniqueTarget);
+        const sampled = weightedSampleWithoutReplacement(
+          ranked.candidates,
+          limit,
+          [
+            "sticker-candidate-sampling",
+            mode,
+            searchInput.seed ?? "stable",
+            searchInput.query
+          ].join("\0")
+        );
+        const originalRanks = new Map(
+          ranked.candidates.map((candidate, index) => [candidate.stickerId, index + 1])
+        );
+        const results: StickerSearchResult[] = sampled.map((candidate, index) => ({
+          stickerId: candidate.stickerId,
+          visual: candidate.record.description!.visual,
+          originalRank: originalRanks.get(candidate.stickerId)!,
+          sampledRank: index + 1,
+          score: candidate.score,
+          channels: candidate.channels
+        }));
         const at = now().toISOString();
         await log("sticker.search_completed", {
           at,
@@ -1006,17 +1186,39 @@ export function createStickerService(
           data: {
             source: searchInput.source ?? "runtime",
             query: searchInput.query,
+            mode,
             limit,
+            uniqueTarget,
+            candidatePoolSize: ranked.candidates.length,
             resultCount: results.length,
             candidates: results.map((result) => ({
               stickerId: result.stickerId,
-              distance: result.distance
+              originalRank: result.originalRank,
+              sampledRank: result.sampledRank,
+              score: result.score,
+              channels: result.channels
             })),
             startedAt,
             embeddingModel: input.embedder.model,
-            embeddingId: input.embedder.id,
+            embeddingId: stickerVectorIndexId(input.embedder.id),
             distanceMetric: STICKER_DISTANCE_METRIC,
-            dimensions: embedding.vector.length
+            dimensions: ranked.dimensions,
+            sampling: {
+              method: "rank_weighted_without_replacement",
+              exponent: SEARCH_SAMPLING_EXPONENT
+            },
+            ...(mode === "search"
+              ? {
+                  fusion: {
+                    method: "rrf",
+                    k: SEARCH_RRF_K,
+                    weights: {
+                      tags: SEARCH_TAGS_WEIGHT,
+                      visual: SEARCH_VISUAL_WEIGHT
+                    }
+                  }
+                }
+              : {})
           }
         });
         publish(
@@ -1035,6 +1237,7 @@ export function createStickerService(
           data: {
             source: searchInput.source ?? "runtime",
             query: searchInput.query,
+            mode,
             limit,
             startedAt,
             error: errorMessage(error)
@@ -1047,7 +1250,7 @@ export function createStickerService(
     async send(sendInput) {
       try {
         const record = await input.store.readRecord(sendInput.stickerId);
-        if (!record || record.status !== "ready" || !record.desc) {
+        if (!record || record.status !== "ready" || !record.description) {
           const result = { ok: false, error: STICKER_NOT_READY_ERROR };
           await log("sticker.send_failed", {
             stickerId: sendInput.stickerId,
@@ -1100,7 +1303,7 @@ export function createStickerService(
                 : {}),
               data: {
                 stickerId: record.id,
-                desc: record.desc
+                visual: record.description.visual
               }
             };
           }
@@ -1141,7 +1344,7 @@ export function createStickerService(
                 : {}),
               data: {
                 stickerId: record.id,
-                desc: record.desc
+                visual: record.description.visual
               }
             }
           : { ok: false, error: STICKER_DELIVERY_ERROR };
@@ -1209,7 +1412,7 @@ export function createStickerService(
           ...(index.dimensions ?? input.embedder.configuredDimensions
             ? { dimensions: index.dimensions ?? input.embedder.configuredDimensions }
             : {}),
-          id: input.embedder.id,
+          id: stickerVectorIndexId(input.embedder.id),
           distanceMetric: index.distanceMetric,
           rowCount: index.rowCount,
           indexState: rebuildingIndex
@@ -1236,7 +1439,9 @@ export function createStickerService(
             ...(record ? { animated: record.asset.animated } : {}),
             ...(job.error ? { error: job.error } : {}),
             ...(record ? assetUrls(record) : {}),
-            ...(record?.desc ? { desc: record.desc } : {})
+            ...(record?.description
+              ? { visual: record.description.visual }
+              : {})
           };
         }),
         catalog: {
@@ -1324,12 +1529,14 @@ function toStickerView(
   const sourceKind = record.mface ? "mface" : "image";
   const embeddingStatus = !record.embedding
     ? "missing"
-    : record.embedding.id === embeddingId
+    : record.embedding.id === stickerVectorIndexId(embeddingId)
       ? "ready"
       : "stale";
   return {
     id: record.id,
-    desc: record.desc ?? "等待分析",
+    visual: record.description?.visual ?? "等待分析",
+    emotion: record.description?.emotion ?? [],
+    usage: record.description?.usage ?? [],
     status: record.status,
     sourceKind,
     animated: record.asset.animated,
@@ -1391,7 +1598,9 @@ function matchesStickerCatalogQuery(
   }
   return [
     sticker.id,
-    sticker.desc,
+    sticker.visual,
+    ...sticker.emotion,
+    ...sticker.usage,
     sticker.sourceKind
   ].some((value) => value.toLowerCase().includes(needle));
 }
@@ -1479,6 +1688,33 @@ function stickerJobPlatformSummary(job: StickerJob): string | undefined {
   return summary === undefined || summary === null || String(summary).length === 0
     ? undefined
     : String(summary);
+}
+
+export function weightedSampleWithoutReplacement<T extends { stickerId: string }>(
+  ranked: readonly T[],
+  limit: number,
+  seed: string
+): T[] {
+  return ranked
+    .map((candidate, index) => {
+      const weight = 1 / Math.pow(index + 1, SEARCH_SAMPLING_EXPONENT);
+      const unit = deterministicUnitInterval(
+        [seed, candidate.stickerId, String(index)].join("\0")
+      );
+      return {
+        candidate,
+        key: -Math.log(Math.max(Number.EPSILON, unit)) / weight
+      };
+    })
+    .sort((left, right) => left.key - right.key)
+    .slice(0, Math.max(0, limit))
+    .map((entry) => entry.candidate);
+}
+
+function deterministicUnitInterval(value: string): number {
+  const digest = createHash("sha256").update(value).digest();
+  const bits = digest.readBigUInt64BE(0) >> 11n;
+  return (Number(bits) + 1) / (2 ** 53 + 1);
 }
 
 async function mapWithConcurrency<Input, Output>(

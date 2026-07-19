@@ -208,9 +208,9 @@ The initial implementation should use:
 - Zod for runtime schema validation.
 - Vercel AI SDK for model integration.
 - Three explicit runtime model roles; see [MODEL_CONFIGURATION.md](MODEL_CONFIGURATION.md).
-- Background QQ sticker collection with one bot-wide content-addressed catalog and one LanceDB vector row per sticker; see [STICKER_SYSTEM.md](STICKER_SYSTEM.md).
+- Background QQ sticker collection with one bot-wide content-addressed catalog and structured visual, emotion-tag, and per-usage LanceDB retrieval units; see [STICKER_SYSTEM.md](STICKER_SYSTEM.md).
 - File-backed configuration, persona, logs, traces, sessions, and memory under an explicit GestaltHome directory for the first implementation.
-- Narrative memory has no vector retrieval dependency. The separate sticker catalog uses local LanceDB over generated sticker descriptions.
+- Narrative memory has no vector retrieval dependency. The separate sticker catalog uses local LanceDB over generated visual descriptions, emotion tags, and usage phrases.
 - OneBot v11 as the initial connector protocol.
 - An append-only session journal for recent chat recovery and one incremental
   rollout JSONL file per active loop.

@@ -654,6 +654,7 @@ function RecallTestPanel({
 }) {
   const [query, setQuery] = useState("");
   const [limit, setLimit] = useState(3);
+  const [mode, setMode] = useState<"search" | "recommendation">("search");
   const [state, setState] = useState<RecallState>("idle");
   const [response, setResponse] = useState<StickerRecallResponse>();
   const [error, setError] = useState<string>();
@@ -681,7 +682,7 @@ function RecallTestPanel({
       const recallResponse = await fetch("/api/live/stickers/recall", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ query: normalizedQuery, limit }),
+        body: JSON.stringify({ query: normalizedQuery, limit, mode }),
         signal: controller.signal,
       });
       const payload = (await recallResponse.json()) as
@@ -717,7 +718,7 @@ function RecallTestPanel({
         <div>
           <h2 className="text-sm font-semibold">Recall test</h2>
           <p className="mt-0.5 text-xs leading-5 text-neutral-500">
-            Embed text against the live LanceDB catalog. This test never sends a sticker.
+            Inspect the live visual + tag search or usage-only recommendation pipeline, including deduplication and deterministic weighted sampling.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -733,7 +734,7 @@ function RecallTestPanel({
       </header>
 
       <form
-        className="grid items-end gap-3 p-4 sm:grid-cols-[minmax(0,1fr)_104px_auto]"
+        className="grid items-end gap-3 p-4 sm:grid-cols-[minmax(0,1fr)_160px_104px_auto]"
         onSubmit={(event) => {
           event.preventDefault();
           void runRecall();
@@ -763,6 +764,22 @@ function RecallTestPanel({
           <span className="mt-1 block text-[11px] text-neutral-500">
             Ctrl/⌘ + Enter to run
           </span>
+        </label>
+        <label>
+          <span className="mb-1.5 block text-xs font-medium text-neutral-700">
+            Pipeline
+          </span>
+          <select
+            className={cn(fieldClass, "w-full")}
+            disabled={state === "loading"}
+            onChange={(event) =>
+              setMode(event.currentTarget.value as "search" | "recommendation")
+            }
+            value={mode}
+          >
+            <option value="search">Visual + tags</option>
+            <option value="recommendation">Usage recommendation</option>
+          </select>
         </label>
         <label>
           <span className="mb-1.5 block text-xs font-medium text-neutral-700">
@@ -798,7 +815,7 @@ function RecallTestPanel({
           ) : (
             <Search aria-hidden="true" size={15} />
           )}
-          {state === "loading" ? "Embedding…" : "Run recall"}
+          {state === "loading" ? "Searching…" : "Run recall"}
         </button>
       </form>
 
@@ -851,11 +868,9 @@ function RecallResults({ response }: { response: StickerRecallResponse }) {
           <strong className="font-medium text-neutral-900">
             {formatCount(response.returned)}
           </strong>{" "}
-          {response.returned === 1 ? "match" : "matches"} for “{response.query}”
+          {response.returned === 1 ? "match" : "matches"} for “{response.query}” · {response.mode === "search" ? "visual + tags" : "usage only"}
         </span>
-        <span title="Cosine similarity is vector similarity, not calibrated model confidence.">
-          Cosine similarity = 1 − distance
-        </span>
+        <span>Sampled from deduplicated relevance ranks</span>
       </div>
       {response.results.length ? (
         <ol className="divide-y divide-neutral-100">
@@ -873,7 +888,18 @@ function RecallResults({ response }: { response: StickerRecallResponse }) {
                 src={result.contactSheetUrl ?? result.thumbnailUrl}
               />
               <div className="min-w-0">
-                <p className="text-sm leading-5 text-neutral-900">{result.desc}</p>
+                <p className="text-sm leading-5 text-neutral-900">{result.visual}</p>
+                <ul className="mt-2 space-y-1 text-[11px] leading-4 text-neutral-500">
+                  {result.channels.map((channel) => (
+                    <li key={`${channel.channel}-${channel.rank}-text`}>
+                      <span className="font-medium text-neutral-700">{channel.channel}</span>
+                      {` · #${channel.rank} · ${channel.text}`}
+                      {channel.similarity !== undefined
+                        ? ` · similarity ${formatCosineSimilarity(channel.similarity)}`
+                        : ""}
+                    </li>
+                  ))}
+                </ul>
                 <div className="mt-2 flex min-w-0 items-center gap-1.5 text-xs text-neutral-500">
                   <span className="truncate font-mono" title={result.stickerId}>
                     {shortId(result.stickerId)}
@@ -885,24 +911,21 @@ function RecallResults({ response }: { response: StickerRecallResponse }) {
                 </div>
               </div>
               <div className="col-span-2 col-start-2 min-w-0 sm:col-span-1 sm:col-start-auto sm:text-right">
-                {result.similarity !== undefined ? (
-                  <div className="flex items-baseline justify-between gap-2 sm:justify-end">
-                    <span className="text-xs text-neutral-500">
-                      Cosine similarity
-                    </span>
-                    <strong className="text-sm font-semibold tabular-nums text-neutral-900">
-                      {formatCosineSimilarity(result.similarity)}
-                    </strong>
-                  </div>
-                ) : (
-                  <span className="text-xs text-neutral-500">
-                    Similarity unavailable
-                  </span>
-                )}
+                <div className="flex items-baseline justify-between gap-2 sm:justify-end">
+                  <span className="text-xs text-neutral-500">Relevance → sample</span>
+                  <strong className="text-sm font-semibold tabular-nums text-neutral-900">
+                    #{result.originalRank} → #{result.sampledRank}
+                  </strong>
+                </div>
+                <div className="mt-2 flex flex-wrap justify-start gap-1 sm:justify-end">
+                  {result.channels.map((channel) => (
+                    <StatusPill key={`${channel.channel}-${channel.rank}`} tone="info">
+                      {channel.channel} #{channel.rank}
+                    </StatusPill>
+                  ))}
+                </div>
                 <p className="mt-1.5 text-[11px] tabular-nums text-neutral-500">
-                  {result.distance !== undefined
-                    ? `cosine distance ${formatDistance(result.distance)} · lower is closer`
-                    : `${response.metric} distance not reported`}
+                  score {result.score.toFixed(6)}
                 </p>
               </div>
             </li>
@@ -972,7 +995,7 @@ function JobsPanel({
                   <StatusPill tone={statusTone(job.status)}>{statusLabel(job.status)}</StatusPill>
                 </div>
                 <p className="mt-1 truncate text-xs text-neutral-500">
-                  {job.desc || `${sourceLabel(job.sourceKind)} · ${job.conversationId}`}
+                  {job.visual || `${sourceLabel(job.sourceKind)} · ${job.conversationId}`}
                 </p>
               </div>
               <div className="hidden min-w-0 md:block">
@@ -1162,7 +1185,7 @@ function CatalogPanel({
                   className={managementAction === "rebuild" ? "animate-spin" : undefined}
                   size={13}
                 />
-                Rebuild desc + index
+                Rebuild analysis + index
               </button>
               <button
                 className={cn(
@@ -1360,7 +1383,7 @@ function StickerRow({
       >
         <div className="relative">
           <StickerMedia
-            alt={sticker.desc ? `Preview: ${sticker.desc}` : "Sticker preview"}
+            alt={sticker.visual ? `Preview: ${sticker.visual}` : "Sticker preview"}
             className="h-16 w-16"
             src={staticStickerPreview(sticker)}
           />
@@ -1379,7 +1402,7 @@ function StickerRow({
             </StatusPill>
           </div>
           <p className="mt-1.5 line-clamp-2 text-sm leading-5 text-neutral-900">
-            {sticker.desc || "Description pending"}
+            {sticker.visual || "Description pending"}
           </p>
           <p className="mt-1 truncate text-xs text-neutral-500 sm:hidden">
             {sourceLabel(sticker.sourceKind)} · {formatRelativeTime(sticker.updatedAt)}
@@ -1604,7 +1627,7 @@ function StickerDetail({
             className={managementAction === "rebuild" ? "animate-spin" : undefined}
             size={13}
           />
-          Rebuild desc + index
+          Rebuild analysis + index
         </button>
         <button
           className={cn(
@@ -1632,10 +1655,32 @@ function StickerDetail({
         )}
       </div>
 
-      <DetailSection title="Description">
+      <DetailSection title="Visual description">
         <p className="text-sm leading-6 text-neutral-800">
-          {sticker.desc || "The sub model has not produced a description yet."}
+          {sticker.visual || "The sub model has not produced a visual description yet."}
         </p>
+      </DetailSection>
+
+      <DetailSection title="Emotion tags">
+        {sticker.emotion.length ? (
+          <div className="flex flex-wrap gap-1.5">
+            {sticker.emotion.map((emotion) => (
+              <StatusPill key={emotion} tone="info">{emotion}</StatusPill>
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-neutral-500">No emotion tags yet.</p>
+        )}
+      </DetailSection>
+
+      <DetailSection title={`Usage examples (${sticker.usage.length})`}>
+        {sticker.usage.length ? (
+          <ol className="list-decimal space-y-1 pl-5 text-sm leading-5 text-neutral-700">
+            {sticker.usage.map((usage) => <li key={usage}>{usage}</li>)}
+          </ol>
+        ) : (
+          <p className="text-sm text-neutral-500">No usage examples yet.</p>
+        )}
       </DetailSection>
 
       <DetailSection title="Indexing">
@@ -1707,9 +1752,9 @@ function JobDetail({ job }: { job: StickerJobView }) {
         />
       </div>
 
-      {job.desc ? (
-        <DetailSection title="Description">
-          <p className="text-sm leading-6 text-neutral-800">{job.desc}</p>
+      {job.visual ? (
+        <DetailSection title="Visual description">
+          <p className="text-sm leading-6 text-neutral-800">{job.visual}</p>
         </DetailSection>
       ) : null}
 

@@ -125,6 +125,7 @@ const StickerManagementRequestSchema = z
 const StickerRecallRequestSchema = z
   .object({
     query: z.string().trim().min(1).max(1000),
+    mode: z.enum(["search", "recommendation"]).default("search"),
     limit: z.number().int().min(1).max(20).default(3)
   })
   .strict();
@@ -278,6 +279,8 @@ async function handleRequest(
     }
     const matches = await options.runtime.stickers.search({
       query: parsed.data.query,
+      mode: parsed.data.mode,
+      seed: `recall:${parsed.data.mode}:${parsed.data.query}`,
       limit: parsed.data.limit,
       source: "recall_test"
     });
@@ -291,13 +294,16 @@ async function handleRequest(
         return {
           rank: index + 1,
           stickerId: match.stickerId,
-          desc: match.desc,
-          ...(match.distance !== undefined && Number.isFinite(match.distance)
-            ? {
-                distance: match.distance,
-                similarity: cosineSimilarity(match.distance)
-              }
-            : {}),
+          visual: match.visual,
+          originalRank: match.originalRank,
+          sampledRank: match.sampledRank,
+          score: match.score,
+          channels: match.channels.map((channel) => ({
+            ...channel,
+            ...(channel.distance !== undefined && Number.isFinite(channel.distance)
+              ? { similarity: cosineSimilarity(channel.distance) }
+              : {})
+          })),
           thumbnailUrl: `/api/live/stickers/assets/${stickerId}/original`,
           ...(contactSheet
             ? {
@@ -309,6 +315,7 @@ async function handleRequest(
     );
     sendJson(response, 200, {
       query: parsed.data.query,
+      mode: parsed.data.mode,
       limit: parsed.data.limit,
       returned: results.length,
       metric: STICKER_DISTANCE_METRIC,

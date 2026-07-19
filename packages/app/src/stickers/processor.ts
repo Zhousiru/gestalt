@@ -4,6 +4,12 @@ import type { StickerStore } from "./store";
 import type { StickerAnalyzer, StickerEmbedder } from "./models";
 import type { StickerMediaResolver } from "./media";
 import type { StickerVectorIndex } from "./lance";
+import {
+  stickerVectorIndexId,
+  stickerVectorRowId,
+  type StickerVectorChannel,
+  type StickerVectorEntry
+} from "./lance";
 import { prepareStickerMedia } from "./contactSheet";
 import { stickerIdFromSha256 } from "./id";
 
@@ -38,9 +44,10 @@ export async function processStickerJob(
 
   const sha256 = createHash("sha256").update(bytes).digest("hex");
   const existing = await dependencies.store.findRecordBySha256(sha256);
-  if (existing?.status === "ready" && existing.desc) {
+  if (existing?.status === "ready" && existing.description) {
     const merged = mergeObservation(existing, job, dependencies.now().toISOString());
-    const needsReindex = existing.embedding?.id !== dependencies.embedder.id;
+    const needsReindex =
+      existing.embedding?.id !== stickerVectorIndexId(dependencies.embedder.id);
     job = await dependencies.store.updateJob(job.id, {
       status: needsReindex ? "embedding" : "indexing",
       stickerId: merged.id,
@@ -69,7 +76,7 @@ export async function processStickerJob(
           provider: dependencies.embedder.provider,
           model: dependencies.embedder.model,
           dimensions: embedding.vector.length,
-          id: dependencies.embedder.id
+          id: stickerVectorIndexId(dependencies.embedder.id)
         });
         job = await dependencies.onStage(job, "indexing", {
           stickerId: merged.id
@@ -162,13 +169,9 @@ export async function processStickerJob(
     frameCount: prepared.frameCount,
     ...readPlatformSummary(job)
   });
-  const desc = description.desc.trim();
-  if (!desc) {
-    throw new Error("Sticker analyzer returned an empty description.");
-  }
   let described: StickerRecord = {
     ...record,
-    desc,
+    description: description.description,
     analysis: {
       provider: description.provider,
       model: description.model,
@@ -182,7 +185,9 @@ export async function processStickerJob(
     provider: description.provider,
     model: description.model,
     promptHash: description.promptHash,
-    desc
+    visual: description.description.visual,
+    emotion: description.description.emotion,
+    usageCount: description.description.usage.length
   });
   job = await dependencies.onStage(job, "embedding", {
     stickerId: described.id,
@@ -194,7 +199,7 @@ export async function processStickerJob(
         provider: dependencies.embedder.provider,
         model: dependencies.embedder.model,
         dimensions: embedding.vector.length,
-        id: dependencies.embedder.id
+        id: stickerVectorIndexId(dependencies.embedder.id)
       });
       job = await dependencies.onStage(job, "indexing", {
         stickerId: described.id
@@ -222,37 +227,83 @@ export async function embedAndIndex(
     onIndexed?: () => Promise<void>;
   } = {}
 ): Promise<StickerRecord> {
-  if (!record.desc) {
-    throw new Error(`Sticker ${record.id} has no description to embed.`);
+  if (!record.description) {
+    throw new Error(`Sticker ${record.id} has no structured description to embed.`);
   }
-  const embedding = await dependencies.embedder.embed(record.desc);
+  const units = stickerVectorDocuments(record);
+  const embeddings = await Promise.all(
+    units.map((unit) => dependencies.embedder.embed(unit.text))
+  );
+  const firstEmbedding = embeddings[0];
+  if (!firstEmbedding) {
+    throw new Error(`Sticker ${record.id} produced no embedding units.`);
+  }
   if (
     dependencies.embedder.configuredDimensions !== undefined &&
-    embedding.vector.length !== dependencies.embedder.configuredDimensions
+    firstEmbedding.vector.length !== dependencies.embedder.configuredDimensions
   ) {
     throw new Error(
-      `Embedding dimensions ${embedding.vector.length} do not match configured dimensions ${dependencies.embedder.configuredDimensions}.`
+      `Embedding dimensions ${firstEmbedding.vector.length} do not match configured dimensions ${dependencies.embedder.configuredDimensions}.`
     );
   }
-  await callbacks.onEmbedded?.(embedding);
+  if (embeddings.some((embedding) => embedding.vector.length !== firstEmbedding.vector.length)) {
+    throw new Error("Embedding dimensions changed within one sticker projection.");
+  }
+  await callbacks.onEmbedded?.(firstEmbedding);
   const indexedAt = dependencies.now().toISOString();
-  await dependencies.vectorIndex.upsert({
+  const entries: StickerVectorEntry[] = units.map((unit, index) => ({
+    rowId: stickerVectorRowId(record.id, unit.channel, unit.unitIndex),
     stickerId: record.id,
-    desc: record.desc,
-    vector: embedding.vector,
+    channel: unit.channel,
+    unitIndex: unit.unitIndex,
+    text: unit.text,
+    vector: embeddings[index]!.vector,
     createdAt: indexedAt
-  });
+  }));
+  await dependencies.vectorIndex.upsert(entries);
   await callbacks.onIndexed?.();
   return {
     ...record,
     status: "ready",
     embedding: {
-      id: dependencies.embedder.id,
-      dimensions: embedding.vector.length,
+      id: stickerVectorIndexId(dependencies.embedder.id),
+      dimensions: firstEmbedding.vector.length,
+      units: {
+        visual: 1,
+        tags: 1,
+        usage: record.description.usage.length
+      },
       indexedAt
     },
     updatedAt: indexedAt
   };
+}
+
+export function stickerVectorDocuments(record: StickerRecord): Array<{
+  channel: StickerVectorChannel;
+  unitIndex: number;
+  text: string;
+}> {
+  if (!record.description) {
+    return [];
+  }
+  return [
+    {
+      channel: "visual",
+      unitIndex: 0,
+      text: record.description.visual
+    },
+    {
+      channel: "tags",
+      unitIndex: 0,
+      text: record.description.emotion.join(", ")
+    },
+    ...record.description.usage.map((text, unitIndex) => ({
+      channel: "usage" as const,
+      unitIndex,
+      text
+    }))
+  ];
 }
 
 function mergeObservation(

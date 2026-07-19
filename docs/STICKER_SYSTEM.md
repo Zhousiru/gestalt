@@ -2,11 +2,13 @@
 
 ## Scope
 
-Gestalt collects QQ sticker messages outside the agent loop, describes them with
-the configured sub model, embeds the description, and exposes two model tools:
+Gestalt collects QQ sticker messages outside the agent loop, analyzes them with
+the configured sub model, embeds three structured fields, and exposes two model tools:
 `search_sticker` and `send_sticker`.
 
-Search results expose a stable sticker id and one natural-language `desc`.
+Search results expose only a stable sticker id and the objective `visual`
+description. Emotion tags and usage examples remain retrieval and operator
+diagnostic data; they are not copied into the model-visible result.
 Incoming chat transcripts retain complete OneBot CQ markup so the model can
 identify image `file` values and call `read_image` when it needs visual context.
 
@@ -39,7 +41,7 @@ Authorized operators may send `/scrape-sticker on`, `/scrape-sticker off`, or
 runtime without a model request, message window, or steer.
 
 The switch gates only new observations. Jobs already queued or processing
-continue through media preparation, description, embedding, and indexing.
+continue through media preparation, analysis, embedding, and indexing.
 Existing stickers remain searchable and sendable while scraping is off. Runtime
 overrides are intentionally process-local; restart restores the config default.
 
@@ -75,8 +77,8 @@ loop.
 Media is content-addressed with SHA-256. The full digest remains on the asset;
 the model-facing stable id is `stk_` plus the first 16 hexadecimal characters
 (64 bits) of that digest. A collision is rejected rather than overwriting an
-unrelated record. An exact duplicate reuses the existing asset, description,
-and vector row while merging the latest native mface delivery metadata.
+unrelated record. An exact duplicate reuses the existing asset, analysis, and
+retrieval rows while merging the latest native mface delivery metadata.
 
 Each observation persists its original message-segment index. If media must be
 re-fetched, the resolver first checks that index and cross-validates stable
@@ -115,8 +117,15 @@ The animation prompt asks the sub model to infer the most likely complete action
 from temporal changes and describe one coherent motion instead of listing
 individual frames.
 
-The sub model emits one English `desc`: a short sentence followed by an ASCII
-period and 3–8 unlabeled English search keywords. See
+The sub model emits strict JSON with:
+
+- `visual`: an English, objective description of visible subjects, text,
+  composition, and animation, without inferring emotion or intent.
+- `emotion`: 1–8 short emotion or reaction tags.
+- `usage`: 10–20 short, varied IM messages that could naturally accompany the
+  sticker.
+
+See
 [MODEL_CONFIGURATION.md](MODEL_CONFIGURATION.md) for `main_model_*`,
 `sub_model_*`, and `embedding_model_*`.
 
@@ -140,16 +149,20 @@ record per content hash. Observation provenance remains in durable jobs and
 list. Sticker records, jobs, and logs use the current strict schema directly and carry no
 schema-version field.
 
-LanceDB is a rebuildable vector projection of `desc` with exactly one row per
-sticker id. Each row contains only `row_id`, `sticker_id`, `desc`, `vector`, and
-`created_at`. Searches explicitly use cosine distance rather than LanceDB's L2
+LanceDB is a rebuildable projection of retrieval units. Each ready sticker has
+one `visual` row, one `tags` row containing its joined emotion tags, and one
+`usage` row for every usage phrase. Rows contain the deterministic retrieval-row
+id, sticker id, channel, unit index, source text, vector, and creation time.
+Searches explicitly use cosine distance rather than LanceDB's L2
 default, matching the directional semantics of text embeddings. Cosine distance
 is `1 - cosine_similarity`, so lower distance ranks first. All conversations
 search the same catalog. The explicit
 `embedding_model_id` selects its table and is stored with each record as the
-vector-space compatibility identity; provider and model remain operational log
-and Live overview metadata. Startup audit removes ids outside the exact ready
-catalog and rebuilds missing or stale rows.
+vector-space compatibility identity. The projection identity is also stored so
+old tables are ignored without a compatibility layer. Provider and model remain
+operational log and Live overview metadata. Startup audit compares the exact
+expected row set, removes orphan retrieval rows, and rebuilds missing or stale
+rows.
 
 The store loads job and record directories once per runtime and keeps a
 write-through in-memory catalog thereafter. Live pagination therefore does not
@@ -157,22 +170,40 @@ re-read and parse every JSON file on each SSE refresh; restart remains the
 authoritative cache rebuild boundary. This follows GestaltHome's existing
 single-process ownership assumption.
 
-Sticker `desc` text is embedded unchanged, without an instruction prefix.
-Search and recommendation queries are embedded as
-`Instruct: Retrieve text matching the user's intended reaction\nQuery: <query>`.
-This asymmetric format is part of the embedding-space contract; changing it
-requires a new `embedding_model_id` and a rebuild of stored vectors when the
-provider's vector space is affected.
+Each stored retrieval unit is embedded independently. Query embedding uses a
+channel-specific instruction for visual, emotion tags, or usage. This asymmetric
+format and the retrieval projection id are part of the embedding-space contract.
 
-`search_sticker({ query, limit? })` embeds the query, performs global vector
-search, catalog-validates candidates, and continues through ranked result pages
-until it fills the requested limit or exhausts the table. Invalid nearest rows
-therefore cannot hide a valid ready sticker. It returns `{ sticker_id, desc }`
-candidates. The same id can be returned and sent in any group or private chat.
+`search_sticker({ query, limit? })` never searches usage phrases. It searches
+the `tags` and `visual` channels, deduplicates each channel by sticker id, and
+fuses the ranks with reciprocal-rank fusion (`k=60`) using weights `tags=0.6`
+and `visual=0.4`. It retrieves a larger candidate pool (at least 12, normally
+`limit * 4`, capped at 40), continuing through pages when repeated or stale rows
+would otherwise hide unique stickers. Recommendation after a text message
+searches only the `usage` channel; multiple matching usage phrases collapse to
+the best-ranked occurrence for that sticker before final ranking.
+
+Both modes use deterministic rank-weighted sampling without replacement over
+the deduplicated pool. A candidate at rank `r` receives weight `1/r^1.5`; a
+stable seed derived from the action proposal makes replay deterministic while
+allowing different proposals to rotate among relevant stickers. This small
+randomization reduces repeated selection of the same globally popular sticker
+without introducing history counters or a separate popularity service.
+
+Both modes return only `{ sticker_id, visual }` candidates. The same id can be
+returned and sent in any group or private chat.
 `send_sticker` accepts only that stable id. It prefers saved native
 mface delivery and falls back to the cached bytes as
 `[CQ:image,file=base64://...,sub_type=1]`; custom image stickers use the same
 portable path so Gestalt and OneBot do not need a shared filesystem.
+
+Existing catalogs are migrated by regeneration rather than a long-lived legacy
+adapter. The temporary `rebuild:stickers` command reads each record's original
+content-addressed asset, reruns the current analysis, writes all retrieval units,
+and atomically replaces the record in place. It supports `--home`, `--only`,
+`--concurrency`, and `--dry-run`; progress is appended to
+`stickers/rebuild-structured.jsonl`. The previous Lance table is left untouched
+but is no longer selected by the current projection id.
 
 ## Send-Result Recommendations
 
@@ -192,14 +223,14 @@ proposal makes the same decision.
 
 After a text send succeeds and is admitted, the runtime removes OneBot CQ
 control markup from the sent text, embeds up to 1000 characters, and searches
-the same bot-wide LanceDB catalog used by `search_sticker`. The model-visible
+only per-phrase usage retrieval units. The model-visible
 tool result gains:
 
 ```json
 {
   "data": {
     "recommended_stickers": [
-      { "sticker_id": "stk_...", "desc": "..." }
+      { "sticker_id": "stk_...", "visual": "..." }
     ]
   }
 }
@@ -225,7 +256,7 @@ fragment such as `persona/6-stickers.md`, for example:
 ```
 
 The normal transcript records a
-successful send as `[表情包 <id>：<desc>]`, so the model can see its own recent
+successful send as `[表情包 <id>：<visual>]`, so the model can see its own recent
 sticker use without a separate usage counter prompt.
 
 ## Observability
@@ -247,13 +278,13 @@ Canonical session records, model transcripts, and Live session views retain
 complete OneBot CQ markup. `fetch_message` returns normalized text with complete
 CQ, and `read_image` keeps the original `file` value while attaching connector-
 returned image bytes to the next main-model step. Outgoing `send_sticker` actions are recorded in transcript history as
-`[表情包 <sticker_id>：<desc>]`; the proposal's exact id is therefore the durable
+`[表情包 <sticker_id>：<visual>]`; the proposal's exact id is therefore the durable
 association between the model action, the local record, the send log, and the
 synthetic self-message. The self event also stores the allowlisted runtime
 metadata `raw.generatedBy = "send_sticker"` and `raw.stickerId`, so replay never
 has to parse the human-readable transcript text to recover the link. Ordinary
 connector `raw` trees remain excluded from session memory and diagnostics.
-The model-visible send result contains only `stickerId` and `desc`; native/image
+The model-visible send result contains only `stickerId` and `visual`; native/image
 delivery and fallback details remain internal lifecycle logs.
 
 Structured diagnostic payloads remain a separate boundary. Live JSON, buffered
@@ -280,32 +311,36 @@ its previous failed stage.
 
 The Live `Stickers` page also provides lightweight catalog management. Operators
 may select one sticker, select the visible page, or keep a selection across
-catalog pages, then delete the selection or rebuild its descriptions and vector
+catalog pages, then delete the selection or rebuild its analysis and retrieval
 rows. `POST /api/live/stickers/manage` accepts at most 100 unique sticker ids per
 request and returns a result for every id. Records still in `processing` are
 reported as busy instead of racing the background worker.
 
 The page includes a read-only recall test for diagnosing the active embedding
 space and LanceDB index. `POST /api/live/stickers/recall` accepts a trimmed text
-query of at most 1000 characters and a result limit from 1 through 20 (default
-3). It uses the same catalog-validating vector search as the runtime, tagged as
-`recall_test` in sticker lifecycle logs, and never sends a sticker or mutates the
-catalog. Results expose rank, id, description, protected preview URLs, raw
-cosine distance, and `cosine_similarity = 1 - distance`. Similarity is displayed
-as a decimal from `-1` through `1`; it is vector similarity, not model confidence
-or a calibrated probability.
+query of at most 1000 characters, a result limit from 1 through 20 (default 3),
+and either the `search` or `recommendation` mode. It uses the same deduplication,
+fusion, and deterministic sampling as the runtime, tagged as `recall_test` in
+sticker lifecycle logs, and never sends a sticker or mutates the catalog.
+Results expose original and sampled rank, id, objective visual description,
+protected preview URLs, aggregate score, and per-channel matched text, rank,
+distance, and `cosine_similarity = 1 - distance`. Similarity is displayed as a
+decimal from `-1` through `1`; it is vector similarity, not model confidence or
+a calibrated probability.
 
 Rebuild reads the saved original media, applies the current static/contact-sheet
-analysis preparation, calls the current sub model for a new `desc`, and upserts a
-fresh embedding before replacing the record. A failed rebuild leaves the prior
-record available. Delete removes the catalog record and LanceDB row, then removes
+analysis preparation, calls the current sub model for a fresh structured
+analysis, and upserts all retrieval units before replacing the record. A failed
+rebuild leaves the prior record available. Delete removes the catalog record and
+all of its LanceDB retrieval rows, then removes
 original/contact-sheet blobs only when no remaining record references them.
 Durable observation jobs and lifecycle logs are retained as provenance. The UI
 requires explicit confirmation for deletion and reports partial batch failures.
 
 The page shows the effective scrape switch, queue stages, ready/failed/
-deduplicated counts, embedding/LanceDB state, descriptions, source types, and
-errors.
+deduplicated counts, embedding/LanceDB state, structured visual/emotion/usage
+analysis, source types, and errors. The recall panel can switch between the
+visual+tags search path and usage-only recommendation path.
 Animated stickers use a static contact sheet in catalog and queue lists. Their
 detail view starts paused and exposes explicit play/pause controls while honoring
 the browser's reduced-motion preference. On small screens, selecting a row opens
@@ -341,7 +376,12 @@ and send behavior, intermediate-stage restart recovery, config-default restorati
 partial observation persistence, logger/Live failure isolation,
 bounded worker self-recovery, native/image/fallback sends, trace-correlated
 logs, text-send recommendation output, configurable Top-N, probability-zero
-embedding suppression, authorization, and the no-model command boundary.
+embedding suppression, authorization, and the no-model command boundary. The
+structured retrieval fixture additionally proves that active search calls only
+the tags and visual channels, recommendation calls only usage, repeated usage
+matches are paged and deduplicated to unique sticker ids, stable seeds replay
+exactly, different seeds rotate candidates, and model-visible results contain
+only `sticker_id` and `visual`.
 
 The focused media fixture additionally proves segment-index/identity selection,
 direct inbound HTTPS fetching without `get_image`, rejection of inbound paths
@@ -356,8 +396,8 @@ The Live UI fixture exercises a populated catalog through the real HTTP server,
 including queue/failed/ready states, catalog pagination/filtering and limit
 clamping, current versus last-failed stages, protected media assets, an SSE
 catalog update, real embedding/LanceDB recall with ranked cosine distance and
-similarity,
-batch description/index rebuild, single deletion with index and media cleanup,
+similarity, structured catalog fields, and per-channel recall diagnostics,
+batch analysis/index rebuild, single deletion with index and media cleanup,
 management and recall request validation, Live-boundary privacy redaction,
 all-interface binding, and cross-origin rejection. Its API evidence and responsive browser QA screenshots are exported
 under `harness/artifacts/live-stickers-ui/`; screenshots are manual visual-QA

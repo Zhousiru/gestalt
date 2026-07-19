@@ -73,17 +73,32 @@ export const StickerMfaceDeliverySchema = z
   })
   .strict();
 
+export const StickerDescriptionSchema = z
+  .object({
+    visual: z.string().trim().min(1).max(1200),
+    emotion: z.array(z.string().trim().min(1).max(48)).min(1).max(8),
+    usage: z.array(z.string().trim().min(1).max(120)).min(10).max(20)
+  })
+  .strict();
+
 export const StickerRecordSchema = z
   .object({
     id: z.string().min(1),
     status: z.enum(["processing", "ready", "failed"]),
-    desc: z.string().min(1).optional(),
+    description: StickerDescriptionSchema.optional(),
     asset: StickerAssetSchema,
     mface: StickerMfaceDeliverySchema.optional(),
     embedding: z
       .object({
         id: z.string().min(1),
         dimensions: z.number().int().positive(),
+        units: z
+          .object({
+            visual: z.literal(1),
+            tags: z.literal(1),
+            usage: z.number().int().min(10).max(20)
+          })
+          .strict(),
         indexedAt: z.string().min(1)
       })
       .strict()
@@ -121,5 +136,6 @@ export type StickerObservation = z.infer<typeof StickerObservationSchema>;
 export type StickerJob = z.infer<typeof StickerJobSchema>;
 export type StickerJobStatus = z.infer<typeof StickerJobStatusSchema>;
 export type StickerAsset = z.infer<typeof StickerAssetSchema>;
+export type StickerDescription = z.infer<typeof StickerDescriptionSchema>;
 export type StickerRecord = z.infer<typeof StickerRecordSchema>;
 export type StickerLogEntry = z.infer<typeof StickerLogEntrySchema>;

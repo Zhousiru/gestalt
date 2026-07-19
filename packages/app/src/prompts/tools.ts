@@ -46,7 +46,7 @@ export const ACTION_TOOL_PROMPTS = {
     parameters: { file: "Image file id, URL, file URI, or base64:// payload copied from context or explicitly provided.", caption: "Optional short plain-text caption without HTML or Markdown.", summary: "Optional image summary for platform metadata.", reply_to_message_id: "Optional message id to quote before the image.", reason: "Brief reason for choosing this action." }
   },
   search_sticker: {
-    purpose: "Search your collected sticker library by conversational meaning and return stable sticker ids with descriptions.",
+    purpose: "Search your collected sticker library by objective visual content and emotion tags, then return stable sticker ids with objective visual descriptions.",
     whenUseful: ["A sticker could express the reaction more naturally than another text message.", "You know the feeling or social move you want but not a sticker id.", "A lightweight visual response fits the persona and current chat rhythm."],
     avoidWhen: ["A precise factual answer or serious clarification is required.", "You have just used a sticker and another would feel repetitive.", "No sticker response is socially appropriate."],
     parameters: { query: "Short natural-language description of the emotion, attitude, or conversational response to find.", limit: "Optional number of candidates from 1 to 20.", reason: "Brief reason for searching the sticker library." }

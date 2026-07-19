@@ -140,7 +140,7 @@ export function createMockToolKit(
               stickers: [
                 {
                   sticker_id: "stk_mock",
-                  desc: "mock sticker"
+                  visual: "mock sticker"
                 }
               ]
             }

@@ -97,7 +97,7 @@ try {
         generatedBy: "send_sticker",
         stickerId: "sticker-1"
       },
-      resultData: { stickerId: "sticker-1", desc: "celebration" }
+      resultData: { stickerId: "sticker-1", visual: "celebration" }
     }
   ];
 

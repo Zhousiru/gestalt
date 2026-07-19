@@ -38,12 +38,14 @@ export interface StickerJobView {
   error?: string;
   thumbnailUrl?: string;
   contactSheetUrl?: string;
-  desc?: string;
+  visual?: string;
 }
 
 export interface StickerCatalogItemView {
   id: string;
-  desc: string;
+  visual: string;
+  emotion: string[];
+  usage: string[];
   status: string;
   sourceKind: string;
   animated: boolean;
@@ -91,15 +93,24 @@ export interface StickerManagementResponse {
 export interface StickerRecallMatchView {
   rank: number;
   stickerId: string;
-  desc: string;
-  distance?: number;
-  similarity?: number;
+  visual: string;
+  originalRank: number;
+  sampledRank: number;
+  score: number;
+  channels: Array<{
+    channel: "visual" | "tags" | "usage";
+    rank: number;
+    distance?: number;
+    similarity?: number;
+    text: string;
+  }>;
   thumbnailUrl: string;
   contactSheetUrl?: string;
 }
 
 export interface StickerRecallResponse {
   query: string;
+  mode: "search" | "recommendation";
   limit: number;
   returned: number;
   metric: "cosine";

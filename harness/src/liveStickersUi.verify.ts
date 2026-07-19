@@ -61,7 +61,11 @@ try {
       return {
         vector:
           text.includes("庆祝") ||
+          text.includes("太棒") ||
+          text.includes("好耶") ||
           text.toLowerCase().includes("blue") ||
+          text.toLowerCase().includes("excited") ||
+          text.toLowerCase().includes("proud") ||
           text.toLowerCase().includes("celebration")
             ? [0, 1, 0]
             : [1, 0, 0]
@@ -71,10 +75,17 @@ try {
   const analyzer: StickerAnalyzer = {
     async describe(input) {
       analyzerCallCount += 1;
+      const visual = input.animated
+        ? `A blue character repeatedly jumps with both arms raised, revision-${analyzerCallCount}.`
+        : `A red cat faces forward with one paw raised beside its head, revision-${analyzerCallCount}.`;
       return {
-        desc: input.animated
-          ? `An excited blue character dances in a loop to celebrate. blue character, dancing, excited, celebration, revision-${analyzerCallCount}`
-          : `A friendly red cat waves hello. red cat, waving, greeting, friendly, revision-${analyzerCallCount}`,
+        description: {
+          visual,
+          emotion: input.animated ? ["excited", "proud"] : ["happy", "friendly"],
+          usage: input.animated
+            ? ["太棒了", "好耶", "庆祝一下", "成功了", "赢了", "起飞", "干得漂亮", "值得庆祝", "今天真开心", "芜湖"]
+            : ["你好呀", "欢迎", "来啦", "嗨", "好久不见", "在吗", "最近怎么样", "欢迎回来", "见到你真好", "出来聊天"]
+        },
         provider: "fixture-sub",
         model: "fixture-vision-v1",
         promptHash: "live-stickers-prompt-v1"
@@ -262,7 +273,9 @@ try {
       }>;
       stickers: Array<{
         id: string;
-        desc: string;
+        visual: string;
+        emotion: string[];
+        usage: string[];
         thumbnailUrl: string;
         contactSheetUrl?: string;
       }>;
@@ -295,7 +308,7 @@ try {
     assert.equal(firstPage.stickers.length, 1);
 
     const clampedPage = (await fetch(
-      `${server.url}/api/live/stickers/snapshot?limit=500&source=mface&status=ready&query=${encodeURIComponent("celebration")}`
+      `${server.url}/api/live/stickers/snapshot?limit=500&source=mface&status=ready&query=${encodeURIComponent("blue")}`
     ).then((response) => response.json())) as {
       catalog: { limit: number; total: number };
       stickers: unknown[];
@@ -347,9 +360,17 @@ try {
       results: Array<{
         rank: number;
         stickerId: string;
-        desc: string;
-        distance?: number;
-        similarity?: number;
+        visual: string;
+        originalRank: number;
+        sampledRank: number;
+        score: number;
+        channels: Array<{
+          channel: string;
+          rank: number;
+          distance?: number;
+          similarity?: number;
+          text: string;
+        }>;
         thumbnailUrl: string;
         contactSheetUrl?: string;
       }>;
@@ -362,17 +383,19 @@ try {
       recall.results.map((result) => result.rank),
       [1, 2]
     );
-    assert.equal(recall.results[0]?.stickerId, animated.id);
-    assert.match(recall.results[0]?.desc ?? "", /blue character/);
-    assert.equal(recall.results[0]?.distance, 0);
-    assert.equal(recall.results[0]?.similarity, 1);
-    assert.ok(recall.results[0]?.contactSheetUrl);
+    const animatedRecall = recall.results.find(
+      (result) => result.stickerId === animated.id
+    );
+    assert.ok(animatedRecall);
+    assert.match(animatedRecall.visual, /blue character/);
+    assert.ok(animatedRecall.channels.some((channel) => channel.channel === "tags"));
+    assert.ok(animatedRecall.channels.some((channel) => channel.channel === "visual"));
+    assert.ok(animatedRecall.channels.every((channel) => channel.similarity === 1));
+    assert.ok(animatedRecall.contactSheetUrl);
     assert.match(
       recall.results[0]?.thumbnailUrl ?? "",
       /^\/api\/live\/stickers\/assets\/[^/]+\/original$/
     );
-    assert.equal(recall.results[1]?.distance, 1);
-    assert.equal(recall.results[1]?.similarity, 0);
     assert.equal(
       (await service.snapshot()).embedding.rowCount,
       rowCountBeforeRecall
@@ -394,7 +417,7 @@ try {
 
     const stickerIds = snapshot.stickers.map((sticker) => sticker.id);
     const descriptionsBeforeRebuild = new Map(
-      snapshot.stickers.map((sticker) => [sticker.id, sticker.desc])
+      snapshot.stickers.map((sticker) => [sticker.id, sticker.visual])
     );
     const rebuildResponse = await fetch(
       `${server.url}/api/live/stickers/manage`,
@@ -416,12 +439,14 @@ try {
     const rebuiltSnapshot = (await fetch(
       `${server.url}/api/live/stickers/snapshot`
     ).then((response) => response.json())) as typeof snapshot;
-    assert.equal(rebuiltSnapshot.embedding.rowCount, 2);
+    assert.equal(rebuiltSnapshot.embedding.rowCount, 24);
     assert.ok(
       rebuiltSnapshot.stickers.every(
         (sticker) =>
-          sticker.desc !== descriptionsBeforeRebuild.get(sticker.id) &&
-          sticker.desc.includes("revision-")
+          sticker.visual !== descriptionsBeforeRebuild.get(sticker.id) &&
+          sticker.visual.includes("revision-") &&
+          sticker.emotion.length > 0 &&
+          sticker.usage.length === 10
       )
     );
 
@@ -553,7 +578,7 @@ try {
     ).then((response) => response.json())) as typeof snapshot;
     assert.equal(snapshotAfterDelete.catalog.total, 1);
     assert.equal(snapshotAfterDelete.processing.ready, 1);
-    assert.equal(snapshotAfterDelete.embedding.rowCount, 1);
+    assert.equal(snapshotAfterDelete.embedding.rowCount, 12);
     assert.equal(await store.readRecord(deleteTarget.id), undefined);
     assert.equal((await vectorIndex.listStickerIds()).includes(deleteTarget.id), false);
     assert.equal(
@@ -590,9 +615,10 @@ try {
         limit: recall.limit,
         returned: recall.returned,
         topStickerId: recall.results[0]?.stickerId,
-        topDistance: recall.results[0]?.distance,
+        topOriginalRank: recall.results[0]?.originalRank,
+        topSampledRank: recall.results[0]?.sampledRank,
         metric: recall.metric,
-        topSimilarity: recall.results[0]?.similarity,
+        channels: recall.results[0]?.channels,
         rowCountUnchanged: true,
         invalidRequestRejected: true,
         crossOriginRequestRejected: true

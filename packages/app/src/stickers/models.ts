@@ -7,7 +7,7 @@ export interface StickerDescriptionInput {
 }
 
 export interface StickerDescriptionResult {
-  desc: string;
+  description: StickerDescription;
   provider: string;
   model: string;
   promptHash: string;
@@ -25,6 +25,7 @@ export interface StickerEmbeddingResult {
 
 export interface StickerEmbeddingOptions {
   inputType?: "document" | "query";
+  queryPurpose?: "visual" | "tags" | "usage";
 }
 
 export interface StickerEmbedder {
@@ -37,3 +38,4 @@ export interface StickerEmbedder {
     options?: StickerEmbeddingOptions
   ): Promise<StickerEmbeddingResult>;
 }
+import type { StickerDescription } from "./schemas";

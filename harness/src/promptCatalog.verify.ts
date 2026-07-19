@@ -96,12 +96,14 @@ const animatedStickerPrompt = renderStickerDescriptionPrompt({
   platformSummary: "[动画表情]"
 });
 assert.equal(staticStickerPrompt.id, "sticker-description");
-assert.match(staticStickerPrompt.content, /one short English sentence/);
-assert.match(staticStickerPrompt.content, /English search keywords/);
+assert.match(staticStickerPrompt.content, /requested structured fields/);
+assert.match(staticStickerPrompt.content, /visual: Write in English/);
+assert.match(staticStickerPrompt.content, /Describe only objectively visible content/);
+assert.match(staticStickerPrompt.content, /Do not infer emotion, intent/);
 assert.match(staticStickerPrompt.content, /happy, excited, smug/);
-assert.match(staticStickerPrompt.content, /never copy the candidate list wholesale/);
-assert.match(staticStickerPrompt.content, /Do not add a label/);
-assert.match(staticStickerPrompt.content, /only English in the entire output/);
+assert.match(staticStickerPrompt.content, /usage: Return 10 to 20 distinct/);
+assert.match(staticStickerPrompt.content, /short Chinese IM messages/);
+assert.match(staticStickerPrompt.content, /not explanations of when to use them/);
 assert.match(staticStickerPrompt.content, /one static sticker image/);
 assert.doesNotMatch(staticStickerPrompt.content, /4x4 contact sheet/);
 assert.match(animatedStickerPrompt.content, /4x4 contact sheet/);
