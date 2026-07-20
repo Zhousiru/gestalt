@@ -299,11 +299,11 @@ async function verifyAiSdkInspectUsesReportToolAfterBash(): Promise<void> {
       path: path.join(home.root, "config.toml"),
       raw: "",
       flatValues: {
-        model_provider: "fake-openai-compatible",
-        model_base_url: "https://fake.invalid/v1",
-        model_name: "fake-inspect-model",
-        model_api_key_env: "GESTALT_FAKE_INSPECT_API_KEY",
-        model_tool_choice: "auto"
+        main_model_provider: "fake-openai-compatible",
+        main_model_base_url: "https://fake.invalid/v1",
+        main_model_name: "fake-inspect-model",
+        main_model_api_key_env: "GESTALT_FAKE_INSPECT_API_KEY",
+        main_model_tool_choice: "auto"
       }
     };
     const runner = createAiSdkInspectRunner(config, {

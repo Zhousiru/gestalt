@@ -135,7 +135,7 @@ Inspect `harness/artifacts/config-validation/resolved-config.json` and
 `report.md`; the artifact proves resolved sub-model routing and records the
 expected validation failures for malformed, unknown, or inconsistent config.
 
-Some OpenAI-compatible providers reject forced tool choice. In that case use `model_tool_choice = "auto"` and let the model decide whether to call tools. Harness assertions must still verify that the real model actually called the expected tool.
+Some OpenAI-compatible providers reject forced tool choice. In that case use `main_model_tool_choice = "auto"` and let the model decide whether to call tools. Harness assertions must still verify that the real model actually called the expected tool.
 
 ### Eval Judge Configuration
 

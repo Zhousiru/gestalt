@@ -90,8 +90,8 @@ Current flat config keys:
 - `context_recent_message_count`
 - `session_recent_history_hours`
 - `trace_binary_capture_enabled`
-- `model_prompt_cache_enabled`
-- `model_prompt_cache_ttl`
+- `main_model_prompt_cache_enabled`
+- `main_model_prompt_cache_ttl`
 - `bot_user_id`
 - `bot_display_name`
 - `agent_loop_exit_say_nothing_enabled`

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -51,6 +51,19 @@ assert.throws(
 );
 
 const invalidCases = {
+  legacyModelKeys: await loadInvalidConfig(
+    await readFile(
+      path.join(
+        repoRoot,
+        "harness",
+        "fixtures",
+        "configs",
+        "legacy-runtime-model-keys.toml"
+      ),
+      "utf8"
+    ),
+    /unknown keys?:.*model_/
+  ),
   unknownKey: await loadInvalidConfig(
     'main_model_naem = "typo"\n',
     /unknown key: main_model_naem/
@@ -117,6 +130,7 @@ await writeFile(
     "",
     "- TOML multiline arrays, escapes, and inline comments: verified",
     "- Unknown keys and invalid value types: rejected",
+    "- Legacy runtime model_* keys: rejected",
     "- Nested TOML tables: rejected by the flat config schema",
     "- Invalid aggregation delay ranges: rejected",
     "- Direct and environment API keys are mutually exclusive for every model role",

@@ -115,10 +115,6 @@ function readLanguageCredential(
   if (role === "sub") {
     return readLanguageCredential(config, "main");
   }
-  const legacyApiKeyEnv = readOptionalConfigString(config, "model_api_key_env");
-  if (legacyApiKeyEnv) {
-    return { apiKeyEnv: legacyApiKeyEnv };
-  }
   return { apiKeyEnv: defaultLanguageModelApiKeyEnv };
 }
 
@@ -361,9 +357,7 @@ function requireLanguageString(
     return value;
   }
   const key = languageConfigKey(role, suffix);
-  const compatibility =
-    role === "main" ? ` (legacy "model_${suffix}" is also accepted)` : "";
-  throw new Error(`Missing required config value "${key}"${compatibility}.`);
+  throw new Error(`Missing required config value "${key}".`);
 }
 
 function readLanguageString(
@@ -423,10 +417,7 @@ function readLanguageValue(
   }
 
   const mainKey = languageConfigKey("main", suffix);
-  if (Object.hasOwn(config.flatValues, mainKey)) {
-    return config.flatValues[mainKey];
-  }
-  return config.flatValues[`model_${suffix}`];
+  return config.flatValues[mainKey];
 }
 
 function languageConfigKey(role: LanguageModelRole, suffix: string): string {

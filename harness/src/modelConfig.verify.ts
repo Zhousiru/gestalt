@@ -33,9 +33,7 @@ const roleConfig = createConfig({
   embedding_model_api_key_env: "FIXTURE_EMBEDDING_API_KEY",
   embedding_model_dimensions: 3,
   embedding_model_routing_order: "siliconflow",
-  embedding_model_routing_allow_fallbacks: false,
-  // A modern main field wins over the legacy migration fallback.
-  model_name: "legacy/ignored"
+  embedding_model_routing_allow_fallbacks: false
 });
 const mainModel = resolveMainModelConfig(roleConfig);
 const subModel = resolveSubModelConfig(roleConfig);
@@ -89,16 +87,17 @@ assert.equal(inheritedSub.providerName, "openai-compatible");
 assert.equal(inheritedSub.apiKeyEnv, "MODEL_API_KEY");
 assert.equal(inheritedSub.temperature, 1);
 
-const legacyMain = resolveMainModelConfig(
-  createConfig({
-    model_provider: "legacy-provider",
-    model_base_url: "https://legacy.example.test/v1",
-    model_name: "legacy/main",
-    model_temperature: 0.5
-  })
+assert.throws(
+  () =>
+    resolveMainModelConfig(
+      createConfig({
+        model_provider: "legacy-provider",
+        model_base_url: "https://legacy.example.test/v1",
+        model_name: "legacy/main"
+      })
+    ),
+  /main_model_name/
 );
-assert.equal(legacyMain.modelName, "legacy/main");
-assert.equal(legacyMain.temperature, 0.5);
 
 const directMain = resolveMainModelConfig(
   createConfig({
@@ -335,8 +334,7 @@ const artifact = {
   main: selectLanguageConfig(mainModel),
   sub: selectLanguageConfig(subModel),
   embedding: embeddingModel,
-  embeddingRequests,
-  legacyMain: selectLanguageConfig(legacyMain)
+  embeddingRequests
 };
 await writeArtifactJson(
   path.join(artifactDir, "resolved-model-config.json"),
@@ -354,7 +352,7 @@ await writeFile(
     "- Sub inheritance: verified field-by-field",
     "- Structured-output provider capability: opt-in verified",
     "- Direct and environment API-key sources: verified for all model roles",
-    "- Legacy main fallback: verified",
+    "- Legacy runtime model keys are not resolved: verified",
     "- Query instruction and raw document embedding requests: verified",
     "- Embedding independence and dimension validation: verified",
     ""

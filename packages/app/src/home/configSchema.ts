@@ -36,15 +36,13 @@ const regex = clearableString.refine(isValidRegex, {
 });
 
 function languageModelFields(
-  prefix: "model" | "main_model" | "sub_model"
+  prefix: "main_model" | "sub_model"
 ): Record<string, z.ZodType> {
   return {
     [`${prefix}_provider`]: nonEmptyString.optional(),
     [`${prefix}_base_url`]: nonEmptyString.optional(),
     [`${prefix}_name`]: nonEmptyString.optional(),
-    ...(prefix === "model"
-      ? {}
-      : { [`${prefix}_api_key`]: nonEmptyString.optional() }),
+    [`${prefix}_api_key`]: nonEmptyString.optional(),
     [`${prefix}_api_key_env`]: nonEmptyString.optional(),
     [`${prefix}_temperature`]: z.number().finite().nonnegative().optional(),
     [`${prefix}_max_steps`]: positiveInteger.optional(),
@@ -75,7 +73,6 @@ export const gestaltConfigSchema = z
     live_host: nonEmptyString.optional(),
     live_port: positiveInteger.optional(),
 
-    ...languageModelFields("model"),
     ...languageModelFields("main_model"),
     ...languageModelFields("sub_model"),
 

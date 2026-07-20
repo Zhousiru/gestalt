@@ -1,13 +1,13 @@
-model_provider = "openrouter"
-model_base_url = "https://openrouter.ai/api/v1"
-model_name = "minimax/minimax-m3"
-model_api_key_env = "OPENROUTER_API_KEY"
-model_routing_order = "minimax"
-model_routing_allow_fallbacks = false
-model_thinking = "disabled"
-model_tool_choice = "auto"
-model_prompt_cache_enabled = true
-model_prompt_cache_ttl = "5m"
+main_model_provider = "openrouter"
+main_model_base_url = "https://openrouter.ai/api/v1"
+main_model_name = "minimax/minimax-m3"
+main_model_api_key_env = "OPENROUTER_API_KEY"
+main_model_routing_order = "minimax"
+main_model_routing_allow_fallbacks = false
+main_model_thinking = "disabled"
+main_model_tool_choice = "auto"
+main_model_prompt_cache_enabled = true
+main_model_prompt_cache_ttl = "5m"
 
 
 dreaming_enabled = true

@@ -143,16 +143,12 @@ are sent unchanged. Query inputs use `inputType: "query"` and are sent as
 `Instruct: Retrieve text matching the user's intended reaction\nQuery: <text>`
 so asymmetric retrieval models receive their expected query instruction.
 
-## Migration compatibility
+## Configuration boundaries
 
-Legacy `model_*` keys remain a field-by-field fallback for `main_model_*` so
-existing GestaltHome directories continue to run. An explicitly configured
-`main_model_*` field always wins. New configuration and fixtures should use
-`main_model_*`; `sub_model_*` never falls back directly to legacy keys, but it
-inherits the resolved main role.
-
-The `model_*` keys in `harness/config/eval.toml` are intentionally separate.
-They configure the external eval judge, not a Gestalt runtime model role.
+GestaltHome runtime configuration accepts only `main_model_*` and
+`sub_model_*` language-model keys. The `model_*` keys in
+`harness/config/eval.toml` are a separate schema for the external eval judge;
+they are not a Gestalt runtime model role.
 
 ## File parsing and validation
 

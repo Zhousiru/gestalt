@@ -1,0 +1,5 @@
+# Legacy GestaltHome language-model keys must fail strict runtime validation.
+model_provider = "openrouter"
+model_base_url = "https://openrouter.ai/api/v1"
+model_name = "legacy/main"
+model_api_key_env = "OPENROUTER_API_KEY"
