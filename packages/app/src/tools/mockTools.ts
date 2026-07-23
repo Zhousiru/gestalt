@@ -47,6 +47,29 @@ export function createMockToolKit(
         } satisfies ToolHandlerResult;
       },
 
+      async bash(proposal) {
+        recordCall(proposal);
+        return {
+          status: "executed",
+          result: {
+            ok: true,
+            data:
+              proposal.toolName === "bash"
+                ? {
+                    command: proposal.params.command,
+                    stdout:
+                      proposal.params.command ===
+                      "agent-browser skills get core"
+                        ? "Mock agent-browser core skill loaded."
+                        : "Mock bash command completed.",
+                    stderr: "",
+                    exitCode: 0
+                  }
+                : {}
+          }
+        } satisfies ToolHandlerResult;
+      },
+
       async leave(proposal) {
         recordCall(proposal);
         return {

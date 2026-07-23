@@ -1,10 +1,8 @@
 import { randomUUID } from "node:crypto";
 import {
-  Bash,
   InMemoryFs,
   MountableFs,
-  OverlayFs,
-  type BashExecResult
+  OverlayFs
 } from "just-bash";
 import { ToolLoopAgent, hasToolCall, stepCountIs, tool } from "ai";
 import { z } from "zod";
@@ -23,22 +21,18 @@ import {
   renderInspectTaskPrompt,
   type RenderedPrompt
 } from "../prompts";
+import {
+  createPhaseBash,
+  type BashCommandResult,
+  type PhaseBash
+} from "../tools/bash";
 
 export interface InspectCommand {
   query: string;
 }
 
-export interface InspectBashCommandResult {
-  command: string;
-  stdout: string;
-  stderr: string;
-  exitCode: number;
-}
-
-export interface InspectBashTool {
-  readonly commands: InspectBashCommandResult[];
-  exec(command: string): Promise<InspectBashCommandResult>;
-}
+export type InspectBashCommandResult = BashCommandResult;
+export type InspectBashTool = PhaseBash;
 
 export interface InspectRunInput {
   home: GestaltHome;
@@ -109,7 +103,6 @@ export function createAiSdkInspectRunner(
 export function createInspectBashTool(
   home: GestaltHome
 ): InspectBashTool {
-  const commands: InspectBashCommandResult[] = [];
   const fs = new MountableFs({
     base: new InMemoryFs(),
     mounts: [
@@ -131,21 +124,11 @@ export function createInspectBashTool(
       }
     ]
   });
-  const bash = new Bash({
+  return createPhaseBash({
     fs,
     cwd: "/",
-    defenseInDepth: true
+    customCommands: []
   });
-
-  return {
-    commands,
-
-    async exec(command) {
-      const result = toCommandResult(command, await bash.exec(command));
-      commands.push(result);
-      return result;
-    }
-  };
 }
 
 async function runAiSdkInspectAgent(
@@ -365,16 +348,4 @@ function buildFallbackInspectReport(
     `已执行查询数：${commands.length}。${lastCommandSummary}`,
     "建议缩小问题范围，直接指定要解释的消息文本、message_id、turn id 或 trace id。"
   ].join(" ");
-}
-
-function toCommandResult(
-  command: string,
-  result: BashExecResult
-): InspectBashCommandResult {
-  return {
-    command,
-    stdout: result.stdout,
-    stderr: result.stderr,
-    exitCode: result.exitCode
-  };
 }

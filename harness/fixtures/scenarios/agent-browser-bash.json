@@ -1,0 +1,72 @@
+{
+  "id": "agent-browser-bash",
+  "description": "The configured action agent discovers agent-browser through the short system instruction, loads its core skill through bash, and continues the same tool loop.",
+  "homeFixture": "harness/fixtures/homes/simple-group-test",
+  "memoriesFixture": "harness/fixtures/memories/simple-group-test",
+  "model": {
+    "kind": "configured_ai_sdk"
+  },
+  "events": [
+    {
+      "conversationId": "harness-group",
+      "conversationName": "Harness Group",
+      "messageId": "agent-browser-message-1",
+      "senderId": "alice",
+      "senderName": "Alice",
+      "text": "gestalt，请准备好你的浏览器能力。先按你自己的使用说明加载必要的 skill，不要访问任何网页；完成后回复我一句“浏览器已准备好”。",
+      "mentionsBot": true,
+      "windowReason": "mention"
+    }
+  ],
+  "expectations": {
+    "session": {
+      "conversations": 1,
+      "events": 2,
+      "selfMessages": 1,
+      "windows": 1,
+      "turns": 1,
+      "turnStatus": "completed",
+      "loopExits": 1,
+      "loopExitReasons": ["idle_timeout"],
+      "steerCount": 0,
+      "eventIds": ["agent-browser-message-1"],
+      "phases": [
+        "memory_injecting",
+        "context_compiling",
+        "model_running",
+        "executing",
+        "completed"
+      ]
+    },
+    "action": {
+      "toolNamesInclude": ["bash", "send_group_message"]
+    },
+    "tools": {
+      "toolNamesInclude": ["bash", "send_group_message"],
+      "connectorSideEffects": 0
+    },
+    "modelInput": {
+      "contains": [
+        "In chat, agent-browser is available through bash; before first use run: agent-browser skills get core.",
+        "先按你自己的使用说明加载必要的 skill"
+      ],
+      "tools": ["bash", "send_group_message"]
+    },
+    "modelExchange": {
+      "minExchanges": 2,
+      "minResponses": 2,
+      "purposeIncludes": ["agent_action"],
+      "responseContains": ["bash", "send_group_message"]
+    },
+    "rollout": {
+      "rollouts": 1,
+      "spans": [
+        "memory.inject",
+        "context.compile",
+        "model.decide",
+        "tool.execute"
+      ],
+      "toolNamesInclude": ["bash", "send_group_message"]
+    }
+  }
+}

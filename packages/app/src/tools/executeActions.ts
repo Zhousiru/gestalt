@@ -18,6 +18,7 @@ export interface ToolHandlerContext {
   connector: Connector;
   now: () => Date;
   traceId?: string;
+  signal?: AbortSignal;
 }
 
 export interface ToolHandlerResult {
@@ -38,6 +39,7 @@ export interface ExecuteActionsInput {
   proposals: ActionProposal[];
   now?: () => Date;
   traceId?: string;
+  signal?: AbortSignal;
   toolImplementations?: ToolImplementations;
   onExecutionStart?: (proposal: ActionProposal) => void | Promise<void>;
   onExecutionEnd?: (
@@ -77,7 +79,8 @@ export async function executeActions(
       handlerResult = await implementation(proposal, {
         connector: input.connector,
         now,
-        ...(input.traceId ? { traceId: input.traceId } : {})
+        ...(input.traceId ? { traceId: input.traceId } : {}),
+        ...(input.signal ? { signal: input.signal } : {})
       });
     } catch (error) {
       handlerResult = isConnectorOutcomeUnknownError(error)

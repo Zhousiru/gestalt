@@ -7,6 +7,7 @@ Interactive chatbot system.
 ## Features
 
 - Context-aware group replies, DMs, reactions, pokes, images, stickers, and silence.
+- Browser automation through phase-scoped just-bash and agent-browser.
 - Markdown-based long-term memory maintained through dreaming.
 - Background sticker collection, vision analysis, embedding search, and model-selected sending.
 

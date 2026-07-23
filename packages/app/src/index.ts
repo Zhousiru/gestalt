@@ -52,6 +52,8 @@ export * from "./triggers/admission";
 export * from "./triggers/defaultTriggers";
 export * from "./triggers/types";
 export * from "./tools/executeActions";
+export * from "./tools/agentBrowser";
+export * from "./tools/bash";
 export * from "./tools/mockTools";
 export * from "./tools/registry";
 export * from "./tools/schemas";

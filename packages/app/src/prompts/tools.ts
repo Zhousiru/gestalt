@@ -15,6 +15,12 @@ export const ACTION_TOOL_PROMPTS = {
     avoidWhen: ["Someone directly asks you a clear question that still needs an answer.", "A visible clarification or refusal is more appropriate.", "You explicitly want to disengage from this topic entirely."],
     parameters: { reason: "Brief reason for choosing this action." }
   },
+  bash: {
+    purpose: "Run a command in the current phase's just-bash environment.",
+    whenUseful: ["Shell or an available custom command is the clearest way to act."],
+    avoidWhen: ["A dedicated chat tool is clearer."],
+    parameters: { command: "Bash command to run." }
+  },
   fetch_message: {
     purpose: "Fetch one message by platform message id, usually to inspect a quoted or replied-to message that is not present in the transcript.",
     whenUseful: ["A reply says that its original message is not available in the chat shown to you.", "The original quoted message is needed to answer without guessing.", "A missing forwarded or referenced message would change the social meaning."],
@@ -84,10 +90,6 @@ export const ACTION_TOOL_PROMPTS = {
 } satisfies Record<ToolName, ActionToolPrompt>;
 
 export const DREAMING_TOOL_PROMPTS = {
-  bash: {
-    description: "Only while you are dreaming, run one executable bash command in a virtual filesystem where /memories is the only writable and persistent place.",
-    parameters: { command: "Executable shell code to inspect or coherently rewrite memory files under /memories. Example: ls /memories/users/alice && cat /memories/users/alice/index.md" }
-  },
   finish_dreaming: {
     description: "Only while you are dreaming, finish after your memories feel coherent and no useful inspection or update remains.",
     parameters: { summary: "Short summary of what memory was updated, or why no update was needed." }

@@ -2,11 +2,9 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import {
-  Bash,
   InMemoryFs,
   MountableFs,
-  ReadWriteFs,
-  type BashExecResult
+  ReadWriteFs
 } from "just-bash";
 import { ToolLoopAgent, hasToolCall, stepCountIs } from "ai";
 import { isSelfMessageEvent } from "../events/helpers";
@@ -32,20 +30,16 @@ import type {
 import type { MessageWindow, SessionEventRecord } from "../session/schemas";
 import type { ToolExecutionResult } from "../tools/executeActions";
 import type { ActionProposal } from "../tools/schemas";
+import {
+  createPhaseBash,
+  type BashCommandResult,
+  type PhaseBash
+} from "../tools/bash";
 import type { MemoryFragment } from "./store";
 import { renderDreamingTaskPrompt } from "../prompts/dreaming";
 
-export interface MemoryBashCommandResult {
-  command: string;
-  stdout: string;
-  stderr: string;
-  exitCode: number;
-}
-
-export interface MemoryBashTool {
-  readonly commands: MemoryBashCommandResult[];
-  exec(command: string): Promise<MemoryBashCommandResult>;
-}
+export type MemoryBashCommandResult = BashCommandResult;
+export type MemoryBashTool = PhaseBash;
 
 export interface DreamingRunInput {
   home: GestaltHome;
@@ -176,7 +170,6 @@ export function createAiSdkDreamingRunner(
 }
 
 export function createMemoryBashTool(home: GestaltHome): MemoryBashTool {
-  const commands: MemoryBashCommandResult[] = [];
   const fs = new MountableFs({
     base: new InMemoryFs(),
     mounts: [
@@ -186,21 +179,11 @@ export function createMemoryBashTool(home: GestaltHome): MemoryBashTool {
       }
     ]
   });
-  const bash = new Bash({
+  return createPhaseBash({
     fs,
     cwd: "/",
-    defenseInDepth: true
+    customCommands: []
   });
-
-  return {
-    commands,
-
-    async exec(command) {
-      const result = toCommandResult(command, await bash.exec(command));
-      commands.push(result);
-      return result;
-    }
-  };
 }
 
 async function runDreamingToolLoop(
@@ -444,18 +427,6 @@ function diffMemorySnapshots(
     removedFiles: before
       .filter((file) => !afterByPath.has(file.path))
       .map((file) => file.path)
-  };
-}
-
-function toCommandResult(
-  command: string,
-  result: BashExecResult
-): MemoryBashCommandResult {
-  return {
-    command,
-    stdout: result.stdout,
-    stderr: result.stderr,
-    exitCode: result.exitCode
   };
 }
 

@@ -78,10 +78,11 @@ export async function loadEvalModelConfig(
   });
   const values = parseFlatTomlValues(raw);
   const modelName = readRequiredString(values, "model_name");
+  const runtimeValues = mapEvalModelValues(values);
   const resolved = createLanguageModelFromConfig({
     path: configPath,
     raw,
-    flatValues: values
+    flatValues: runtimeValues
   });
   const temperature = readOptionalNumber(values, "temperature") ?? 0.1;
   const timeoutMs = readOptionalNumber(values, "timeout_ms") ?? 300_000;
@@ -105,6 +106,32 @@ export async function loadEvalModelConfig(
       ? { providerOptions: resolved.providerOptions }
       : {})
   };
+}
+
+function mapEvalModelValues(
+  values: Record<string, string | number | boolean>
+): Record<string, string | number | boolean> {
+  const runtimeValues = { ...values };
+  for (const suffix of [
+    "provider",
+    "base_url",
+    "name",
+    "api_key_env",
+    "api_key",
+    "routing_order",
+    "routing_allow_fallbacks",
+    "routing_sort",
+    "thinking",
+    "tool_choice"
+  ]) {
+    const value = values[`model_${suffix}`];
+    if (value !== undefined) {
+      runtimeValues[`main_model_${suffix}`] = value;
+    }
+  }
+  runtimeValues.main_model_temperature =
+    readOptionalNumber(values, "temperature") ?? 0.1;
+  return runtimeValues;
 }
 
 function loadLocalEnv(): void {

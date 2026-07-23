@@ -526,7 +526,13 @@ Accepted dreaming outputs should be written back through the GestaltHome memory 
 
 The active loop hands dreaming an immutable continuation of its append-only model session. Dreaming keeps the original system/persona/memory prefix, committed assistant/tool history, and provider `session_id`, then appends one dreaming task message. It does not rebuild or repeat the turn transcript.
 
-The provider-facing tool protocol is deterministic and stable across both phases so tool schema changes do not invalidate prefix caching. Runtime phase gates expose chat-action execution during the active phase and memory-bash execution during the dreaming phase. Harness verification must confirm that the first OpenRouter dreaming response reports positive cached input tokens.
+The provider-facing tool protocol is deterministic and stable across both
+phases so tool schema changes do not invalidate prefix caching. `bash` keeps
+the same provider schema but receives a phase-scoped executor and VFS: active
+loops get a private in-memory shell with agent-browser, while dreaming gets the
+writable memory mount. Chat side-effect tools and `finish_dreaming` retain
+their phase-specific executors. Harness verification must confirm that the
+first OpenRouter dreaming response reports positive cached input tokens.
 
 ## 11. Harness Purpose
 

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Conversation } from "../events/schemas";
 import type { ModelSession } from "../model/session";
+import type { ToolImplementations } from "../tools/executeActions";
 import {
   getConversationKey,
   type CreatedMessageWindow,
@@ -68,6 +69,7 @@ export interface ActiveLoop {
   currentTurnId: string;
   currentTurnStartedAt: string;
   modelSession: ModelSession;
+  toolImplementations?: ToolImplementations;
   rollout: ActiveRollout;
   parts: WindowPart[];
   pendingParts: WindowPart[];
@@ -151,6 +153,14 @@ export function startActiveLoopWindow(
     modelSession: dependencies.model.createSession({
       exchangeSink: rollout.exchangeSink
     }),
+    ...(dependencies.createActiveLoopToolImplementations
+      ? {
+          toolImplementations:
+            dependencies.createActiveLoopToolImplementations()
+        }
+      : dependencies.toolImplementations
+        ? { toolImplementations: dependencies.toolImplementations }
+        : {}),
     rollout,
     parts: [part],
     pendingParts: [],
@@ -399,6 +409,9 @@ async function runSteerableTurn(
         eventRecords: merged.eventRecords,
         steerCount: active.restartCount,
         modelSession: active.modelSession,
+        ...(active.toolImplementations
+          ? { toolImplementations: active.toolImplementations }
+          : {}),
         rollout: active.rollout,
         includeSelfHistory: true,
         signal: abortController.signal,

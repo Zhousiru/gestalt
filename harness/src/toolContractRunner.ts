@@ -101,6 +101,15 @@ function createToolContractProposals(): ActionProposal[] {
     {
       id: randomUUID(),
       proposedAt,
+      toolName: "bash",
+      reason: "Load the browser skill before browser work.",
+      params: {
+        command: "agent-browser skills get core"
+      }
+    },
+    {
+      id: randomUUID(),
+      proposedAt,
       toolName: "fetch_message",
       reason: "The quoted message is outside the visible transcript.",
       params: {

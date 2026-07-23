@@ -50,7 +50,11 @@ import {
   type ModelSessionContinuation,
   type ModelStepTraceSnapshot
 } from "./session";
-import { buildDreamingTools, dreamingToolOrder } from "./dreamingTools";
+import {
+  buildTerminalDreamingTools,
+  dreamingToolOrder
+} from "./dreamingTools";
+import { createModelBashTool } from "./bashTool";
 import {
   readLanguageMaxSteps,
   readLanguagePromptCacheEnabled,
@@ -319,7 +323,7 @@ function createAiSdkModelSession(
             executedToolResults: attemptToolResults,
             pendingImageContents
           });
-          Object.assign(tools, buildDreamingTools());
+          Object.assign(tools, buildTerminalDreamingTools());
           runOptions.onModelAttemptStart?.();
 
           const agent = new ToolLoopAgent({
@@ -990,6 +994,12 @@ function createActionTool(
   definition: ToolDefinition,
   runtime?: ActionToolRuntime
 ): ToolSet[string] {
+  if (definition.name === "bash") {
+    return createModelBashTool((command) =>
+      executeActionToolInput(definition, { command }, runtime)
+    );
+  }
+
   if (definition.name === "fetch_message") {
     return tool({
       description: renderActionToolDescription(definition.name),
@@ -1327,6 +1337,9 @@ async function executeActionToolInput(
     connector,
     proposals: [proposal],
     now: runtime.runOptions.now ?? runtime.now,
+    ...(runtime.runOptions.signal
+      ? { signal: runtime.runOptions.signal }
+      : {}),
     ...(runtime.runOptions.traceId
       ? { traceId: runtime.runOptions.traceId }
       : {}),
@@ -1413,6 +1426,16 @@ function actionFromToolInput(
       ...base,
       toolName: "say_nothing",
       params: {}
+    };
+  }
+
+  if (toolName === "bash") {
+    return {
+      ...base,
+      toolName: "bash",
+      params: {
+        command: readRequiredStringArgument(args, "command", toolName)
+      }
     };
   }
 

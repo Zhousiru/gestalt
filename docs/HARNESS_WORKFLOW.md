@@ -279,6 +279,13 @@ Run the multi-step main agent fixture:
 pnpm --filter @gestalt/harness run verify:agent
 ```
 
+Run the action bash and agent-browser discovery fixture:
+
+```bash
+pnpm --filter @gestalt/app run verify:bash
+pnpm --filter @gestalt/harness run verify:browser
+```
+
 Run the memory injection, correction, pruning, and dreaming fixtures:
 
 ```bash
@@ -322,6 +329,7 @@ pnpm --filter @gestalt/harness run eval:group
 pnpm --filter @gestalt/harness run eval:context
 pnpm --filter @gestalt/harness run eval:model
 pnpm --filter @gestalt/harness run eval:agent
+pnpm --filter @gestalt/harness run eval:browser
 pnpm --filter @gestalt/harness run eval:memory
 pnpm --filter @gestalt/harness run eval:onebot
 pnpm --filter @gestalt/harness run eval:tools
@@ -590,6 +598,17 @@ For GestaltHome behavior, verify:
   `tool_completed` and committed tool-message records.
 - Eval rubric: `multi_step_agent_tool_quality`, judging whether the serial tool sequence is coherent and inspectable.
 
+`agent-browser-bash.json` verifies:
+
+- The active model sees the short agent-browser discovery instruction.
+- It calls `bash` with exactly `agent-browser skills get core`, observes the
+  result, and continues the same action loop.
+- The exported model protocol contains one stable `bash` schema in both action
+  and dreaming requests.
+- Rollout records contain the outer `bash` call but no nested
+  `agent-browser` tool.
+- Eval rubric: `agent_browser_discovery_quality`.
+
 `group-exit-idle-timeout.json`, `group-exit-say-nothing.json`, `group-exit-leave-tool.json`, and `group-exit-slash-leave.json` verify:
 
 - Active loops export `loopExits` in `session.json`.
@@ -628,7 +647,7 @@ For GestaltHome behavior, verify:
 
 `tool-contract-e2e` verifies:
 
-- The runtime tool layer supports `say_nothing`, `fetch_message`, `read_image`, `send_group_message`, `send_dm`, `send_image`, `search_sticker`, `send_sticker`, `react_to_message`, `poke_user`, `recall_own_message`, and `leave`.
+- The runtime tool layer supports `say_nothing`, `bash`, `fetch_message`, `read_image`, `send_group_message`, `send_dm`, `send_image`, `search_sticker`, `send_sticker`, `react_to_message`, `poke_user`, `recall_own_message`, and `leave`.
 - Mock tools record every tool call without live connector side effects.
 - OneBot connector mappings use `get_msg`, `get_image`, `send_group_msg`, `send_private_msg`, `send_msg`, `set_msg_emoji_like`, NapCat `send_poke`, and `delete_msg`.
 - Read-only helper tools expose fetched message or image data in tool results without visible chat side effects.

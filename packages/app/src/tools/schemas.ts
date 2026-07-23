@@ -2,6 +2,7 @@ import { z } from "zod";
 
 export const ToolNameSchema = z.enum([
   "say_nothing",
+  "bash",
   "fetch_message",
   "read_image",
   "send_group_message",
@@ -26,6 +27,15 @@ const ActionProposalBaseSchema = z
 export const SayNothingActionProposalSchema = ActionProposalBaseSchema.extend({
   toolName: z.literal("say_nothing"),
   params: z.object({}).strict()
+});
+
+export const BashActionProposalSchema = ActionProposalBaseSchema.extend({
+  toolName: z.literal("bash"),
+  params: z
+    .object({
+      command: z.string().min(1)
+    })
+    .strict()
 });
 
 export const SendGroupMessageActionProposalSchema =
@@ -148,6 +158,7 @@ export const LeaveActionProposalSchema = ActionProposalBaseSchema.extend({
 
 export const ActionProposalSchema = z.discriminatedUnion("toolName", [
   SayNothingActionProposalSchema,
+  BashActionProposalSchema,
   FetchMessageActionProposalSchema,
   ReadImageActionProposalSchema,
   SendGroupMessageActionProposalSchema,

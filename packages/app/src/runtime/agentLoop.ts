@@ -70,6 +70,7 @@ export interface AgentLoopDependencies {
     result: ToolExecutionResult;
   }) => Promise<void>;
   toolImplementations?: ToolImplementations;
+  createActiveLoopToolImplementations?: () => ToolImplementations;
   liveEvents?: LiveEventSink;
   now: () => Date;
   resolvedTimezone: ResolvedTimezone;
@@ -82,6 +83,7 @@ export interface RunAgentTurnInput {
   modelSession: ModelSession;
   rollout?: ActiveRollout;
   includeSelfHistory?: boolean;
+  toolImplementations?: ToolImplementations;
   signal?: AbortSignal;
   onPhaseChange?: (phase: TurnPhase) => void;
 }
@@ -98,6 +100,8 @@ export async function runAgentTurn(
   dependencies: AgentLoopDependencies,
   input: RunAgentTurnInput
 ): Promise<AgentTurnResult> {
+  const toolImplementations =
+    input.toolImplementations ?? dependencies.toolImplementations;
   const traceId = input.rollout?.id ?? randomUUID();
   const traceStartedAt = dependencies.now().toISOString();
   const spans: SpanRecord[] = [];
@@ -192,8 +196,8 @@ export async function runAgentTurn(
           connector: dependencies.connector,
           now: dependencies.now,
           traceId,
-          ...(dependencies.toolImplementations
-            ? { toolImplementations: dependencies.toolImplementations }
+          ...(toolImplementations
+            ? { toolImplementations }
             : {}),
           onModelAttemptStart() {
             input.onPhaseChange?.("model_running");
@@ -266,8 +270,9 @@ export async function runAgentTurn(
         proposals: proposedActions,
         now: dependencies.now,
         traceId,
-        ...(dependencies.toolImplementations
-          ? { toolImplementations: dependencies.toolImplementations }
+        ...(input.signal ? { signal: input.signal } : {}),
+        ...(toolImplementations
+          ? { toolImplementations }
           : {}),
         ...(input.rollout
           ? {

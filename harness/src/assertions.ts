@@ -505,9 +505,18 @@ function assertTerminalDreamingContinuation(result: ReplayRunResult): void {
     "dreaming changed the provider tool protocol and invalidated the cache prefix"
   );
   assert.deepEqual(
-    firstDreamingRequest.tools.slice(-2),
-    ["bash", "finish_dreaming"],
-    "stable tool protocol is missing the terminal dreaming tools"
+    firstDreamingRequest.toolProtocol,
+    lastAgentRequest.toolProtocol,
+    "dreaming changed a provider tool schema and invalidated the cache prefix"
+  );
+  assert.ok(
+    firstDreamingRequest.tools.includes("bash"),
+    "stable tool protocol is missing the phase-scoped bash tool"
+  );
+  assert.equal(
+    firstDreamingRequest.tools.at(-1),
+    "finish_dreaming",
+    "stable tool protocol must end with the terminal dreaming tool"
   );
   const terminalMessage = firstDreamingRequest.messages.at(-1);
   assert.equal(terminalMessage?.role, "user");

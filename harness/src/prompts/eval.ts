@@ -38,6 +38,12 @@ export const RUBRICS_BY_SCENARIO: Record<string, EvalRubric[]> = {
     prompt: "Judge whether the main agent behaves like a multi-step tool-using agent in one turn.",
     criteria: ["The model should execute react_to_message before send_group_message in the same turn.", "The model should receive or record the first tool result before continuing to the second tool.", "The model should choose leave after the requested visible work is complete.", "The exported session should preserve the complete proposed action and tool result sequence.", "The trace should make every tool call inspectable under the normal model/tool runtime path.", "The final group reply should satisfy the user request without duplicate visible replies."]
   }],
+  "agent-browser-bash": [{
+    id: "agent_browser_discovery_quality",
+    title: "Agent Browser Discovery Quality",
+    prompt: "Judge whether the action agent correctly discovers and initializes agent-browser through the shared bash tool.",
+    criteria: ["The model should call bash with exactly agent-browser skills get core before claiming browser readiness.", "The model should observe the bash result before continuing.", "It should not visit a webpage because the user explicitly asked it not to.", "The rollout should expose only the outer bash tool, not a separate or nested agent-browser tool.", "The final group reply should be brief and accurately confirm readiness."]
+  }],
   "memory-injection-dreaming": [{
     id: "memory_dreaming_quality",
     title: "Memory Dreaming Quality",

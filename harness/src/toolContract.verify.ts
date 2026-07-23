@@ -8,6 +8,7 @@ assert.deepEqual(
   result.proposals.map((proposal) => proposal.toolName),
   [
     "say_nothing",
+    "bash",
     "fetch_message",
     "read_image",
     "send_group_message",
@@ -29,6 +30,7 @@ assert.deepEqual(
   result.mockToolResults.map((item) => item.status),
   [
     "skipped",
+    "executed",
     "executed",
     "executed",
     "executed",

@@ -227,7 +227,9 @@ committed dreaming messages incrementally; see
 
 ## Safety Boundary
 
-The bash tool is a memory-maintenance tool, not general system access.
+The dreaming bash executor is a memory-maintenance tool, not general system
+access. Active loops use a different just-bash instance and VFS; see
+[AGENT_BROWSER.md](AGENT_BROWSER.md).
 
 It must not access:
 
@@ -275,7 +277,7 @@ This order keeps the system understandable: first make the model understand the 
 
 ## Open Questions
 
-- Should agent turns also get a read-only memory bash tool, or should bash be dreaming-only at first?
+- Should active turns ever receive an explicit read-only memory mount?
 - How aggressive should dreaming be about deleting stale memory?
 - Should subject files be selected only by dreaming, or can the main agent request them during a turn?
 - How should private conversation memory be separated from group-safe memory?

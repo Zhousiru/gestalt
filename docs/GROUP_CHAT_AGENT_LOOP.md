@@ -351,7 +351,14 @@ immutable continuation of that same session and appends a terminal memory-
 maintenance message instead of rebuilding persona, memory, transcript, and tool
 history.
 
-The provider-facing tool protocol stays stable for the whole session because tool schemas are part of the cacheable prompt. Action tools and terminal dreaming tools are declared in one deterministic order from the first request. Runtime phase gates make `bash`/`finish_dreaming` unavailable during chat actions and make chat-action tools unavailable during dreaming.
+The provider-facing tool protocol stays stable for the whole session because
+tool schemas are part of the cacheable prompt. Action tools, including `bash`,
+and the terminal `finish_dreaming` tool are declared in one deterministic order
+from the first request. `bash` is phase-scoped rather than phase-gated: active
+loops get a private in-memory VFS with the `agent-browser` custom command, while
+dreaming binds the same provider schema to its writable `/memories` VFS. Chat
+side-effect tools remain unavailable during dreaming, and `finish_dreaming`
+remains unavailable during chat actions.
 
 The action policy is a single fixed prompt and `leave` is always part of the action protocol and exit chain. Dreaming has no standalone prompt path: it requires the immutable continuation from the completed action session and appends one centrally managed dreaming task message.
 

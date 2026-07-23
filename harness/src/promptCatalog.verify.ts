@@ -25,12 +25,21 @@ assert.match(action.contentHash, /^[a-f0-9]{16}$/);
 assert.match(action.content, /Use say_nothing when you have nothing visible to add right now/);
 assert.match(action.content, /Use leave only when you explicitly want to stop following this topic/);
 assert.match(action.content, /Finishing one reply or having nothing more to say right now is not a reason to leave/);
+assert.match(
+  action.content,
+  /agent-browser is available through bash; before first use run: agent-browser skills get core/
+);
+assert.doesNotMatch(action.content, /bash and finish_dreaming belong only to dreams/);
 assert.doesNotMatch(action.content, /call leave as your final tool/);
 assert.match(action.content, /Write visible message text as plain text/);
 assert.match(action.content, /Do not use HTML or Markdown/);
 assert.match(ACTION_TOOL_PROMPTS.send_group_message.purpose, /plain-text message/);
 assert.match(ACTION_TOOL_PROMPTS.send_dm.parameters.text, /without HTML or Markdown/);
 assert.match(ACTION_TOOL_PROMPTS.send_image.parameters.caption, /without HTML or Markdown/);
+assert.equal(
+  ACTION_TOOL_PROMPTS.bash.parameters.command,
+  "Bash command to run."
+);
 assert.doesNotMatch(action.content, /there is no lifecycle tool/i);
 assert.equal(
   action.contentHash,

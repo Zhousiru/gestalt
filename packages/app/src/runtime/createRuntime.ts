@@ -66,6 +66,7 @@ import {
 import {
   type ToolImplementations
 } from "../tools/executeActions";
+import { createActionBashToolImplementation } from "../tools/agentBrowser";
 import { createDefaultToolRegistry } from "../tools/registry";
 import type { ToolDefinition } from "../tools/schemas";
 import {
@@ -312,9 +313,12 @@ export async function createRuntime(
     },
     maxSteersPerTurn: options.maxSteersPerTurn ?? 2,
     ...(options.liveEvents ? { liveEvents: options.liveEvents } : {}),
-    ...(Object.keys(toolImplementations).length > 0
-      ? { toolImplementations }
-      : {})
+    createActiveLoopToolImplementations() {
+      return {
+        bash: createActionBashToolImplementation(),
+        ...toolImplementations
+      };
+    }
   };
 
   const appendParsedEvent = (

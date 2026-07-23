@@ -29,6 +29,15 @@ ENV GESTALT_HOME=/var/lib/gestalt
 
 WORKDIR /opt/gestalt
 
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    chromium \
+    fonts-noto-cjk \
+    fonts-noto-color-emoji \
+    tini \
+  && rm -rf /var/lib/apt/lists/*
+
 COPY --from=build --chown=node:node /opt/gestalt ./
 
 RUN mkdir -p "$GESTALT_HOME" \
@@ -39,4 +48,4 @@ USER node
 VOLUME ["/var/lib/gestalt"]
 EXPOSE 3000
 
-ENTRYPOINT ["node", "dist/main.js"]
+ENTRYPOINT ["/usr/bin/tini", "--", "node", "dist/main.js"]

@@ -9,6 +9,7 @@ This file is the short entry point for coding agents working on Gestalt. Keep it
 - Use [docs/MEMORY_MODEL.md](docs/MEMORY_MODEL.md) for file-based memory and dreaming.
 - Use [docs/ONEBOT_CONNECTOR.md](docs/ONEBOT_CONNECTOR.md) for canonical events and OneBot protocol boundaries.
 - Use [docs/STICKER_SYSTEM.md](docs/STICKER_SYSTEM.md) for sticker collection, analysis, retrieval, sending, and observability.
+- Use [docs/AGENT_BROWSER.md](docs/AGENT_BROWSER.md) for phase-scoped bash, browser CLI, tracing, and Docker packaging.
 - Follow [docs/HARNESS_WORKFLOW.md](docs/HARNESS_WORKFLOW.md) whenever runtime behavior changes.
 
 ## Verification
