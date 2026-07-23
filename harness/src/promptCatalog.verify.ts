@@ -29,6 +29,10 @@ assert.match(
   action.content,
   /agent-browser is available through bash; before first use run: agent-browser skills get core/
 );
+assert.match(
+  action.content,
+  /agent-browser open "https:\/\/www\.google\.com\/search\?q=<keywords>", then inspect the results/
+);
 assert.doesNotMatch(action.content, /bash and finish_dreaming belong only to dreams/);
 assert.doesNotMatch(action.content, /call leave as your final tool/);
 assert.match(action.content, /Write visible message text as plain text/);

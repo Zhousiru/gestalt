@@ -530,9 +530,12 @@ The provider-facing tool protocol is deterministic and stable across both
 phases so tool schema changes do not invalidate prefix caching. `bash` keeps
 the same provider schema but receives a phase-scoped executor and VFS: active
 loops get a private in-memory shell with agent-browser, while dreaming gets the
-writable memory mount. Chat side-effect tools and `finish_dreaming` retain
-their phase-specific executors. Harness verification must confirm that the
-first OpenRouter dreaming response reports positive cached input tokens.
+writable memory mount. Each active-loop executor owns
+`--namespace gestalt --session gestalt-<active-loop-id>` and closes that
+browser session when a browser-using loop settles. Chat side-effect tools and
+`finish_dreaming` retain their phase-specific executors. Harness verification
+must confirm that the first OpenRouter dreaming response reports positive
+cached input tokens.
 
 ## 11. Harness Purpose
 

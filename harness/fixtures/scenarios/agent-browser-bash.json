@@ -48,6 +48,7 @@
     "modelInput": {
       "contains": [
         "In chat, agent-browser is available through bash; before first use run: agent-browser skills get core.",
+        "For web search, run agent-browser open \"https://www.google.com/search?q=<keywords>\", then inspect the results.",
         "先按你自己的使用说明加载必要的 skill"
       ],
       "tools": ["bash", "send_group_message"]

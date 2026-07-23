@@ -66,7 +66,7 @@ import {
 import {
   type ToolImplementations
 } from "../tools/executeActions";
-import { createActionBashToolImplementation } from "../tools/agentBrowser";
+import { createActionBashToolScope } from "../tools/agentBrowser";
 import { createDefaultToolRegistry } from "../tools/registry";
 import type { ToolDefinition } from "../tools/schemas";
 import {
@@ -86,7 +86,8 @@ import {
   forceActiveLoopExit,
   startActiveLoopWindow,
   type ActiveLoop,
-  type ActiveLoopDependencies
+  type ActiveLoopDependencies,
+  type ActiveLoopToolScope
 } from "./activeLoop";
 import {
   createDefaultAgentLoopExitTriggers,
@@ -135,6 +136,9 @@ export interface CreateRuntimeOptions {
   model?: ModelClient;
   tools?: ToolDefinition[];
   toolImplementations?: ToolImplementations;
+  createActiveLoopToolScope?: (input: {
+    activeLoopId: string;
+  }) => ActiveLoopToolScope | undefined;
   dreamingRunner?: DreamingRunner;
   inspectRunner?: InspectRunner;
   maxSteersPerTurn?: number;
@@ -313,10 +317,29 @@ export async function createRuntime(
     },
     maxSteersPerTurn: options.maxSteersPerTurn ?? 2,
     ...(options.liveEvents ? { liveEvents: options.liveEvents } : {}),
-    createActiveLoopToolImplementations() {
+    toolImplementations,
+    createActiveLoopToolScope({ activeLoopId }) {
+      if (options.createActiveLoopToolScope) {
+        return options.createActiveLoopToolScope({ activeLoopId });
+      }
+      if (
+        !tools.some((tool) => tool.name === "bash") ||
+        toolImplementations.bash
+      ) {
+        return undefined;
+      }
+      const bashScope = createActionBashToolScope({
+        namespace: "gestalt",
+        sessionId: `gestalt-${activeLoopId}`
+      });
       return {
-        bash: createActionBashToolImplementation(),
-        ...toolImplementations
+        toolImplementations: {
+          ...toolImplementations,
+          bash: bashScope.implementation
+        },
+        async dispose() {
+          await bashScope.dispose();
+        }
       };
     }
   };

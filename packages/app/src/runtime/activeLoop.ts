@@ -44,6 +44,14 @@ import {
 export interface ActiveLoopDependencies extends BaseAgentLoopDependencies {
   sessionStore: SessionStore;
   maxSteersPerTurn: number;
+  createActiveLoopToolScope?: (input: {
+    activeLoopId: string;
+  }) => ActiveLoopToolScope | undefined;
+}
+
+export interface ActiveLoopToolScope {
+  toolImplementations: ToolImplementations;
+  dispose(): Promise<void>;
 }
 
 type ActiveLoopPhase = TurnPhase | "waiting_for_input";
@@ -69,6 +77,7 @@ export interface ActiveLoop {
   currentTurnId: string;
   currentTurnStartedAt: string;
   modelSession: ModelSession;
+  toolScope?: ActiveLoopToolScope;
   toolImplementations?: ToolImplementations;
   rollout: ActiveRollout;
   parts: WindowPart[];
@@ -130,6 +139,9 @@ export function startActiveLoopWindow(
 
   const startedAt = dependencies.now().toISOString();
   const loopId = randomUUID();
+  const toolScope = dependencies.createActiveLoopToolScope?.({
+    activeLoopId: loopId
+  });
   const currentEventId = part.eventRecords.at(-1)?.event.id;
   const rollout = createActiveRollout({
     home: dependencies.home,
@@ -153,10 +165,10 @@ export function startActiveLoopWindow(
     modelSession: dependencies.model.createSession({
       exchangeSink: rollout.exchangeSink
     }),
-    ...(dependencies.createActiveLoopToolImplementations
+    ...(toolScope
       ? {
-          toolImplementations:
-            dependencies.createActiveLoopToolImplementations()
+          toolScope,
+          toolImplementations: toolScope.toolImplementations
         }
       : dependencies.toolImplementations
         ? { toolImplementations: dependencies.toolImplementations }
@@ -201,10 +213,15 @@ export function startActiveLoopWindow(
         throw error;
       }
     )
-    .finally(() => {
+    .finally(async () => {
       activeLoops.delete(conversationKey);
       clearActiveLoopIdleExit(active);
       dependencies.sessionStore.unpinConversation(active.conversation);
+      try {
+        await active.toolScope?.dispose();
+      } catch {
+        // Runtime-owned tool cleanup must not change the completed loop result.
+      }
       onSettled?.(conversationKey);
     });
 

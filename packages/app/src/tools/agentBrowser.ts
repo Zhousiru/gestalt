@@ -5,7 +5,6 @@ import {
   InMemoryFs,
   decodeBytesToUtf8,
   defineCommand,
-  type CommandContext,
   type ExecResult
 } from "just-bash";
 import type {
@@ -23,6 +22,18 @@ export interface CreateActionBashToolOptions {
   agentBrowserTarget?: NativeCommandTarget;
 }
 
+export interface CreateActionBashToolScopeOptions
+  extends CreateActionBashToolOptions {
+  namespace: string;
+  sessionId: string;
+  cleanupTimeoutMs?: number;
+}
+
+export interface ActionBashToolScope {
+  implementation: ToolImplementation;
+  dispose(): Promise<ExecResult>;
+}
+
 /**
  * Creates the active-loop bash implementation. Its VFS is private to that
  * loop, and agent-browser is the only native host command added to just-bash.
@@ -30,34 +41,105 @@ export interface CreateActionBashToolOptions {
 export function createActionBashToolImplementation(
   options: CreateActionBashToolOptions = {}
 ): ToolImplementation {
+  return createActionBashRuntime(options).implementation;
+}
+
+/**
+ * Creates a bash implementation whose browser namespace and session are owned
+ * by one active loop. dispose() is idempotent and closes only that session.
+ */
+export function createActionBashToolScope(
+  options: CreateActionBashToolScopeOptions
+): ActionBashToolScope {
+  const namespace = requireRuntimeOwnedValue("namespace", options.namespace);
+  const sessionId = requireRuntimeOwnedValue("session", options.sessionId);
+  const runtime = createActionBashRuntime({
+    ...options,
+    namespace,
+    sessionId
+  });
+  let disposePromise: Promise<ExecResult> | undefined;
+
+  return {
+    implementation: runtime.implementation,
+    dispose() {
+      disposePromise ??= runtime.wasAgentBrowserInvoked()
+        ? closeAgentBrowserSession({
+            target: runtime.agentBrowserTarget,
+            namespace,
+            sessionId,
+            timeoutMs: options.cleanupTimeoutMs ?? 10_000
+          })
+        : Promise.resolve({
+            stdout: "",
+            stderr: "",
+            exitCode: 0
+          });
+      return disposePromise;
+    }
+  };
+}
+
+interface CreateActionBashRuntimeOptions extends CreateActionBashToolOptions {
+  namespace?: string;
+  sessionId?: string;
+}
+
+function createActionBashRuntime(
+  options: CreateActionBashRuntimeOptions
+): {
+  implementation: ToolImplementation;
+  agentBrowserTarget: NativeCommandTarget;
+  wasAgentBrowserInvoked(): boolean;
+} {
   const agentBrowserTarget =
     options.agentBrowserTarget ?? resolveAgentBrowserTarget();
+  let agentBrowserInvoked = false;
   const bash = createPhaseBash({
     fs: new InMemoryFs(),
     cwd: "/",
     customCommands: [
-      defineCommand("agent-browser", (args, context) =>
-        executeNativeCommand(agentBrowserTarget, args, context)
-      )
+      defineCommand("agent-browser", (args, context) => {
+        agentBrowserInvoked = true;
+        return executeNativeCommand(
+          agentBrowserTarget,
+          options.namespace && options.sessionId
+            ? bindRuntimeOwnedSession(
+                args,
+                options.namespace,
+                options.sessionId
+              )
+            : args,
+          decodeBytesToUtf8(context.stdin),
+          context.signal
+        );
+      })
     ]
   });
 
-  return async (proposal, context): Promise<ToolHandlerResult> => {
-    if (proposal.toolName !== "bash") {
+  return {
+    agentBrowserTarget,
+    wasAgentBrowserInvoked: () => agentBrowserInvoked,
+    implementation: async (
+      proposal,
+      context
+    ): Promise<ToolHandlerResult> => {
+      if (proposal.toolName !== "bash") {
+        return {
+          status: "failed",
+          reason: `bash handler received ${proposal.toolName}.`
+        };
+      }
+
+      const result = await bash.exec(proposal.params.command, context.signal);
       return {
-        status: "failed",
-        reason: `bash handler received ${proposal.toolName}.`
+        status: result.exitCode === 0 ? "executed" : "failed",
+        result: {
+          ok: result.exitCode === 0,
+          data: result
+        }
       };
     }
-
-    const result = await bash.exec(proposal.params.command, context.signal);
-    return {
-      status: result.exitCode === 0 ? "executed" : "failed",
-      result: {
-        ok: result.exitCode === 0,
-        data: result
-      }
-    };
   };
 }
 
@@ -81,9 +163,10 @@ export function resolveAgentBrowserTarget(): NativeCommandTarget {
 async function executeNativeCommand(
   target: NativeCommandTarget,
   args: string[],
-  context: CommandContext
+  stdin: string,
+  signal?: AbortSignal
 ): Promise<ExecResult> {
-  if (context.signal?.aborted) {
+  if (signal?.aborted) {
     return {
       stdout: "",
       stderr: "",
@@ -111,7 +194,7 @@ async function executeNativeCommand(
         return;
       }
       settled = true;
-      context.signal?.removeEventListener("abort", abort);
+      signal?.removeEventListener("abort", abort);
       resolve(result);
     };
     const abort = (): void => {
@@ -142,15 +225,86 @@ async function executeNativeCommand(
       });
     });
     child.stdin.on("error", () => undefined);
-    child.stdin.end(decodeBytesToUtf8(context.stdin));
+    child.stdin.end(stdin);
 
-    if (context.signal) {
-      context.signal.addEventListener("abort", abort, { once: true });
-      if (context.signal.aborted) {
+    if (signal) {
+      signal.addEventListener("abort", abort, { once: true });
+      if (signal.aborted) {
         abort();
       }
     }
   });
+}
+
+function bindRuntimeOwnedSession(
+  args: string[],
+  namespace: string,
+  sessionId: string
+): string[] {
+  return [
+    "--namespace",
+    namespace,
+    "--session",
+    sessionId,
+    ...removeRuntimeOwnedOptions(args)
+  ];
+}
+
+function removeRuntimeOwnedOptions(args: string[]): string[] {
+  const filtered: string[] = [];
+  let positionalOnly = false;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index] ?? "";
+    if (positionalOnly) {
+      filtered.push(arg);
+      continue;
+    }
+    if (arg === "--") {
+      positionalOnly = true;
+      filtered.push(arg);
+      continue;
+    }
+    if (arg === "--namespace" || arg === "--session") {
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--namespace=") || arg.startsWith("--session=")) {
+      continue;
+    }
+    filtered.push(arg);
+  }
+  return filtered;
+}
+
+async function closeAgentBrowserSession(input: {
+  target: NativeCommandTarget;
+  namespace: string;
+  sessionId: string;
+  timeoutMs: number;
+}): Promise<ExecResult> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), input.timeoutMs);
+  timeout.unref?.();
+  try {
+    return await executeNativeCommand(
+      input.target,
+      bindRuntimeOwnedSession([], input.namespace, input.sessionId).concat(
+        "close"
+      ),
+      "",
+      controller.signal
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function requireRuntimeOwnedValue(label: string, value: string): string {
+  const normalized = value.trim();
+  if (!normalized) {
+    throw new Error(`agent-browser ${label} must not be empty.`);
+  }
+  return normalized;
 }
 
 function resolveAgentBrowserPlatform(): string {

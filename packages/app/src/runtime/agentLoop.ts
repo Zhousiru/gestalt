@@ -70,7 +70,6 @@ export interface AgentLoopDependencies {
     result: ToolExecutionResult;
   }) => Promise<void>;
   toolImplementations?: ToolImplementations;
-  createActiveLoopToolImplementations?: () => ToolImplementations;
   liveEvents?: LiveEventSink;
   now: () => Date;
   resolvedTimezone: ResolvedTimezone;

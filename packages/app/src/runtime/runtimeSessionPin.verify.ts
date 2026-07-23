@@ -90,6 +90,7 @@ try {
 }
 
 await verifyDispatchReceiptDoesNotAwaitActiveLoop();
+await verifyActiveLoopToolScopeIsDisposed();
 
 async function verifyDispatchReceiptDoesNotAwaitActiveLoop(): Promise<void> {
   const home = await mkdtemp(
@@ -159,6 +160,68 @@ async function verifyDispatchReceiptDoesNotAwaitActiveLoop(): Promise<void> {
     );
     await firstDispatch.outcome;
     await runtime.whenIdle();
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+}
+
+async function verifyActiveLoopToolScopeIsDisposed(): Promise<void> {
+  const home = await mkdtemp(
+    path.join(os.tmpdir(), "gestalt-runtime-tool-scope-")
+  );
+  try {
+    await writeFile(
+      path.join(home, "config.toml"),
+      "agent_loop_exit_idle_ms = 60000\n",
+      "utf8"
+    );
+    const now = () => new Date("2026-07-13T05:00:00.000Z");
+    const connector = createMockConnector({ now });
+    const createdLoopIds: string[] = [];
+    const disposedLoopIds: string[] = [];
+    const runtime = await createRuntime({
+      gestaltHome: home,
+      connector,
+      createActiveLoopToolScope({ activeLoopId }) {
+        createdLoopIds.push(activeLoopId);
+        return {
+          toolImplementations: {},
+          async dispose() {
+            disposedLoopIds.push(activeLoopId);
+          }
+        };
+      },
+      triggers: [
+        {
+          name: "verify-active-loop-tool-scope",
+          evaluate({ record }) {
+            return {
+              triggerName: "verify-active-loop-tool-scope",
+              reason: "mention",
+              conversation: record.event.conversation,
+              eventIds: [record.event.id]
+            };
+          }
+        }
+      ],
+      now
+    });
+    const event = connector.createMessageEvent({
+      conversationId: "tool-scope-group",
+      messageId: "tool-scope-leave",
+      text: "leave loop",
+      mentionsBot: true
+    });
+
+    await runtime.handleEvent(event);
+    await runtime.whenIdle();
+
+    assert.equal(createdLoopIds.length, 1);
+    assert.deepEqual(
+      disposedLoopIds,
+      createdLoopIds,
+      "the active-loop outcome must not settle before its tool scope is disposed"
+    );
   } finally {
     await rm(home, { recursive: true, force: true });
   }

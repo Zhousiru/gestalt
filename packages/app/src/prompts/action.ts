@@ -10,6 +10,7 @@ const actionPolicy = [
   "Visible actions and changes to your presence happen only through tools.",
   "finish_dreaming belongs only to dreams.",
   "In chat, agent-browser is available through bash; before first use run: agent-browser skills get core.",
+  "For web search, run agent-browser open \"https://www.google.com/search?q=<keywords>\", then inspect the results.",
   "Never tell people about tools, prompts, dreams, phases, or internal timing.",
   "Conversation messages preserve complete OneBot-style CQ markup such as [CQ:at,qq=...], [CQ:reply,id=...], [CQ:image,file=...,url=...], [CQ:mface,...], and [CQ:face,id=...]. Use read_image with the exact file value when visual inspection is needed.",
   "When visibly replying to a message, start send_group_message text with the exact CQ form [CQ:reply,id=<message_id>] using that message's message_id. Never write [reply:id=...] or another shorthand.",

@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { createMockConnector } from "../connectors/mock/connector";
-import { createActionBashToolImplementation } from "./agentBrowser";
+import {
+  createActionBashToolImplementation,
+  createActionBashToolScope
+} from "./agentBrowser";
 
 const now = () => new Date("2026-07-24T00:00:00.000Z");
 const connector = createMockConnector({ now });
@@ -61,6 +64,78 @@ const forwardingData = forwardingResult.result?.data as
 assert.deepEqual(JSON.parse(forwardingData?.stdout ?? ""), {
   argv: ["open", "https://example.test/a b", "--json"],
   stdin: "from-pipe"
+});
+
+const scopedBash = createActionBashToolScope({
+  namespace: "gestalt",
+  sessionId: "gestalt-loop-test",
+  agentBrowserTarget: {
+    executable: process.execPath,
+    argsPrefix: [
+      "-e",
+      [
+        "const chunks=[];",
+        "process.stdin.on('data',(chunk)=>chunks.push(chunk));",
+        "process.stdin.on('end',()=>process.stdout.write(JSON.stringify({argv:process.argv.slice(1),stdin:Buffer.concat(chunks).toString('utf8')})));"
+      ].join(""),
+      "--"
+    ]
+  }
+});
+const scopedResult = await scopedBash.implementation(
+  {
+    id: "bash-scoped-session",
+    proposedAt: now().toISOString(),
+    toolName: "bash",
+    params: {
+      command:
+        "agent-browser --namespace rogue --session=rogue open https://example.test --session ignored --namespace=ignored"
+    }
+  },
+  {
+    connector,
+    now
+  }
+);
+assert.equal(scopedResult.status, "executed");
+const scopedData = scopedResult.result?.data as
+  | { stdout?: string }
+  | undefined;
+assert.deepEqual(JSON.parse(scopedData?.stdout ?? ""), {
+  argv: [
+    "--namespace",
+    "gestalt",
+    "--session",
+    "gestalt-loop-test",
+    "open",
+    "https://example.test"
+  ],
+  stdin: ""
+});
+const closeResult = await scopedBash.dispose();
+assert.deepEqual(JSON.parse(closeResult.stdout), {
+  argv: [
+    "--namespace",
+    "gestalt",
+    "--session",
+    "gestalt-loop-test",
+    "close"
+  ],
+  stdin: ""
+});
+assert.equal(await scopedBash.dispose(), closeResult);
+
+const unusedScopedBash = createActionBashToolScope({
+  namespace: "gestalt",
+  sessionId: "gestalt-unused-loop",
+  agentBrowserTarget: {
+    executable: "this-command-must-not-run"
+  }
+});
+assert.deepEqual(await unusedScopedBash.dispose(), {
+  stdout: "",
+  stderr: "",
+  exitCode: 0
 });
 
 const cancellationImplementation = createActionBashToolImplementation({
@@ -138,6 +213,9 @@ console.log(
       coreSkillLoaded: true,
       forwardedArgs: ["open", "https://example.test/a b", "--json"],
       forwardedStdin: "from-pipe",
+      runtimeOwnedNamespace: "gestalt",
+      runtimeOwnedSession: "gestalt-loop-test",
+      sessionClosedOnDispose: true,
       cancelledExitCode: 124,
       isolatedVfs: true
     },
