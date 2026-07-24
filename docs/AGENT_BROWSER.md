@@ -83,9 +83,10 @@ host lifecycle action and is not recorded as a model tool step.
 
 `agent-browser` remains a pinned application dependency. The image downloads
 the Fortress `149.0.7827.232` stable Linux x64 bundle from its release, verifies
-the pinned SHA-256 before extraction, retains its license and third-party
-notice, and installs the exact Debian runtime libraries used by the upstream
-Fortress image.
+the pinned SHA-256 before extraction, and normalizes the release bundle's
+`tillion` launcher name to the stable packaged path `/opt/fortress/tilion`.
+It retains the license and third-party notice and installs the exact Debian
+runtime libraries used by the upstream Fortress image.
 
 The final image:
 

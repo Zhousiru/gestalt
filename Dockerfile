@@ -1,12 +1,10 @@
 # syntax=docker/dockerfile:1.7
 
 ARG FORTRESS_VERSION=149.0.7827.232
-ARG FORTRESS_LINUX_X64_SHA256=6553b8faf2a1274173f633f924d8131b5de20371cf2aa08a016da4b50a088a51
 
 FROM debian:bookworm-slim AS fortress
 
 ARG FORTRESS_VERSION
-ARG FORTRESS_LINUX_X64_SHA256
 ARG TARGETARCH
 
 RUN test "$TARGETARCH" = "amd64" \
@@ -14,20 +12,21 @@ RUN test "$TARGETARCH" = "amd64" \
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    curl \
     gzip \
     tar \
   && rm -rf /var/lib/apt/lists/*
 
-RUN curl --fail --location --retry 5 --retry-all-errors \
-    "https://github.com/tiliondev/fortress/releases/download/v${FORTRESS_VERSION}/tilion-fortress-linux-x64.tar.gz" \
-    --output /tmp/fortress.tar.gz \
-  && echo "${FORTRESS_LINUX_X64_SHA256}  /tmp/fortress.tar.gz" \
-    | sha256sum --check --strict \
-  && mkdir -p /opt/fortress \
+ADD --checksum=sha256:6553b8faf2a1274173f633f924d8131b5de20371cf2aa08a016da4b50a088a51 \
+  https://github.com/tiliondev/fortress/releases/download/v${FORTRESS_VERSION}/tilion-fortress-linux-x64.tar.gz \
+  /tmp/fortress.tar.gz
+
+# The v149 release bundle misspells its launcher as "tillion".
+RUN mkdir -p /opt/fortress \
   && tar --extract --gzip --file /tmp/fortress.tar.gz \
     --directory /opt/fortress --strip-components=1 \
+  && if [ ! -e /opt/fortress/tilion ] && [ -x /opt/fortress/tillion ]; then \
+    ln -s tillion /opt/fortress/tilion; \
+  fi \
   && test -x /opt/fortress/tilion \
   && rm /tmp/fortress.tar.gz
 

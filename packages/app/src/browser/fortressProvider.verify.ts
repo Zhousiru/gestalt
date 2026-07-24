@@ -165,7 +165,11 @@ try {
   assert.match(dockerfile, /FORTRESS_VERSION=149\.0\.7827\.232/);
   assert.match(
     dockerfile,
-    /6553b8faf2a1274173f633f924d8131b5de20371cf2aa08a016da4b50a088a51/
+    /ADD --checksum=sha256:6553b8faf2a1274173f633f924d8131b5de20371cf2aa08a016da4b50a088a51/
+  );
+  assert.match(
+    dockerfile,
+    /\[ ! -e \/opt\/fortress\/tilion \] && \[ -x \/opt\/fortress\/tillion \][\s\S]*ln -s tillion \/opt\/fortress\/tilion/
   );
   assert.match(
     dockerfile,
@@ -184,6 +188,7 @@ try {
         cleanupReturned: true,
         cleanupIdempotent: true,
         pinnedDockerBundle: "149.0.7827.232",
+        normalizedLauncherPath: true,
         cdpExposed: false
       },
       null,
