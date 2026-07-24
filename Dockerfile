@@ -1,5 +1,36 @@
 # syntax=docker/dockerfile:1.7
 
+ARG FORTRESS_VERSION=149.0.7827.232
+ARG FORTRESS_LINUX_X64_SHA256=6553b8faf2a1274173f633f924d8131b5de20371cf2aa08a016da4b50a088a51
+
+FROM debian:bookworm-slim AS fortress
+
+ARG FORTRESS_VERSION
+ARG FORTRESS_LINUX_X64_SHA256
+ARG TARGETARCH
+
+RUN test "$TARGETARCH" = "amd64" \
+  || (echo "Fortress ${FORTRESS_VERSION} is packaged only for linux/amd64." >&2; exit 1)
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    gzip \
+    tar \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN curl --fail --location --retry 5 --retry-all-errors \
+    "https://github.com/tiliondev/fortress/releases/download/v${FORTRESS_VERSION}/tilion-fortress-linux-x64.tar.gz" \
+    --output /tmp/fortress.tar.gz \
+  && echo "${FORTRESS_LINUX_X64_SHA256}  /tmp/fortress.tar.gz" \
+    | sha256sum --check --strict \
+  && mkdir -p /opt/fortress \
+  && tar --extract --gzip --file /tmp/fortress.tar.gz \
+    --directory /opt/fortress --strip-components=1 \
+  && test -x /opt/fortress/tilion \
+  && rm /tmp/fortress.tar.gz
+
 FROM node:24.11.1-bookworm-slim AS build
 
 ENV PNPM_HOME=/pnpm
@@ -32,16 +63,36 @@ WORKDIR /opt/gestalt
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     ca-certificates \
-    chromium \
-    fonts-noto-cjk \
-    fonts-noto-color-emoji \
+    fontconfig \
+    libasound2 \
+    libatk-bridge2.0-0 \
+    libatk1.0-0 \
+    libcairo2 \
+    libcups2 \
+    libdrm2 \
+    libgbm1 \
+    libglib2.0-0 \
+    libnspr4 \
+    libnss3 \
+    libpango-1.0-0 \
+    libvulkan1 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxfixes3 \
+    libxkbcommon0 \
+    libxrandr2 \
+    libxshmfence1 \
+    mesa-vulkan-drivers \
     tini \
   && rm -rf /var/lib/apt/lists/*
 
+COPY --from=fortress --chown=node:node /opt/fortress /opt/fortress
 COPY --from=build --chown=node:node /opt/gestalt ./
+COPY third_party/fortress/LICENSE third_party/fortress/NOTICE /usr/share/doc/fortress/
 
-RUN mkdir -p "$GESTALT_HOME" \
-  && chown node:node "$GESTALT_HOME"
+RUN mkdir -p "$GESTALT_HOME" /tmp/gestalt-fortress \
+  && chown node:node "$GESTALT_HOME" /tmp/gestalt-fortress \
+  && test -x /opt/fortress/tilion
 
 USER node
 

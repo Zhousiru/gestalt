@@ -286,6 +286,23 @@ pnpm --filter @gestalt/app run verify:bash
 pnpm --filter @gestalt/harness run verify:browser
 ```
 
+Run the opt-in real Fortress/public-web smoke check:
+
+```bash
+FORTRESS_EXECUTABLE=/path/to/fortress/tilion pnpm run verify:browser-live
+```
+
+This live check first traverses the real
+`just-bash -> agent-browser -> fortress browser.provider` bridge, then visits
+Google, Bing, Sannysoft, BrowserScan, and the official CreepJS deployment in
+that browser. It writes
+`harness/artifacts/fortress-browser-live/summary.json`, including search
+result/challenge outcomes, common automation signals, detector diagnostics,
+and provider cleanup state. `FORTRESS_LIVE_STRICT=1` turns search challenges
+and Sannysoft failed rows into failures. Keep this check opt-in because remote
+site behavior also depends on the current egress IP, geography, and third-party
+page changes.
+
 Run the memory injection, correction, pruning, and dreaming fixtures:
 
 ```bash
@@ -605,6 +622,8 @@ For GestaltHome behavior, verify:
   result, and continues the same action loop.
 - The exported model protocol contains one stable `bash` schema in both action
   and dreaming requests.
+- Runtime routing forces the packaged Fortress `browser.provider` independently
+  of model-supplied provider or config flags.
 - Rollout records contain the outer `bash` call but no nested
   `agent-browser` tool.
 - Eval rubric: `agent_browser_discovery_quality`.

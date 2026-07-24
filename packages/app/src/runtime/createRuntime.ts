@@ -66,7 +66,10 @@ import {
 import {
   type ToolImplementations
 } from "../tools/executeActions";
-import { createActionBashToolScope } from "../tools/agentBrowser";
+import {
+  createActionBashToolScope,
+  resolvePackagedAgentBrowserConfigPath
+} from "../tools/agentBrowser";
 import { createDefaultToolRegistry } from "../tools/registry";
 import type { ToolDefinition } from "../tools/schemas";
 import {
@@ -330,7 +333,9 @@ export async function createRuntime(
       }
       const bashScope = createActionBashToolScope({
         namespace: "gestalt",
-        sessionId: `gestalt-${activeLoopId}`
+        sessionId: `gestalt-${activeLoopId}`,
+        provider: "fortress",
+        configPath: resolvePackagedAgentBrowserConfigPath()
       });
       return {
         toolImplementations: {

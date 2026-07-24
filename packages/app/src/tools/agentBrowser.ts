@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   InMemoryFs,
   decodeBytesToUtf8,
@@ -26,6 +28,8 @@ export interface CreateActionBashToolScopeOptions
   extends CreateActionBashToolOptions {
   namespace: string;
   sessionId: string;
+  provider?: string;
+  configPath?: string;
   cleanupTimeoutMs?: number;
 }
 
@@ -68,6 +72,12 @@ export function createActionBashToolScope(
             target: runtime.agentBrowserTarget,
             namespace,
             sessionId,
+            ...(options.provider
+              ? { provider: options.provider }
+              : {}),
+            ...(options.configPath
+              ? { configPath: options.configPath }
+              : {}),
             timeoutMs: options.cleanupTimeoutMs ?? 10_000
           })
         : Promise.resolve({
@@ -83,6 +93,8 @@ export function createActionBashToolScope(
 interface CreateActionBashRuntimeOptions extends CreateActionBashToolOptions {
   namespace?: string;
   sessionId?: string;
+  provider?: string;
+  configPath?: string;
 }
 
 function createActionBashRuntime(
@@ -107,7 +119,15 @@ function createActionBashRuntime(
             ? bindRuntimeOwnedSession(
                 args,
                 options.namespace,
-                options.sessionId
+                options.sessionId,
+                {
+                  ...(options.provider
+                    ? { provider: options.provider }
+                    : {}),
+                  ...(options.configPath
+                    ? { configPath: options.configPath }
+                    : {})
+                }
               )
             : args,
           decodeBytesToUtf8(context.stdin),
@@ -160,6 +180,23 @@ export function resolveAgentBrowserTarget(): NativeCommandTarget {
   };
 }
 
+export function resolvePackagedAgentBrowserConfigPath(): string {
+  const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
+  const bundledPath = path.join(
+    moduleDirectory,
+    "browser",
+    "agent-browser.json"
+  );
+  if (existsSync(bundledPath)) {
+    return bundledPath;
+  }
+  const sourcePath = path.resolve(
+    moduleDirectory,
+    "../../config/agent-browser.json"
+  );
+  return existsSync(sourcePath) ? sourcePath : bundledPath;
+}
+
 async function executeNativeCommand(
   target: NativeCommandTarget,
   args: string[],
@@ -179,6 +216,8 @@ async function executeNativeCommand(
     let stderr = "";
     let aborted = false;
     let settled = false;
+    let exitDrainTimeout: NodeJS.Timeout | undefined;
+    let abortSettleTimeout: NodeJS.Timeout | undefined;
     const child = spawn(
       target.executable,
       [...(target.argsPrefix ?? []), ...args],
@@ -194,12 +233,25 @@ async function executeNativeCommand(
         return;
       }
       settled = true;
+      clearTimeout(exitDrainTimeout);
+      clearTimeout(abortSettleTimeout);
       signal?.removeEventListener("abort", abort);
       resolve(result);
     };
     const abort = (): void => {
+      if (aborted || settled) {
+        return;
+      }
       aborted = true;
       child.kill();
+      abortSettleTimeout = setTimeout(() => {
+        child.kill("SIGKILL");
+        settle({
+          stdout,
+          stderr,
+          exitCode: 124
+        });
+      }, 1_000);
     };
 
     child.stdout.setEncoding("utf8");
@@ -216,6 +268,18 @@ async function executeNativeCommand(
         stderr: `${stderr}${error.message}\n`,
         exitCode: 1
       });
+    });
+    child.once("exit", (code) => {
+      // A daemonized grandchild may inherit the CLI's stdout/stderr handles,
+      // delaying Node's `close` event after the command process has exited.
+      // Give buffered output a short drain window, then settle from `exit`.
+      exitDrainTimeout = setTimeout(() => {
+        settle({
+          stdout,
+          stderr,
+          exitCode: aborted ? 124 : (code ?? 1)
+        });
+      }, 100);
     });
     child.once("close", (code) => {
       settle({
@@ -239,18 +303,34 @@ async function executeNativeCommand(
 function bindRuntimeOwnedSession(
   args: string[],
   namespace: string,
-  sessionId: string
+  sessionId: string,
+  routing: {
+    provider?: string;
+    configPath?: string;
+  } = {}
 ): string[] {
   return [
+    ...(routing.configPath
+      ? ["--config", routing.configPath]
+      : []),
     "--namespace",
     namespace,
     "--session",
     sessionId,
-    ...removeRuntimeOwnedOptions(args)
+    ...(routing.provider
+      ? ["--provider", routing.provider]
+      : []),
+    ...removeRuntimeOwnedOptions(args, routing)
   ];
 }
 
-function removeRuntimeOwnedOptions(args: string[]): string[] {
+function removeRuntimeOwnedOptions(
+  args: string[],
+  routing: {
+    provider?: string;
+    configPath?: string;
+  }
+): string[] {
   const filtered: string[] = [];
   let positionalOnly = false;
   for (let index = 0; index < args.length; index += 1) {
@@ -264,11 +344,23 @@ function removeRuntimeOwnedOptions(args: string[]): string[] {
       filtered.push(arg);
       continue;
     }
-    if (arg === "--namespace" || arg === "--session") {
+    if (
+      arg === "--namespace" ||
+      arg === "--session" ||
+      (routing.provider && (arg === "--provider" || arg === "-p")) ||
+      (routing.configPath && arg === "--config")
+    ) {
       index += 1;
       continue;
     }
-    if (arg.startsWith("--namespace=") || arg.startsWith("--session=")) {
+    if (
+      arg.startsWith("--namespace=") ||
+      arg.startsWith("--session=") ||
+      (routing.provider &&
+        (arg.startsWith("--provider=") ||
+          (arg.startsWith("-p") && !arg.startsWith("--")))) ||
+      (routing.configPath && arg.startsWith("--config="))
+    ) {
       continue;
     }
     filtered.push(arg);
@@ -280,6 +372,8 @@ async function closeAgentBrowserSession(input: {
   target: NativeCommandTarget;
   namespace: string;
   sessionId: string;
+  provider?: string;
+  configPath?: string;
   timeoutMs: number;
 }): Promise<ExecResult> {
   const controller = new AbortController();
@@ -288,9 +382,12 @@ async function closeAgentBrowserSession(input: {
   try {
     return await executeNativeCommand(
       input.target,
-      bindRuntimeOwnedSession([], input.namespace, input.sessionId).concat(
-        "close"
-      ),
+      bindRuntimeOwnedSession([], input.namespace, input.sessionId, {
+        ...(input.provider ? { provider: input.provider } : {}),
+        ...(input.configPath
+          ? { configPath: input.configPath }
+          : {})
+      }).concat("close"),
       "",
       controller.signal
     );

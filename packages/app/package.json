@@ -16,7 +16,8 @@
     "verify:onebot-ingress": "tsx src/connectors/onebot/ingressQueue.verify.ts && tsx src/connectors/onebot/transport.verify.ts",
     "verify:session": "tsx src/session/sessionJournal.verify.ts && tsx src/runtime/runtimeSessionPin.verify.ts",
     "verify:effects": "tsx src/tools/executeActions.verify.ts && tsx src/runtime/outboundMessages.verify.ts && tsx src/runtime/outboundCommitBarrier.verify.ts && tsx src/runtime/activeRollout.verify.ts",
-    "verify:bash": "tsx src/tools/agentBrowser.verify.ts",
+    "verify:bash": "tsx src/tools/agentBrowser.verify.ts && tsx src/browser/fortressProvider.verify.ts",
+    "verify:browser-live": "tsx src/browser/fortressLive.verify.ts",
     "typecheck": "tsc --noEmit",
     "start": "node dist/main.js"
   },

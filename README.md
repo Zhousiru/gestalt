@@ -26,6 +26,9 @@ docker run --rm --name gestalt \
 ```
 
 The mounted directory stores all runtime data and must be writable. The live UI is available at `http://localhost:3000` when enabled.
+The published image targets `linux/amd64` because it includes the pinned
+Fortress stable browser bundle. Fortress CDP runs only on random loopback ports
+inside the container; port 9222 is not exposed.
 
 ## Configuration
 

@@ -1,4 +1,4 @@
-import { cp, rm, stat } from "node:fs/promises";
+import { cp, mkdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
@@ -14,10 +14,16 @@ const liveContractsEntry = path.resolve(
   packageRoot,
   "../live-contracts/src/index.ts"
 );
+const browserDir = path.join(outdir, "browser");
 
 await rm(outdir, { recursive: true, force: true });
 await requireTraceBuild(traceDist);
 await cp(traceDist, path.join(outdir, "live-ui"), { recursive: true });
+await mkdir(browserDir, { recursive: true });
+await cp(
+  path.join(packageRoot, "config", "agent-browser.json"),
+  path.join(browserDir, "agent-browser.json")
+);
 await build({
   entryPoints: [path.join(packageRoot, "src", "main.ts")],
   outfile: path.join(outdir, "main.js"),
@@ -28,6 +34,18 @@ await build({
   target: "node24",
   sourcemap: true,
   plugins: [bundleLiveContracts()],
+  logLevel: "info"
+});
+await build({
+  entryPoints: [
+    path.join(packageRoot, "src", "browser", "fortressProvider.ts")
+  ],
+  outfile: path.join(browserDir, "fortressProvider.js"),
+  bundle: true,
+  platform: "node",
+  format: "esm",
+  target: "node24",
+  sourcemap: true,
   logLevel: "info"
 });
 

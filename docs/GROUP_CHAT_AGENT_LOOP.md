@@ -362,9 +362,12 @@ remains unavailable during chat actions.
 
 The active-loop tool scope also owns its browser lifecycle. Every
 agent-browser command is forced into namespace `gestalt` and session
-`gestalt-<active-loop-id>`, overriding model-supplied routing flags. The scope
-closes that exact session when a browser-using active loop settles; cleanup is
-host lifecycle work and does not add a model tool step to the rollout.
+`gestalt-<active-loop-id>`, using the packaged `fortress` browser provider and
+overriding model-supplied routing flags. The provider launches a private
+Fortress process, profile, and loopback CDP endpoint for the session. The scope
+closes that exact session and provider process when a browser-using active loop
+settles; cleanup is host lifecycle work and does not add a model tool step to
+the rollout.
 
 The action policy is a single fixed prompt and `leave` is always part of the action protocol and exit chain. Dreaming has no standalone prompt path: it requires the immutable continuation from the completed action session and appends one centrally managed dreaming task message.
 
@@ -464,8 +467,8 @@ For group chat, the project will use:
 - The pre-trigger chain pauses for a conversation while its agent loop is active.
 - New messages during an active loop are batched by a configurable timer and injected as `steer` windows.
 - Each active loop owns one append-only model session; persona and memory appear only in its initial stable prefix.
-- Each browser-using active loop owns one agent-browser session under the
-  `gestalt` namespace and closes it when the loop settles.
+- Each browser-using active loop owns one Fortress process and agent-browser
+  session under the `gestalt` namespace and closes both when the loop settles.
 - Each active loop owns one incremental rollout file; the initial prompt/tool
   protocol appears once and later committed messages advance `stateHash`.
 - OpenRouter requests use a stable `session_id` plus prompt caching, and

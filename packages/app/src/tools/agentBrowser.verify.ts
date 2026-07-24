@@ -69,6 +69,8 @@ assert.deepEqual(JSON.parse(forwardingData?.stdout ?? ""), {
 const scopedBash = createActionBashToolScope({
   namespace: "gestalt",
   sessionId: "gestalt-loop-test",
+  provider: "fortress",
+  configPath: "/opt/gestalt/dist/browser/agent-browser.json",
   agentBrowserTarget: {
     executable: process.execPath,
     argsPrefix: [
@@ -89,7 +91,7 @@ const scopedResult = await scopedBash.implementation(
     toolName: "bash",
     params: {
       command:
-        "agent-browser --namespace rogue --session=rogue open https://example.test --session ignored --namespace=ignored"
+        "agent-browser --namespace rogue --session=rogue --provider rogue --config rogue.json open https://example.test --session ignored --namespace=ignored -pignored"
     }
   },
   {
@@ -103,10 +105,14 @@ const scopedData = scopedResult.result?.data as
   | undefined;
 assert.deepEqual(JSON.parse(scopedData?.stdout ?? ""), {
   argv: [
+    "--config",
+    "/opt/gestalt/dist/browser/agent-browser.json",
     "--namespace",
     "gestalt",
     "--session",
     "gestalt-loop-test",
+    "--provider",
+    "fortress",
     "open",
     "https://example.test"
   ],
@@ -115,10 +121,14 @@ assert.deepEqual(JSON.parse(scopedData?.stdout ?? ""), {
 const closeResult = await scopedBash.dispose();
 assert.deepEqual(JSON.parse(closeResult.stdout), {
   argv: [
+    "--config",
+    "/opt/gestalt/dist/browser/agent-browser.json",
     "--namespace",
     "gestalt",
     "--session",
     "gestalt-loop-test",
+    "--provider",
+    "fortress",
     "close"
   ],
   stdin: ""
@@ -168,6 +178,52 @@ assert.equal(
   124
 );
 
+const inheritedPipeImplementation =
+  createActionBashToolImplementation({
+    agentBrowserTarget: {
+      executable: process.execPath,
+      argsPrefix: [
+        "-e",
+        [
+          'const {spawn}=require("node:child_process");',
+          "const child=spawn(process.execPath,['-e','setTimeout(()=>{},1500)'],{stdio:['ignore','inherit','inherit']});",
+          "child.unref();",
+          "process.stdout.write('parent-exited');"
+        ].join(""),
+        "--"
+      ]
+    }
+  });
+const inheritedPipeStartedAt = Date.now();
+const inheritedPipeResult = await inheritedPipeImplementation(
+  {
+    id: "bash-inherited-pipe",
+    proposedAt: now().toISOString(),
+    toolName: "bash",
+    params: {
+      command: "agent-browser test"
+    }
+  },
+  {
+    connector,
+    now
+  }
+);
+const inheritedPipeElapsedMs = Date.now() - inheritedPipeStartedAt;
+assert.equal(inheritedPipeResult.status, "executed");
+assert.match(
+  (
+    inheritedPipeResult.result?.data as
+      | { stdout?: string }
+      | undefined
+  )?.stdout ?? "",
+  /parent-exited/
+);
+assert.ok(
+  inheritedPipeElapsedMs < 1_000,
+  `native command waited ${inheritedPipeElapsedMs}ms for an inherited pipe`
+);
+
 const firstLoop = createActionBashToolImplementation();
 const secondLoop = createActionBashToolImplementation();
 await firstLoop(
@@ -215,8 +271,10 @@ console.log(
       forwardedStdin: "from-pipe",
       runtimeOwnedNamespace: "gestalt",
       runtimeOwnedSession: "gestalt-loop-test",
+      runtimeOwnedProvider: "fortress",
       sessionClosedOnDispose: true,
       cancelledExitCode: 124,
+      inheritedPipeElapsedMs,
       isolatedVfs: true
     },
     null,

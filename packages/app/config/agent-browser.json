@@ -1,0 +1,19 @@
+{
+  "plugins": [
+    {
+      "name": "fortress",
+      "command": "node",
+      "args": [
+        "./dist/browser/fortressProvider.js",
+        "--executable",
+        "/opt/fortress/tilion",
+        "--state-root",
+        "/tmp/gestalt-fortress",
+        "--no-sandbox"
+      ],
+      "capabilities": [
+        "browser.provider"
+      ]
+    }
+  ]
+}
