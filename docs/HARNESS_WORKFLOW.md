@@ -370,6 +370,11 @@ committed smoke-test GestaltHome, not only that compilation succeeded:
 pnpm run verify:build
 ```
 
+The build also loads the generated Fortress provider entry immediately, and
+`verify:build` executes that entry as a plugin process and asserts its
+`agent-browser.plugin.v1` manifest. This catches production-only ESM/CommonJS
+dependency failures before an image is published.
+
 The workspace dependency graph builds `@gestalt/trace` before `@gestalt/app`.
 The App build copies the completed Trace UI into `packages/app/dist/live-ui/`;
 it does not invoke Vite or reach into the Trace package's dependencies. The

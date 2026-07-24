@@ -32,12 +32,20 @@ const tempHome = await mkdtemp(path.join(os.tmpdir(), "gestalt-build-smoke-"));
 const port = await findAvailablePort();
 const fixtureConfig = await readFile(fixturePath, "utf8");
 const appEntry = path.join(appRoot, "dist", "main.js");
+const fortressProviderEntry = path.join(
+  appRoot,
+  "dist",
+  "browser",
+  "fortressProvider.js"
+);
 const appBundle = await readFile(appEntry, "utf8");
 assert.doesNotMatch(
   appBundle,
   /from\s+["']@gestalt\/live-contracts["']/,
   "The production entry must bundle live contracts instead of loading TypeScript from node_modules."
 );
+const fortressProviderManifest =
+  await readFortressProviderManifest(fortressProviderEntry);
 await writeFile(
   path.join(tempHome, "config.toml"),
   fixtureConfig
@@ -115,6 +123,8 @@ try {
     ok: true,
     appEntry,
     liveContractsBundled: true,
+    fortressProviderEntry,
+    fortressProviderManifest,
     uiIndex: path.join(appRoot, "dist", "live-ui", "index.html"),
     liveUrl: origin,
     apiAndUiSharePort: true,
@@ -155,6 +165,70 @@ async function findAvailablePort(): Promise<number> {
     server.close((error) => (error ? reject(error) : resolve()));
   });
   return address.port;
+}
+
+async function readFortressProviderManifest(
+  entry: string
+): Promise<{
+  name: string;
+  capabilities: string[];
+}> {
+  const child = spawn(process.execPath, [entry], {
+    cwd: appRoot,
+    env: process.env,
+    stdio: ["pipe", "pipe", "pipe"]
+  });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk: string) => {
+    stdout += chunk;
+  });
+  child.stderr.on("data", (chunk: string) => {
+    stderr += chunk;
+  });
+  child.stdin.end(
+    JSON.stringify({
+      protocol: "agent-browser.plugin.v1",
+      type: "plugin.manifest",
+      capability: "plugin.manifest",
+      request: {}
+    })
+  );
+
+  const exitCode = await new Promise<number | null>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", resolve);
+  });
+  assert.equal(
+    exitCode,
+    0,
+    `Built Fortress provider exited unsuccessfully:\n${stderr}`
+  );
+  assert.equal(
+    stderr,
+    "",
+    `Built Fortress provider wrote to stderr:\n${stderr}`
+  );
+
+  const response = JSON.parse(stdout) as {
+    protocol?: unknown;
+    success?: unknown;
+    manifest?: {
+      name?: unknown;
+      capabilities?: unknown;
+    };
+    error?: unknown;
+  };
+  assert.equal(response.protocol, "agent-browser.plugin.v1");
+  assert.equal(response.success, true, String(response.error ?? ""));
+  assert.equal(response.manifest?.name, "fortress");
+  assert.deepEqual(response.manifest?.capabilities, ["browser.provider"]);
+  return {
+    name: response.manifest.name,
+    capabilities: response.manifest.capabilities as string[]
+  };
 }
 
 async function fetchWhenReady(
