@@ -7,11 +7,11 @@ import { useState } from "react";
 import { formatBytes, shortId } from "../../lib/format";
 import { liveApi } from "../../lib/liveApi";
 import { StatusPill } from "../ui";
-import { JsonDialog } from "./JsonDialog";
+import { JsonDetails } from "./JsonDetails";
 
 export function MessageContent({ value }: { value: unknown }) {
   if (typeof value === "string") {
-    return <p className="whitespace-pre-wrap break-words text-sm leading-6">{value}</p>;
+    return <p className="whitespace-pre-wrap break-words text-xs leading-5">{value}</p>;
   }
 
   const directBinary = BinaryDescriptorSchema.safeParse(value);
@@ -33,7 +33,7 @@ export function MessageContent({ value }: { value: unknown }) {
     const binaries = collectBinaries(value);
     return (
       <div className="space-y-2">
-        <p className="whitespace-pre-wrap break-words text-sm leading-6">{value.text}</p>
+        <p className="whitespace-pre-wrap break-words text-xs leading-5">{value.text}</p>
         {binaries.map((descriptor) => (
           <BinaryAttachment descriptor={descriptor} key={descriptor.sha256} />
         ))}
@@ -47,7 +47,13 @@ export function MessageContent({ value }: { value: unknown }) {
       {binaries.map((descriptor) => (
         <BinaryAttachment descriptor={descriptor} key={descriptor.sha256} />
       ))}
-      <JsonDialog label="Inspect content" title="Message content" value={value} />
+      <JsonDetails
+        className="rounded-md bg-neutral-50 ring-1 ring-inset ring-neutral-200"
+        contentClassName="mx-2 mb-2"
+        label="Structured content"
+        summaryClassName="px-2.5 py-2"
+        value={value}
+      />
     </div>
   );
 }

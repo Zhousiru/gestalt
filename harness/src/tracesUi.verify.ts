@@ -7,10 +7,11 @@ import {
   createLiveEventBus,
   createLiveRunStore,
   createMockConnector,
-  createMockModel,
   createNoopDreamingRunner,
   createRuntime,
-  startLiveDebugServer
+  startLiveDebugServer,
+  type ModelClient,
+  type ModelSession
 } from "@gestalt/app";
 import {
   ConversationTimelinePageSchema,
@@ -44,7 +45,7 @@ const connector = createMockConnector({ now });
 const runtime = await createRuntime({
   gestaltHome: tempHome,
   connector,
-  model: createMockModel({ now }),
+  model: createTraceUiModel(now),
   dreamingRunner: createNoopDreamingRunner(),
   liveEvents: bus,
   now
@@ -142,12 +143,31 @@ try {
   );
   assert.equal(rollout.summary.id, rolloutSummary.id);
   assert.ok(rollout.modelSession.initialMessageCount >= 1);
-  assert.ok(rollout.generations.length >= 1);
+  assert.equal(
+    rollout.generations.length,
+    3,
+    "fixture must exercise the model step navigation and continuous call path"
+  );
   assert.ok(
     rollout.records.some((record) => record.type === "rollout_finished")
   );
   const generation = rollout.generations[0];
   assert.ok(generation);
+  const generationDeltas = await Promise.all(
+    rollout.generations.map((item) =>
+      fetchJson(
+        `${server.url}/api/live/rollouts/${encodeURIComponent(rolloutSummary.id)}/model-input?generationId=${encodeURIComponent(item.id)}&view=delta`
+      ).then((value) => ModelInputResponseSchema.parse(value))
+    )
+  );
+  assert.deepEqual(
+    generationDeltas.map((item) => item.generationId),
+    rollout.generations.map((item) => item.id)
+  );
+  assert.ok(
+    generationDeltas.every((item) => item.messages.length > 0),
+    "every fixture step must contribute visible path content"
+  );
 
   const deltaInput = ModelInputResponseSchema.parse(
     await fetchJson(
@@ -194,8 +214,8 @@ try {
     },
     rollout: rollout.summary,
     recordTypes: rollout.records.map((record) => record.type),
-    generationId: generation.id,
-    deltaMessageCount: deltaInput.messages.length,
+    generationIds: rollout.generations.map((item) => item.id),
+    deltaMessageCounts: generationDeltas.map((item) => item.messages.length),
     fullMessageCount: fullInput.messages.length,
     binaryDisabledStatus: binaryResponse.status,
     invalidPageStatus: invalidPage.status
@@ -263,4 +283,119 @@ async function findAvailablePort(): Promise<number> {
     server.close((error) => (error ? reject(error) : resolve()));
   });
   return address.port;
+}
+
+function createTraceUiModel(now: () => Date): ModelClient {
+  return {
+    name: "trace-ui-fixture",
+    createSession(sessionOptions = {}) {
+      let initialized = false;
+      let running = false;
+
+      return {
+        get initialized() {
+          return initialized;
+        },
+        get running() {
+          return running;
+        },
+        async run(context, options = {}) {
+          initialized = true;
+          running = true;
+          const proposedAt = now().toISOString();
+          const proposal = {
+            id: "trace-ui-send-message",
+            proposedAt,
+            toolName: "send_group_message" as const,
+            reason: "Complete the three-step Trace UI fixture.",
+            params: {
+              groupId: "trace-ui-group",
+              text: "[CQ:reply,id=trace-ui-message-1]在，我看到了。"
+            }
+          };
+          const initialMessages = [
+            {
+              role: "system",
+              content: context.persona.fragments
+                .map((fragment) => fragment.content)
+                .join("\n\n")
+            },
+            { role: "user", content: context.transcript }
+          ];
+          const responses = [
+            {
+              role: "assistant",
+              content: "I should inspect the available group-chat actions."
+            },
+            {
+              role: "assistant",
+              content: "The message directly mentions me, so a concise reply is appropriate."
+            },
+            {
+              role: "assistant",
+              content: JSON.stringify([proposal])
+            }
+          ];
+          const messages = [...initialMessages];
+
+          try {
+            for (let index = 0; index < responses.length; index += 1) {
+              options.onModelAttemptStart?.();
+              const response = responses[index];
+              assert.ok(response);
+              const exchangeId = `trace-ui-exchange-${index + 1}`;
+              const request = {
+                provider: "fixture",
+                model: "trace-ui-fixture",
+                temperature: 0,
+                stepNumber: index,
+                messages: [...messages],
+                tools: context.tools.map((tool) => tool.name),
+                toolProtocol: context.tools
+              };
+              await sessionOptions.exchangeSink?.onStepStarted({
+                exchangeId,
+                purpose: "agent_action",
+                request,
+                startedAt: now().toISOString()
+              });
+              await sessionOptions.exchangeSink?.onStepCompleted({
+                exchangeId,
+                purpose: "agent_action",
+                request,
+                response: {
+                  messages: [response],
+                  finishReason:
+                    index === responses.length - 1 ? "stop" : "continue",
+                  stepNumber: index,
+                  ...(index === responses.length - 1
+                    ? {
+                        toolCalls: [
+                          {
+                            id: proposal.id,
+                            name: proposal.toolName,
+                            input: proposal.params
+                          }
+                        ]
+                      }
+                    : {})
+                },
+                status: "completed",
+                startedAt: now().toISOString(),
+                endedAt: now().toISOString()
+              });
+              messages.push(response);
+              await options.onModelStepCommitted?.();
+            }
+            return { proposedActions: [proposal] };
+          } finally {
+            running = false;
+          }
+        },
+        steer() {
+          return false;
+        }
+      } satisfies ModelSession;
+    }
+  };
 }

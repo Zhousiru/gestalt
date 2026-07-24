@@ -91,7 +91,9 @@ export function RolloutInspector({
           </TabsList>
           {error ? <ErrorNotice compact message={error} onRetry={onRetry} /> : null}
           <InspectorContent value="overview"><RolloutOverview binaryCaptureEnabled={binaryCaptureEnabled} detail={detail} /></InspectorContent>
-          <InspectorContent value="model"><ModelSteps detail={detail} /></InspectorContent>
+          <TabsContent className="min-h-0 overflow-hidden" value="model">
+            <ModelSteps detail={detail} />
+          </TabsContent>
           <InspectorContent value="flow"><RolloutFlow detail={detail} /></InspectorContent>
           <InspectorContent value="records"><RolloutRecords detail={detail} /></InspectorContent>
         </Tabs>
